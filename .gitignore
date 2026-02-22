@@ -1,0 +1,13 @@
+/target
+*.log
+vortex.db
+.env.local
+node_modules/
+dist/
+*.swp
+*.swo
+.DS_Store
+.idea/
+*.iml
+vortex.db-shm
+vortex.db-wal

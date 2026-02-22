@@ -1,0 +1,30 @@
+{
+  "name": "vortex",
+  "version": "1.0.0",
+  "description": "**VORTEX** is a high-performance, single-binary enterprise orchestration tool designed to replace Apache Airflow with disruptive speed and simplicity.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --headed --debug",
+    "test:headed": "playwright test --headed",
+    "test:report": "playwright show-report",
+    "test:dashboard": "playwright test tests/ui/01-dashboard.spec.ts",
+    "test:secrets": "playwright test tests/ui/03-secrets-management.spec.ts",
+    "test:users": "playwright test tests/ui/04-rbac-users.spec.ts",
+    "test:api": "playwright test tests/ui/08-api-integration.spec.ts",
+    "test:smoke": "playwright test --grep '^.*Page loads|^.*Dashboard|^.*navigation' --workers=1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "playwright": "^1.58.2"
+  }
+}

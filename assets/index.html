@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VORTEX | Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        vortex: {
+                            primary: '#00f2ff',
+                            secondary: '#7000ff',
+                            dark: '#0a0a0c',
+                            card: '#16161e'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #0a0a0c; color: #e1e1e6; font-family: 'Inter', sans-serif; overflow-x: hidden; }
+        .vortex-gradient { background: linear-gradient(135deg, #00f2ff 0%, #7000ff 100%); }
+        .vortex-border { border: 1px solid rgba(0, 242, 255, 0.1); }
+        .glass { background: rgba(22, 22, 30, 0.8); backdrop-filter: blur(12px); }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0a0a0c; }
+        ::-webkit-scrollbar-thumb { background: #1f1f23; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2f2f35; }
+        .paused-overlay { opacity: 0.5; }
+        .tab-active { border-bottom: 2px solid #00f2ff; color: #00f2ff; }
+        .tab-inactive { border-bottom: 2px solid transparent; color: rgba(255,255,255,0.4); }
+        .tab-inactive:hover { color: rgba(255,255,255,0.7); }
+    </style>
+</head>
+<body class="min-h-screen">
+    <nav class="border-b border-white/5 glass sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 vortex-gradient rounded-lg flex items-center justify-center font-bold text-black">V</div>
+                    <span class="text-xl font-black tracking-tighter text-white">VORTEX</span>
+                    <span class="text-[10px] ml-2 px-2 py-0.5 rounded bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold">CHRONOS v2</span>
+                    <span class="text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 border border-amber-400/20 font-bold">🐝 SWARM</span>
+                </div>
+                <div class="flex items-center gap-6">
+                    <button onclick="showUsers()" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">👥 Users</button>
+                    <button onclick="showSecrets()" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">🔐 Secrets</button>
+                    <div class="flex items-center gap-4 text-sm font-medium">
+                        <span class="text-white/40">Status:</span>
+                        <span class="flex items-center gap-1.5 text-emerald-400">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            Active
+                        </span>
+                        <div class="h-4 w-px bg-white/10 mx-2"></div>
+                        <button class="px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/10 transition-colors">Admin</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Stats -->
+        <div id="stats-row" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+            <div class="glass p-5 rounded-2xl vortex-border">
+                <p class="text-xs text-white/40 mb-1">Total DAGs</p>
+                <h3 class="text-2xl font-bold" id="total-dags">-</h3>
+            </div>
+            <div class="glass p-5 rounded-2xl vortex-border">
+                <p class="text-xs text-white/40 mb-1">Active</p>
+                <h3 class="text-2xl font-bold text-emerald-400" id="active-dags">0</h3>
+            </div>
+            <div class="glass p-5 rounded-2xl vortex-border">
+                <p class="text-xs text-white/40 mb-1">Paused</p>
+                <h3 class="text-2xl font-bold text-amber-400" id="paused-dags">0</h3>
+            </div>
+            <div class="glass p-5 rounded-2xl vortex-border">
+                <p class="text-xs text-white/40 mb-1">Success (Total)</p>
+                <h3 class="text-2xl font-bold text-emerald-400" id="success-tasks">0</h3>
+            </div>
+            <div class="glass p-5 rounded-2xl vortex-border text-rose-400">
+                <p class="text-xs text-white/40 mb-1">Failures</p>
+                <h3 class="text-2xl font-bold" id="failed-tasks">0</h3>
+            </div>
+        </div>
+
+        <!-- Swarm Panel -->
+        <div id="swarm-panel" class="glass rounded-2xl vortex-border mb-8 overflow-hidden">
+            <div class="p-4 border-b border-white/5 flex items-center justify-between cursor-pointer" onclick="toggleSwarmPanel()">
+                <div class="flex items-center gap-3">
+                    <span class="text-lg">🐝</span>
+                    <h3 class="font-bold">VORTEX Swarm</h3>
+                    <span id="swarm-status-badge" class="text-[10px] px-2 py-0.5 rounded bg-white/5 text-white/40 font-bold">LOADING...</span>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div class="flex items-center gap-6 text-sm">
+                        <div><span class="text-white/40">Workers:</span> <span id="swarm-worker-count" class="font-bold">0</span></div>
+                        <div><span class="text-white/40">Queue:</span> <span id="swarm-queue-depth" class="font-bold">0</span></div>
+                    </div>
+                    <svg id="swarm-chevron" class="w-5 h-5 text-white/30 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </div>
+            </div>
+            <div id="swarm-details" class="hidden p-4">
+                <div id="swarm-workers-list" class="space-y-2"></div>
+            </div>
+        </div>
+
+        <!-- DAG List -->
+        <div id="dag-container">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold">DAG Registry</h2>
+                <button onclick="fetchDags()" class="text-sm text-vortex-primary hover:underline">Refresh</button>
+            </div>
+            <div class="grid grid-cols-1 gap-4" id="dag-list">
+                <div class="animate-pulse glass h-24 rounded-2xl"></div>
+            </div>
+        </div>
+
+        <!-- DAG Detail Section -->
+        <div id="dag-detail" class="mt-8 hidden">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4">
+                    <button onclick="hideDetail()" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                    </button>
+                    <div>
+                        <div class="flex items-center gap-3">
+                            <h2 class="text-2xl font-bold" id="detail-title">DAG Details</h2>
+                            <span id="detail-pause-badge" class="hidden text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 font-bold border border-amber-400/20">⏸ PAUSED</span>
+                        </div>
+                        <p class="text-sm text-white/40" id="detail-id-sub"></p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button id="pause-btn" onclick="togglePause()" class="px-4 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold hover:bg-amber-500/20 transition-all text-sm">⏸ Pause</button>
+                    <button id="schedule-btn" onclick="showScheduleModal()" class="px-4 py-2.5 rounded-xl bg-white/5 text-white/70 border border-white/10 font-bold hover:bg-white/10 transition-all text-sm">📅 Schedule</button>
+                    <button id="backfill-btn" onclick="showBackfillModal()" class="px-4 py-2.5 rounded-xl bg-vortex-secondary/10 text-vortex-secondary border border-vortex-secondary/20 font-bold hover:bg-vortex-secondary/20 transition-all text-sm">🔄 Backfill</button>
+                    <button id="trigger-btn" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black shadow-lg shadow-vortex-primary/20 hover:scale-105 active:scale-95 transition-all">TRIGGER RUN</button>
+                </div>
+            </div>
+
+            <!-- Schedule Info Bar -->
+            <div id="schedule-info" class="glass p-4 rounded-xl vortex-border mb-6 flex items-center gap-8 text-sm">
+                <div><span class="text-white/40">Schedule:</span> <span class="ml-2 font-mono text-vortex-primary" id="info-schedule">—</span></div>
+                <div><span class="text-white/40">Timezone:</span> <span class="ml-2 font-mono" id="info-timezone">UTC</span></div>
+                <div><span class="text-white/40">Max Active Runs:</span> <span class="ml-2 font-mono" id="info-max-runs">1</span></div>
+                <div><span class="text-white/40">Catchup:</span> <span class="ml-2 font-mono" id="info-catchup">No</span></div>
+                <div><span class="text-white/40">Next Run:</span> <span class="ml-2 font-mono text-emerald-400" id="info-next-run">—</span></div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex gap-6 mb-6 border-b border-white/5">
+                <button onclick="switchTab('tasks')" id="tab-tasks" class="pb-3 px-1 text-sm font-bold tab-active transition-all">Tasks & Instances</button>
+                <button onclick="switchTab('runs')" id="tab-runs" class="pb-3 px-1 text-sm font-bold tab-inactive transition-all">DAG Runs</button>
+            </div>
+            
+            <!-- Tasks Tab -->
+            <div id="tab-content-tasks" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div class="lg:col-span-1"><h3 class="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Task Graph</h3><div id="task-list" class="space-y-2"></div></div>
+                <div class="lg:col-span-2"><h3 class="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Task Instances</h3><div id="instance-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-2"></div></div>
+            </div>
+
+            <!-- Runs Tab -->
+            <div id="tab-content-runs" class="hidden">
+                <h3 class="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">DAG Run History</h3>
+                <div id="runs-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-2"></div>
+            </div>
+        </div>
+
+        <!-- Pillar 3: Secrets Section -->
+        <div id="secrets-section" class="mt-8 hidden">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4">
+                    <button onclick="hideSecrets()" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                    </button>
+                    <h2 class="text-2xl font-bold">🔐 Enterprise Secret Vault</h2>
+                </div>
+                <button onclick="showAddSecretModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black hover:scale-105 active:scale-95 transition-all">ADD SECRET</button>
+            </div>
+            <div class="grid grid-cols-1 gap-4" id="secrets-list"></div>
+        </div>
+
+        <!-- RBAC: Users Section -->
+        <div id="users-section" class="mt-8 hidden">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4">
+                    <button onclick="hideUsers()" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                    </button>
+                    <h2 class="text-2xl font-bold">👥 User & Access Control</h2>
+                </div>
+                <button onclick="showAddUserModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black hover:scale-105 active:scale-95 transition-all">ADD USER</button>
+            </div>
+            <div class="grid grid-cols-1 gap-4" id="users-list"></div>
+        </div>
+    </main>
+
+    <!-- Logs Modal -->
+    <div id="logs-modal" class="fixed inset-0 bg-black/95 hidden z-50 items-center justify-center p-4 lg:p-12">
+        <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <div><h3 class="text-lg font-bold flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-vortex-primary"></span><span id="modal-task-id">Logs</span></h3><p class="text-xs text-white/40 mt-1">Instance: <span id="modal-ti-id" class="font-mono"></span></p></div>
+                <button onclick="closeLogs()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <div class="flex-1 overflow-auto bg-black/60 p-8 font-mono text-sm leading-relaxed" id="logs-content"></div>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="secret-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
+        <div class="glass w-full max-w-lg rounded-3xl vortex-border shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5"><h3 class="text-lg font-bold">🔐 New Secret</h3><button onclick="closeSecretModal()" class="p-2 rounded-full hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div>
+            <div class="p-6 space-y-5">
+                <input id="secret-key" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-mono" placeholder="KEY_NAME">
+                <input id="secret-value" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-mono" placeholder="VALUE">
+                <button onclick="saveSecret()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02]">Store Secret</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="user-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
+        <div class="glass w-full max-w-lg rounded-3xl vortex-border shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5"><h3 class="text-lg font-bold">👥 New User</h3><button onclick="closeUserModal()" class="p-2 rounded-full hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div>
+            <div class="p-6 space-y-5">
+                <input id="user-username" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm" placeholder="Username">
+                <input id="user-password" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm" placeholder="Password">
+                <select id="user-role" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm">
+                    <option value="Admin">Admin (Full Access)</option>
+                    <option value="Operator">Operator (Manage DAGs)</option>
+                    <option value="Viewer">Viewer (Read Only)</option>
+                </select>
+                <button onclick="saveUser()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02]">Create User</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_KEY = 'vortex_admin_key';
+        let currentDagId = null;
+        let autoRefreshInterval = null;
+
+        async function api(path, method = 'GET', body = null) {
+            const opts = { method, headers: { 'Authorization': API_KEY } };
+            if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+            const res = await fetch(path, opts);
+            if (!res.ok) throw new Error(`API Error: ${res.status}`);
+            return res.json();
+        }
+
+        async function fetchDags() {
+            try {
+                const dags = await api('/api/dags');
+                document.getElementById('total-dags').textContent = dags.length;
+                document.getElementById('active-dags').textContent = dags.filter(d => !d.is_paused).length;
+                document.getElementById('paused-dags').textContent = dags.filter(d => d.is_paused).length;
+                const list = document.getElementById('dag-list');
+                list.innerHTML = dags.map(dag => `<div class="glass p-6 rounded-2xl vortex-border flex items-center justify-between hover:border-vortex-primary/50 transition-all cursor-pointer" onclick="showDetail('${dag.id}')"><div class="flex items-center gap-5"><div class="w-12 h-12 rounded-xl bg-vortex-primary/10 border border-vortex-primary/20 flex items-center justify-center">${dag.is_paused ? '⏸' : '⚡'}</div><div><h4 class="font-bold text-white">${dag.id}</h4><p class="text-xs text-white/40">${dag.schedule_interval || 'No Schedule'}</p></div></div><svg class="w-5 h-5 text-white/10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>`).join('');
+            } catch (e) { console.error(e); }
+        }
+
+        function showSecrets() { document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden')); document.getElementById('secrets-section').classList.remove('hidden'); fetchSecrets(); }
+        function hideSecrets() { document.getElementById('secrets-section').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }
+        async function fetchSecrets() {
+            const data = await api('/api/secrets');
+            document.getElementById('secrets-list').innerHTML = data.secrets.map(s => `<div class="glass p-4 rounded-xl flex items-center justify-between"><div><p class="font-bold text-white font-mono">${s}</p></div><button onclick="deleteSecret('${s}')" class="text-rose-500 hover:underline text-xs">Delete</button></div>`).join('');
+        }
+        function showAddSecretModal() { document.getElementById('secret-modal').classList.remove('hidden'); document.getElementById('secret-modal').classList.add('flex'); }
+        function closeSecretModal() { document.getElementById('secret-modal').classList.add('hidden'); }
+        async function saveSecret() { await api('/api/secrets', 'POST', { key: document.getElementById('secret-key').value, value: document.getElementById('secret-value').value }); closeSecretModal(); fetchSecrets(); }
+        async function deleteSecret(k) { if(confirm('Delete?')) { await api(`/api/secrets/${k}`, 'DELETE'); fetchSecrets(); } }
+
+        function showUsers() { document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden')); document.getElementById('users-section').classList.remove('hidden'); fetchUsers(); }
+        function hideUsers() { document.getElementById('users-section').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }
+        async function fetchUsers() {
+            const users = await api('/api/users');
+            document.getElementById('users-list').innerHTML = users.map(u => `<div class="glass p-4 rounded-xl flex items-center justify-between"><div><p class="font-bold text-white">${u.username} <span class="ml-2 text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/40">${u.role}</span></p><p class="text-[10px] text-white/20 font-mono mt-1">${u.api_key}</p></div><button onclick="deleteUser('${u.username}')" class="text-rose-500 hover:underline text-xs">Delete</button></div>`).join('');
+        }
+        function showAddUserModal() { document.getElementById('user-modal').classList.remove('hidden'); document.getElementById('user-modal').classList.add('flex'); }
+        function closeUserModal() { document.getElementById('user-modal').classList.add('hidden'); }
+        async function saveUser() { await api('/api/users', 'POST', { username: document.getElementById('user-username').value, password_hash: document.getElementById('user-password').value, role: document.getElementById('user-role').value }); closeUserModal(); fetchUsers(); }
+        async function deleteUser(u) { if(confirm('Delete?')) { await api(`/api/users/${u}`, 'DELETE'); fetchUsers(); } }
+
+        function showDetail(id) { currentDagId = id; document.getElementById('dag-container').classList.add('hidden'); document.getElementById('dag-detail').classList.remove('hidden'); refreshDetail(); }
+        function hideDetail() { currentDagId = null; document.getElementById('dag-detail').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }
+        async function refreshDetail() { if(!currentDagId) return; const data = await api(`/api/dags/${currentDagId}/tasks`); document.getElementById('task-list').innerHTML = data.tasks.map(t => `<div class="p-3 bg-white/5 rounded-lg text-sm">${t.name}</div>`).join(''); }
+        function toggleSwarmPanel() { document.getElementById('swarm-details').classList.toggle('hidden'); }
+        fetchDags();
+    </script>
+</body>
+</html>

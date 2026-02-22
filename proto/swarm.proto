@@ -1,0 +1,66 @@
+syntax = "proto3";
+package vortex.swarm;
+
+service SwarmController {
+  rpc RegisterWorker (WorkerInfo) returns (RegisterResponse);
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc PollTask (PollTaskRequest) returns (PollTaskResponse);
+  rpc ReportTaskResult (TaskResult) returns (TaskResultAck);
+}
+
+message WorkerInfo {
+  string worker_id = 1;
+  string hostname = 2;
+  int32 capacity = 3;
+  repeated string labels = 4;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  int32 active_tasks = 2;
+  float cpu_usage = 3;
+  float memory_usage = 4;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+  bool should_drain = 2;
+}
+
+message PollTaskRequest {
+  string worker_id = 1;
+  int32 available_slots = 2;
+}
+
+message PollTaskResponse {
+  repeated TaskAssignment tasks = 1;
+}
+
+message TaskAssignment {
+  string task_instance_id = 1;
+  string dag_id = 2;
+  string task_id = 3;
+  string command = 4;
+  string dag_run_id = 5;
+  map<string, string> secrets = 6; // Pillar 3: Decrypted secrets injected here
+}
+
+message TaskResult {
+  string worker_id = 1;
+  string task_instance_id = 2;
+  string dag_id = 3;
+  string task_id = 4;
+  bool success = 5;
+  string stdout = 6;
+  string stderr = 7;
+  int64 duration_ms = 8;
+}
+
+message TaskResultAck {
+  bool acknowledged = 1;
+}
