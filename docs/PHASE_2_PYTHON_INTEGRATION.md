@@ -190,3 +190,45 @@ Secrets are securely fetched from the VORTEX vault and injected only at the mome
 // Example of secret injection in Rust
 cmd.envs(env_vars); // Inject secrets as environment variables
 ```
+
+## End-to-End Execution Flow
+
+1.  **DAG Submission:** A user uploads a `.py` file via the Web UI or API.
+2.  **Scheduling:** The VORTEX Scheduler identifies tasks ready to run based on dependencies and triggers.
+3.  **Task Queuing:** Ready tasks are enqueued into the Swarm task queue with their type (`bash` or `python`) and configuration.
+4.  **Worker Polling:** An active worker polls the Swarm Controller for available tasks.
+5.  **Execution:**
+    - The worker receives the task, fetches required secrets from the vault (via the controller).
+    - It routes the task to the appropriate executor based on type.
+    - Secrets are injected as environment variables.
+6.  **Result Reporting:** The worker reports stdout, stderr, and exit code back to the Controller.
+7.  **DB Update:** the Controller stores the results and updates the `task_instances` table.
+
+## Monitoring
+
+The VORTEX Dashboard provides real-time monitoring of task execution:
+-   **Live Logs:** Click "View Logs" on any task instance to see real-time stdout and stderr.
+-   **Status Badges:** Color-coded badges indicate task state:
+    -   ✅ **Success** (Green)
+    -   ❌ **Failed** (Red)
+    -   🔄 **Running** (Blue)
+    -   ⏳ **Queued** (Gray)
+-   **Execution Duration:** Precise duration tracking (e.g., "2.3s") for performance analysis.
+-   **Auto-Refresh:** The DAG detail view automatically refreshes every 10 seconds to show the latest task states.
+
+## Retry Configuration
+
+Tasks can be configured to retry automatically on failure.
+
+### Example Retry Config
+```python
+task = BashOperator(
+    task_id="flaky_task",
+    bash_command="curl https://api.example.com/data",
+    max_retries=3,
+    retry_delay_secs=60
+)
+```
+-   **max_retries:** Number of retry attempts (default: 0).
+-   **retry_delay_secs:** Delay between retries in seconds (default: 30).
+-   **Retry Tracking:** The `retry_count` is tracked in the database and visible in the UI logs.

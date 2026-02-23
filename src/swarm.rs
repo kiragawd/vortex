@@ -31,6 +31,10 @@ pub struct PendingTask {
     pub task_id: String,
     pub command: String,
     pub dag_run_id: String,
+    pub task_type: String,      // Phase 2.5
+    pub config_json: String,    // Phase 2.5
+    pub max_retries: i32,       // Phase 2.5
+    pub retry_delay_secs: i32,  // Phase 2.5
     pub required_secrets: Vec<String>, // Pillar 3
 }
 
@@ -120,6 +124,10 @@ impl SwarmState {
                                         task_id: t.2,
                                         command: t.3,
                                         dag_run_id: t.4,
+                                        task_type: "bash".to_string(), // Default for recovery
+                                        config_json: "{}".to_string(),
+                                        max_retries: 0,
+                                        retry_delay_secs: 30,
                                         required_secrets: vec!["STRESS_TEST_SECRET".to_string()], // Pillar 3: Pass secret reqs
                                     });
                                 }
@@ -203,6 +211,10 @@ impl SwarmController for SwarmService {
                 command: t.command,
                 dag_run_id: t.dag_run_id,
                 secrets: resolved_secrets,
+                task_type: t.task_type,
+                config_json: t.config_json,
+                max_retries: t.max_retries,
+                retry_delay_secs: t.retry_delay_secs,
             });
         }
         Ok(Response::new(PollTaskResponse { tasks }))
@@ -221,6 +233,41 @@ impl SwarmController for SwarmService {
             duration_ms: result.duration_ms as u64,
         };
         let _ = self.state.db.store_task_result(&result.task_instance_id, &exec_result);
+
+        // Phase 2.5: Retry Logic
+        if !result.success {
+            if let Ok((retry_count, _)) = self.state.db.get_task_instance_retry_info(&result.task_instance_id) {
+                if retry_count < result.max_retries {
+                    println!("♻️ Swarm: Task {} failed. Retrying ({}/{}).", result.task_id, retry_count + 1, result.max_retries);
+                    let _ = self.state.db.increment_task_retry_count(&result.task_instance_id);
+                    let _ = self.state.db.update_task_state(&result.task_instance_id, "Queued");
+                    
+                    // Re-enqueue after delay
+                    let state_clone = Arc::clone(&self.state);
+                    let ti_id = result.task_instance_id.clone();
+                    let retry_delay = result.retry_delay_secs;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(retry_delay as u64)).await;
+                        
+                        if let Ok(Some(details)) = state_clone.db.get_task_instance_details(&ti_id) {
+                            let (dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs) = details;
+                            state_clone.enqueue_task(PendingTask {
+                                task_instance_id: ti_id,
+                                dag_id,
+                                task_id,
+                                command,
+                                dag_run_id,
+                                task_type,
+                                config_json,
+                                max_retries,
+                                retry_delay_secs,
+                                required_secrets: vec!["STRESS_TEST_SECRET".to_string()], // Pillar 3: Pass secret reqs
+                            }).await;
+                        }
+                    });
+                }
+            }
+        }
         
         let state_str = if result.success { "Success" } else { "Failed" };
         let log_dir = format!("logs/{}/{}/", result.dag_id, result.task_id);

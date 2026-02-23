@@ -14,6 +14,10 @@ pub struct Task {
     pub id: String,
     pub name: String,
     pub command: String,
+    pub task_type: String,      // "bash" or "python"
+    pub config: serde_json::Value,
+    pub max_retries: i32,
+    pub retry_delay_secs: i32,
 }
 
 pub struct Dag {
@@ -52,6 +56,25 @@ impl Dag {
                 id: id.to_string(),
                 name: name.to_string(),
                 command: command.to_string(),
+                task_type: "bash".to_string(),
+                config: serde_json::json!({}),
+                max_retries: 0,
+                retry_delay_secs: 30,
+            },
+        );
+    }
+
+    pub fn add_python_task(&mut self, id: &str, name: &str, code: &str) {
+        self.tasks.insert(
+            id.to_string(),
+            Task {
+                id: id.to_string(),
+                name: name.to_string(),
+                command: code.to_string(),
+                task_type: "python".to_string(),
+                config: serde_json::json!({}),
+                max_retries: 0,
+                retry_delay_secs: 30,
             },
         );
     }
@@ -102,7 +125,7 @@ impl Scheduler {
         // Persist DAG and tasks to DB
         self.db.save_dag(&self.dag.id, self.dag.schedule_interval.as_deref())?;
         for task in self.dag.tasks.values() {
-            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command)?;
+            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs)?;
         }
 
         // Recovery Mode

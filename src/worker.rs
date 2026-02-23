@@ -145,20 +145,16 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 }
 
 async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResult {
-    println!("⏳ Executing: {}/{} (instance: {})", task.dag_id, task.task_id, task.task_instance_id);
+    println!("⏳ Executing: {}/{} (type: {}, instance: {})", 
+        task.dag_id, task.task_id, task.task_type, task.task_instance_id);
     
-    // Determine task type (bash or python)
-    // For now, we'll try to guess from the command or assume it's bash unless it looks like python
-    // Actually, in a real system, the TaskAssignment should have a task_type field.
-    // Since we don't have it yet, let's check for a hint in the command or use bash as default.
-    // Phase 2.2 says: "When worker receives a task from queue, check task type"
-    // Since our proto doesn't have task_type, I'll assume we should use TaskExecutor based on some logic.
-    
-    let result = if task.command.starts_with("python:") {
-        let code = task.command.strip_prefix("python:").unwrap_or(&task.command);
-        TaskExecutor::execute_python(&task.task_id, code, task.secrets.clone()).await
-    } else {
-        TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone()).await
+    let result = match task.task_type.as_str() {
+        "python" => {
+            TaskExecutor::execute_python(&task.task_id, &task.command, task.secrets.clone()).await
+        },
+        _ => {
+            TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone()).await
+        }
     };
 
     println!("  └─ {}: {}/{} ({}ms)", 
@@ -174,5 +170,7 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
         stdout: result.stdout,
         stderr: result.stderr,
         duration_ms: result.duration_ms as i64,
+        max_retries: task.max_retries,
+        retry_delay_secs: task.retry_delay_secs,
     }
 }

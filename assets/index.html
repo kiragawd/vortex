@@ -375,10 +375,150 @@
             }
         }
 
-        function showDetail(id) { currentDagId = id; document.getElementById('dag-container').classList.add('hidden'); document.getElementById('dag-detail').classList.remove('hidden'); refreshDetail(); }
-        function hideDetail() { currentDagId = null; document.getElementById('dag-detail').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }
-        async function refreshDetail() { if(!currentDagId) return; const data = await api(`/api/dags/${currentDagId}/tasks`); document.getElementById('task-list').innerHTML = data.tasks.map(t => `<div class="p-3 bg-white/5 rounded-lg text-sm">${t.name}</div>`).join(''); }
+        function showDetail(id) { 
+            currentDagId = id; 
+            document.getElementById('dag-container').classList.add('hidden'); 
+            document.getElementById('dag-detail').classList.remove('hidden'); 
+            refreshDetail(); 
+            // Phase 2.5: Auto-refresh every 10s
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            autoRefreshInterval = setInterval(refreshDetail, 10000);
+        }
+        function hideDetail() { 
+            currentDagId = null; 
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            document.getElementById('dag-detail').classList.add('hidden'); 
+            document.getElementById('dag-container').classList.remove('hidden'); 
+        }
+
+        function formatDuration(ms) {
+            if (!ms) return '-';
+            if (ms < 1000) return ms + 'ms';
+            return (ms / 1000).toFixed(2) + 's';
+        }
+
+        function getStatusBadge(state) {
+            const colors = {
+                'Success': 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
+                'Failed': 'bg-rose-400/10 text-rose-400 border-rose-400/20',
+                'Running': 'bg-blue-400/10 text-blue-400 border-blue-400/20',
+                'Queued': 'bg-white/10 text-white/40 border-white/20'
+            };
+            const icons = { 'Success': '✅', 'Failed': '❌', 'Running': '🔄', 'Queued': '⏳' };
+            const cls = colors[state] || 'bg-white/5 text-white/20 border-white/10';
+            const icon = icons[state] || '•';
+            return `<span class="text-[10px] px-2 py-0.5 rounded border font-bold ${cls}">${icon} ${state.toUpperCase()}</span>`;
+        }
+
+        async function refreshDetail() { 
+            if(!currentDagId) return; 
+            try {
+                const data = await api(`/api/dags/${currentDagId}/tasks`); 
+                document.getElementById('detail-title').textContent = data.dag_id;
+                document.getElementById('detail-id-sub').textContent = `Created: ${new Date(data.dag.created_at).toLocaleString()}`;
+                
+                // Tasks
+                document.getElementById('task-list').innerHTML = data.tasks.map(t => `<div class="p-4 bg-white/5 rounded-2xl vortex-border"><div class="flex justify-between items-start mb-2"><div><h4 class="font-bold text-white text-sm">${t.name}</h4><p class="text-[10px] font-mono text-white/30">${t.id}</p></div></div><pre class="text-[10px] text-white/40 bg-black/20 p-2 rounded mt-2 overflow-hidden truncate max-h-12">${t.command}</pre></div>`).join(''); 
+                
+                // Instances
+                document.getElementById('instance-list').innerHTML = data.instances.sort((a,b) => new Date(b.execution_date) - new Date(a.execution_date)).map(ti => {
+                    const preview = ti.stdout ? ti.stdout.split('\n').slice(0, 3).join('\n') : '';
+                    return `
+                    <div class="glass p-5 rounded-2xl vortex-border mb-3">
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="flex items-center gap-3">
+                                ${getStatusBadge(ti.state)}
+                                <span class="text-sm font-bold">${ti.task_id}</span>
+                            </div>
+                            <div class="flex items-center gap-4 text-[11px] text-white/40 font-medium">
+                                <span>${new Date(ti.execution_date).toLocaleString()}</span>
+                                <div class="w-1 h-1 rounded-full bg-white/10"></div>
+                                <span class="font-mono text-vortex-primary">${formatDuration(ti.duration_ms)}</span>
+                                <button onclick="viewLogs('${ti.id}', '${ti.task_id}')" class="px-3 py-1 rounded-lg bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all">View Logs</button>
+                            </div>
+                        </div>
+                        ${preview ? `<pre class="text-[10px] font-mono text-white/40 bg-black/40 p-3 rounded-xl border border-white/5 overflow-hidden line-clamp-3">${preview}</pre>` : ''}
+                    </div>`;
+                }).join('');
+
+                // Update Stats
+                const successCount = data.instances.filter(ti => ti.state === 'Success').length;
+                const failedCount = data.instances.filter(ti => ti.state === 'Failed').length;
+                document.getElementById('success-tasks').textContent = successCount;
+                document.getElementById('failed-tasks').textContent = failedCount;
+
+            } catch (e) { console.error(e); }
+        }
+
+        async function viewLogs(id, taskId) {
+            document.getElementById('modal-task-id').textContent = taskId;
+            document.getElementById('modal-ti-id').textContent = id;
+            document.getElementById('logs-content').innerHTML = '<div class="flex items-center gap-3 text-white/40 animate-pulse"><span class="w-2 h-2 rounded-full bg-vortex-primary"></span> Loading logs...</div>';
+            document.getElementById('logs-modal').classList.remove('hidden');
+            document.getElementById('logs-modal').classList.add('flex');
+            
+            try {
+                const data = await api(`/api/tasks/${id}/logs`);
+                if (data.stdout || data.stderr) {
+                    let html = '';
+                    if (data.stdout) html += `<div class="mb-6"><h4 class="text-[10px] uppercase tracking-widest text-emerald-400 font-black mb-3">Standard Output</h4><div class="p-4 bg-emerald-400/5 rounded-xl border border-emerald-400/10 text-emerald-100/80 whitespace-pre-wrap">${data.stdout}</div></div>`;
+                    if (data.stderr) html += `<div><h4 class="text-[10px] uppercase tracking-widest text-rose-400 font-black mb-3">Standard Error</h4><div class="p-4 bg-rose-400/5 rounded-xl border border-rose-400/10 text-rose-100/80 whitespace-pre-wrap">${data.stderr}</div></div>`;
+                    document.getElementById('logs-content').innerHTML = html || '<p class="text-white/20 italic">No log output.</p>';
+                } else {
+                    document.getElementById('logs-content').innerHTML = `<div class="p-4 bg-white/5 rounded-xl border border-white/10 text-white/40 whitespace-pre-wrap">${data.logs || 'No output.'}</div>`;
+                }
+            } catch (e) {
+                document.getElementById('logs-content').innerHTML = `<div class="text-rose-400 p-4 bg-rose-400/10 rounded-xl border border-rose-400/20">Failed to load logs: ${e.message}</div>`;
+            }
+        }
+
+        function closeLogs() { document.getElementById('logs-modal').classList.add('hidden'); }
         function toggleSwarmPanel() { document.getElementById('swarm-details').classList.toggle('hidden'); }
+        
+        async function triggerDag(id) { 
+            try { 
+                await api(`/api/dags/${id}/trigger`, 'POST'); 
+                alert('Triggered!'); 
+                refreshDetail(); 
+            } catch(e) { alert(e.message); } 
+        }
+
+        async function togglePause() {
+            if(!currentDagId) return;
+            try {
+                const dag = (await api('/api/dags')).find(d => d.id === currentDagId);
+                const action = dag.is_paused ? 'unpause' : 'pause';
+                await api(`/api/dags/${currentDagId}/${action}`, 'PATCH');
+                refreshDetail();
+                fetchDags();
+            } catch(e) { console.error(e); }
+        }
+
+        function switchTab(tab) {
+            document.getElementById('tab-tasks').className = tab === 'tasks' ? 'pb-3 px-1 text-sm font-bold tab-active transition-all' : 'pb-3 px-1 text-sm font-bold tab-inactive transition-all';
+            document.getElementById('tab-runs').className = tab === 'runs' ? 'pb-3 px-1 text-sm font-bold tab-active transition-all' : 'pb-3 px-1 text-sm font-bold tab-inactive transition-all';
+            document.getElementById('tab-content-tasks').classList.toggle('hidden', tab !== 'tasks');
+            document.getElementById('tab-content-runs').classList.toggle('hidden', tab !== 'runs');
+            if (tab === 'runs') fetchRuns();
+        }
+
+        async function fetchRuns() {
+            if(!currentDagId) return;
+            const data = await api(`/api/dags/${currentDagId}/runs`);
+            document.getElementById('runs-list').innerHTML = data.runs.map(run => `
+                <div class="glass p-4 rounded-xl vortex-border flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                        ${getStatusBadge(run.state)}
+                        <div><p class="font-mono text-xs text-white/80">${run.id}</p><p class="text-[10px] text-white/30">${new Date(run.execution_date).toLocaleString()} • Triggered by: ${run.triggered_by}</p></div>
+                    </div>
+                </div>`).join('');
+        }
+
+        function showScheduleModal() { alert('Schedule management coming soon!'); }
+        function showBackfillModal() { alert('Backfill management coming soon!'); }
+
+        document.getElementById('trigger-btn').onclick = () => triggerDag(currentDagId);
+
         fetchDags();
     </script>
 </body>

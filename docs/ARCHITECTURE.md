@@ -194,41 +194,38 @@ async fn worker_task_loop(worker_id: &str) -> Result<()> {
 
 ### 5. Worker Executes Task
 
-Worker spawns a container:
+Worker spawns an isolated process based on the task type:
 
+**BashOperator**:
 ```bash
-docker run \
-  --env SECRET_DB_PASSWORD=<decrypted> \
-  --rm \
-  python:3.13 \
-  python fetch.py
+sh -c "{bash_command}"
 ```
+
+**PythonOperator**:
+```bash
+python3 /tmp/vortex_task_{task_id}.py
+```
+
+All secrets are injected as environment variables.
 
 ### 6. Worker Reports Result
 
-On completion, worker sends result:
+On completion, worker sends result via gRPC:
 
 ```json
 {
   "task_id": "task_1",
-  "status": "success",
-  "exit_code": 0,
-  "stdout": "Fetched 10,000 records",
+  "success": true,
+  "stdout": "...",
   "stderr": "",
-  "duration_ms": 3500
+  "duration_ms": 3500,
+  "retry_count": 0
 }
 ```
 
-### 7. Controller Updates Database & Checks Dependencies
+### 7. Controller Updates Database & Retry Logic
 
-Controller marks task as `Completed` and checks if dependent tasks are now ready:
-
-```sql
-UPDATE task_instances SET state = 'Completed', exit_code = 0 WHERE id = 'task_1';
-
--- task_2 depends on task_1, which is now done; enqueue task_2
-INSERT INTO task_queue (task_id) VALUES ('task_2');
-```
+Controller stores the result. If the task failed and `retry_count < max_retries`, it resets the state to `Queued` after `retry_delay_secs`. Otherwise, it marks the task as `Success` or `Failed` and proceeds to downstream tasks.
 
 ### 8. Repeat for Dependent Tasks
 

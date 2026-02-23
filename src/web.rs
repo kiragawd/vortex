@@ -16,6 +16,7 @@ use serde_json::json;
 use serde::Deserialize;
 use std::fs;
 use tokio::sync::mpsc;
+use rusqlite::params;
 
 #[derive(RustEmbed)]
 #[folder = "assets/"]
@@ -153,7 +154,8 @@ async fn upload_dag(State(state): State<Arc<AppState>>, mut multipart: Multipart
                     let _ = state.db.save_dag(&dag_meta.dag_id, dag_meta.schedule_interval.as_deref());
                     for task in &dag_meta.tasks {
                         let cmd = task.config.get("bash_command").and_then(|c| c.as_str()).unwrap_or("");
-                        let _ = state.db.save_task(&dag_meta.dag_id, &task.task_id, &task.task_id, cmd);
+                        let task_type = if task.config.get("python_callable").is_some() { "python" } else { "bash" };
+                        let _ = state.db.save_task(&dag_meta.dag_id, &task.task_id, &task.task_id, cmd, task_type, "{}", 0, 30);
                     }
                     
                     // Versioning
@@ -276,11 +278,37 @@ async fn get_dag_runs(Path(id): Path<String>, State(state): State<Arc<AppState>>
     Json(json!({"dag_id": id, "runs": runs}))
 }
 async fn get_task_logs(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // 1. Try DB first
+    let mut db_stdout = None;
+    let mut db_stderr = None;
+    {
+        let conn = state.db.conn.lock().unwrap();
+        if let Ok((stdout, stderr)) = conn.query_row(
+            "SELECT stdout, stderr FROM task_instances WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?))
+        ) {
+            db_stdout = stdout;
+            db_stderr = stderr;
+        }
+    }
+
+    if db_stdout.is_some() || db_stderr.is_some() {
+        return Json(json!({ 
+            "stdout": db_stdout.unwrap_or_default(), 
+            "stderr": db_stderr.unwrap_or_default() 
+        })).into_response();
+    }
+
+    // 2. Fallback to file logs
     if let Ok(Some((dag_id, task_id, execution_date))) = state.db.get_task_instance(&id) {
         let log_path = format!("logs/{}/{}/{}.log", dag_id, task_id, execution_date.format("%Y-%m-%d"));
-        if let Ok(content) = fs::read_to_string(log_path) { return Json(json!({ "logs": content })); }
+        if let Ok(content) = fs::read_to_string(log_path) { 
+            return Json(json!({ "stdout": content, "stderr": "" })).into_response(); 
+        }
     }
-    Json(json!({ "error": "Log not found" }))
+    
+    (StatusCode::NOT_FOUND, Json(json!({ "error": "Log not found" }))).into_response()
 }
 async fn trigger_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let _ = state.tx.send((id, "manual".to_string())).await;

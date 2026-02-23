@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 
 pub struct Db {
-    conn: Mutex<Connection>,
+    pub conn: Mutex<Connection>,
 }
 
 impl Db {
@@ -89,6 +89,9 @@ impl Db {
         if !ti_cols.contains(&"duration_ms".to_string()) {
             conn.execute("ALTER TABLE task_instances ADD COLUMN duration_ms INTEGER", [])?;
         }
+        if !ti_cols.contains(&"retry_count".to_string()) {
+            conn.execute("ALTER TABLE task_instances ADD COLUMN retry_count INTEGER DEFAULT 0", [])?;
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -96,11 +99,35 @@ impl Db {
                 dag_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 command TEXT NOT NULL,
+                task_type TEXT DEFAULT 'bash',
+                config TEXT DEFAULT '{}',
+                max_retries INTEGER DEFAULT 0,
+                retry_delay_secs INTEGER DEFAULT 30,
                 PRIMARY KEY (id, dag_id),
                 FOREIGN KEY (dag_id) REFERENCES dags(id)
             )",
             [],
         )?;
+
+        // Task Columns migrations
+        let task_cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(tasks)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if !task_cols.contains(&"task_type".to_string()) {
+            conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'bash'", [])?;
+        }
+        if !task_cols.contains(&"config".to_string()) {
+            conn.execute("ALTER TABLE tasks ADD COLUMN config TEXT DEFAULT '{}'", [])?;
+        }
+        if !task_cols.contains(&"max_retries".to_string()) {
+            conn.execute("ALTER TABLE tasks ADD COLUMN max_retries INTEGER DEFAULT 0", [])?;
+        }
+        if !task_cols.contains(&"retry_delay_secs".to_string()) {
+            conn.execute("ALTER TABLE tasks ADD COLUMN retry_delay_secs INTEGER DEFAULT 30", [])?;
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS task_instances (
@@ -307,7 +334,7 @@ impl Db {
         self.save_dag(&dag.id, dag.schedule_interval.as_deref())?;
         self.update_dag_config(&dag.id, dag.schedule_interval.as_deref(), &dag.timezone, dag.max_active_runs, dag.catchup)?;
         for task in dag.tasks.values() {
-            self.save_task(&dag.id, &task.id, &task.name, &task.command)?;
+            self.save_task(&dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs)?;
         }
         Ok(())
     }
@@ -372,9 +399,20 @@ impl Db {
 
     pub fn get_task_instances(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, task_id, state, execution_date, start_time, end_time FROM task_instances WHERE dag_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, task_id, state, execution_date, start_time, end_time, stdout, stderr, duration_ms, retry_count FROM task_instances WHERE dag_id = ?1")?;
         let rows = stmt.query_map(params![dag_id], |row| {
-            Ok(serde_json::json!({"id": row.get::<_, String>(0)?, "task_id": row.get::<_, String>(1)?, "state": row.get::<_, String>(2)?, "execution_date": row.get::<_, DateTime<Utc>>(3)?, "start_time": row.get::<_, Option<DateTime<Utc>>>(4)?, "end_time": row.get::<_, Option<DateTime<Utc>>>(5)?}))
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?, 
+                "task_id": row.get::<_, String>(1)?, 
+                "state": row.get::<_, String>(2)?, 
+                "execution_date": row.get::<_, DateTime<Utc>>(3)?, 
+                "start_time": row.get::<_, Option<DateTime<Utc>>>(4)?, 
+                "end_time": row.get::<_, Option<DateTime<Utc>>>(5)?,
+                "stdout": row.get::<_, Option<String>>(6)?,
+                "stderr": row.get::<_, Option<String>>(7)?,
+                "duration_ms": row.get::<_, Option<i64>>(8)?,
+                "retry_count": row.get::<_, i32>(9)?
+            }))
         })?;
         let mut instances = Vec::new();
         for row in rows { instances.push(row?); }
@@ -466,9 +504,10 @@ impl Db {
         Ok(runs)
     }
 
-    pub fn save_task(&self, dag_id: &str, task_id: &str, name: &str, command: &str) -> Result<()> {
+    pub fn save_task(&self, dag_id: &str, task_id: &str, name: &str, command: &str, task_type: &str, config: &str, max_retries: i32, retry_delay_secs: i32) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT OR REPLACE INTO tasks (id, dag_id, name, command) VALUES (?1, ?2, ?3, ?4)", params![task_id, dag_id, name, command])?;
+        conn.execute("INSERT OR REPLACE INTO tasks (id, dag_id, name, command, task_type, config, max_retries, retry_delay_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", 
+            params![task_id, dag_id, name, command, task_type, config, max_retries, retry_delay_secs])?;
         Ok(())
     }
 
@@ -593,6 +632,38 @@ impl Db {
             params![worker_id],
         )?;
         Ok(())
+    }
+
+    pub fn get_task_instance_retry_info(&self, ti_id: &str) -> Result<(i32, String)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT retry_count, state FROM task_instances WHERE id = ?1")?;
+        let row = stmt.query_row(params![ti_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(row)
+    }
+
+    pub fn increment_task_retry_count(&self, ti_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE task_instances SET retry_count = retry_count + 1 WHERE id = ?1", params![ti_id])?;
+        Ok(())
+    }
+
+    pub fn get_task_instance_details(&self, ti_id: &str) -> Result<Option<(String, String, String, String, String, String, i32, i32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("
+            SELECT ti.dag_id, ti.task_id, t.command, dr.id, t.task_type, t.config, t.max_retries, t.retry_delay_secs
+            FROM task_instances ti
+            JOIN tasks t ON ti.task_id = t.id AND ti.dag_id = t.dag_id
+            JOIN dag_runs dr ON ti.dag_id = dr.dag_id AND ti.execution_date = dr.execution_date
+            WHERE ti.id = ?1
+        ")?;
+        let mut rows = stmt.query_map(params![ti_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
+        })?;
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn store_task_result(&self, task_instance_id: &str, result: &crate::executor::ExecutionResult) -> Result<()> {

@@ -131,6 +131,10 @@ async fn main() -> Result<()> {
                         swarm_sched.enqueue_task(swarm::PendingTask {
                             task_instance_id: ti_id, dag_id: dag_id.clone(), task_id: task.id.clone(),
                             command: task.command.clone(), dag_run_id: dag_run_id.clone(),
+                            task_type: task.task_type.clone(),
+                            config_json: task.config.to_string(),
+                            max_retries: task.max_retries,
+                            retry_delay_secs: task.retry_delay_secs,
                             required_secrets: vec!["STRESS_TEST_SECRET".to_string()], // Pillar 3: Pass secret reqs
                         }).await;
                     }
