@@ -8,6 +8,33 @@ Python integration in VORTEX is achieved through two complementary approaches:
 1.  **Regex-based Parsing:** A fast, lightweight parser that extracts DAG structure from Python files without requiring a full Python interpreter for basic validation and UI visualization.
 2.  **PyO3-based Runtime:** A robust integration that uses the Python interpreter to execute DAG files, supporting advanced features and dynamic task generation.
 
+## DAG Upload & Management
+
+VORTEX provides a secure API and user-friendly Web UI for uploading and versioning your Python DAG files.
+
+### Web UI Workflow
+1. Click the **"📤 Upload DAG"** button in the top navigation bar.
+2. Select or drag-and-drop a `.py` file.
+3. VORTEX automatically validates the file structure (checking for imports, `dag_id`, and cyclic dependencies).
+4. On success, a preview of the parsed metadata (tasks, schedule) is shown.
+5. The DAG is immediately registered and becomes visible in the registry.
+
+### REST API Upload
+You can upload DAGs programmatically using the `/api/dags/upload` endpoint.
+
+```bash
+# Upload a DAG file using curl
+curl -X POST http://localhost:8080/api/dags/upload \
+  -H "Authorization: Bearer vortex_admin_key" \
+  -F "file=@my_dag.py"
+```
+
+### DAG Versioning
+Every time a DAG file is uploaded, VORTEX creates a new version in the `dag_versions` table.
+- **Incremental Versioning:** Each upload for the same `dag_id` increments the version number.
+- **Storage:** Files are stored in the `dags/` directory with their original names (overwriting the active file but tracked in the DB version history).
+- **Metadata Tracking:** VORTEX tracks the creator, upload time, and file path for every version.
+
 ## Supported Operators
 
 VORTEX currently supports the following core operators:
@@ -125,21 +152,6 @@ The shim provides the following classes that mimic the Airflow 2.x API:
 - `DummyOperator`
 - `EmptyOperator` (alias for `DummyOperator`)
 
-### Migration Example
-
-#### Before (Airflow)
-```python
-from airflow import DAG
-from airflow.operators.bash import BashOperator
-from datetime import datetime
-
-with DAG("my_airflow_dag", start_date=datetime(2023, 1, 1)) as dag:
-    t1 = BashOperator(task_id="print_date", bash_command="date")
-```
-
-#### After (VORTEX)
-No code changes required! VORTEX can parse the above file directly if the `vortex` package is available in the environment or by simply changing the import to `from vortex import DAG`.
-
 ### Context Manager Syntax
 
 The `with DAG(...) as dag:` pattern is fully supported. Tasks created within the context manager (or explicitly passed `dag=dag`) will be correctly associated with the DAG.
@@ -150,21 +162,6 @@ with DAG(dag_id="my_dag", schedule_interval="@daily") as dag:
     task2 = DummyOperator(task_id="task2")
     task1 >> task2
 ```
-
-### Limitations
-
-- **Complex Metadata:** Metadata fields like `access_control`, `doc_md`, or complex `sla_miss_callback` are ignored by the shim.
-- **Advanced Operators:** Operators not listed above (e.g., `KubernetesPodOperator`, `EmailOperator`) are not currently shimmed.
-- **Provider Packages:** Imports from `airflow.providers.*` are not supported by the shim.
-
-## Current Limitations vs Full Airflow
-
-While VORTEX provides a familiar interface, there are currently some limitations:
-- **XComs:** Cross-task communication (XCom) is not yet implemented.
-- **Complex Schedules:** Only standard cron and simple presets are supported; complex `Dataset` or `Timetable` schedules are not.
-- **Dynamic Task Mapping:** `expand()` and `partial()` syntax for dynamic tasks is not yet supported.
-- **Rich Operator Library:** VORTEX currently focuses on core operators; cloud-specific operators (S3, BigQuery, etc.) are in development.
-- **Execution Context:** The full Airflow `context` (e.g., `ds`, `task_instance`) is not yet passed to `PythonOperator` callables.
 
 ## Task Execution
 
@@ -192,23 +189,4 @@ Secrets are securely fetched from the VORTEX vault and injected only at the mome
 ```rust
 // Example of secret injection in Rust
 cmd.envs(env_vars); // Inject secrets as environment variables
-```
-
-### Execution Flow
-
-```text
-  Scheduler             Worker               TaskExecutor          OS
-      |                    |                      |                |
-      |--- (Assignment) -->|                      |                |
-      |                    |--- (Exec Bash) ----->|                |
-      |                    |                      |--- (Spawn) --->|
-      |                    |                      |<-- (Result) ---|
-      |                    |--- (Exec Python) --->|                |
-      |                    |                      |--- (Write) --->|
-      |                    |                      |--- (Spawn) --->|
-      |                    |                      |<-- (Result) ---|
-      |                    |                      |--- (Delete) ---|
-      |                    |<-- (Result Struct) --|                |
-      |--- (Ack/Result) ---|                      |                |
-      |                    |                      |                |
 ```

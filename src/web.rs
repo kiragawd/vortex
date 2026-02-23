@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, State, Multipart},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::db::Db;
 use crate::swarm::SwarmState;
 use crate::vault::Vault;
+use crate::python_parser;
 use serde_json::json;
 use serde::Deserialize;
 use std::fs;
@@ -49,6 +50,7 @@ impl WebServer {
 
         let app = Router::new()
             .route("/api/dags", get(get_dags))
+            .route("/api/dags/upload", post(upload_dag))
             .route("/api/dags/:id/tasks", get(get_dag_tasks))
             .route("/api/dags/:id/runs", get(get_dag_runs))
             .route("/api/dags/:id/trigger", post(trigger_dag))
@@ -56,6 +58,7 @@ impl WebServer {
             .route("/api/dags/:id/unpause", patch(unpause_dag))
             .route("/api/dags/:id/schedule", patch(update_schedule))
             .route("/api/dags/:id/backfill", post(backfill_dag))
+            .route("/api/dags/:id/validate", get(validate_dag_id))
             .route("/api/tasks/:id/logs", get(get_task_logs))
             // Swarm
             .route("/api/swarm/status", get(swarm_status))
@@ -105,7 +108,8 @@ async fn auth_middleware(
             let is_write_route = path.contains("/trigger") || path.contains("/pause") || 
                                path.contains("/unpause") || path.contains("/schedule") || 
                                path.contains("/backfill") || path.contains("/drain") ||
-                               path.contains("/api/users") || path.contains("/api/secrets");
+                               path.contains("/api/users") || path.contains("/api/secrets") ||
+                               path.contains("/api/dags/upload");
 
             if role == "Viewer" && is_write_route {
                 return Err(StatusCode::FORBIDDEN);
@@ -119,6 +123,67 @@ async fn auth_middleware(
             Ok(next.run(req).await)
         }
         _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+// Phase 2.4 Handlers
+
+async fn upload_dag(State(state): State<Arc<AppState>>, mut multipart: Multipart) -> Response {
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        let file_name = field.file_name().unwrap_or("").to_string();
+        if name == "file" && file_name.ends_with(".py") {
+            let data = match field.bytes().await {
+                Ok(b) => b,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+            };
+            let content = String::from_utf8_lossy(&data);
+            
+            // Validate content
+            match python_parser::parse_dag_file(&content) {
+                Ok(dag_meta) => {
+                    let dags_dir = "/Users/ashwin/vortex/dags";
+                    fs::create_dir_all(dags_dir).ok();
+                    let file_path = format!("{}/{}", dags_dir, file_name);
+                    if let Err(e) = fs::write(&file_path, &data) {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to save file: {}", e)}))).into_response();
+                    }
+                    
+                    // Store in DB
+                    let _ = state.db.save_dag(&dag_meta.dag_id, dag_meta.schedule_interval.as_deref());
+                    for task in &dag_meta.tasks {
+                        let cmd = task.config.get("bash_command").and_then(|c| c.as_str()).unwrap_or("");
+                        let _ = state.db.save_task(&dag_meta.dag_id, &task.task_id, &task.task_id, cmd);
+                    }
+                    
+                    // Versioning
+                    let _ = state.db.store_dag_version(&dag_meta.dag_id, &file_path);
+                    
+                    println!("🚀 DAG Uploaded: {} ({} tasks)", dag_meta.dag_id, dag_meta.tasks.len());
+                    return Json(dag_meta).into_response();
+                },
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid DAG file: {}", e)}))).into_response();
+                }
+            }
+        }
+    }
+    (StatusCode::BAD_REQUEST, Json(json!({"error": "No .py file provided"}))).into_response()
+}
+
+async fn validate_dag_id(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Response {
+    match state.db.get_latest_version(&id) {
+        Ok(Some(version)) => {
+            let path = version["file_path"].as_str().unwrap_or("");
+            match fs::read_to_string(path) {
+                Ok(content) => match python_parser::parse_dag_file(&content) {
+                    Ok(meta) => Json(json!({"valid": true, "metadata": meta})).into_response(),
+                    Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"valid": false, "error": e.to_string()}))).into_response(),
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+            }
+        },
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response(),
     }
 }
 

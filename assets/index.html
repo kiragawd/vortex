@@ -48,6 +48,7 @@
                     <span class="text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 border border-amber-400/20 font-bold">🐝 SWARM</span>
                 </div>
                 <div class="flex items-center gap-6">
+                    <button onclick="showUploadModal()" class="px-4 py-1.5 rounded-lg bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold text-sm hover:bg-vortex-primary/20 transition-all">📤 Upload DAG</button>
                     <button onclick="showUsers()" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">👥 Users</button>
                     <button onclick="showSecrets()" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">🔐 Secrets</button>
                     <div class="flex items-center gap-4 text-sm font-medium">
@@ -212,6 +213,36 @@
         </div>
     </div>
 
+    <!-- Upload Modal -->
+    <div id="upload-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
+        <div class="glass w-full max-w-xl rounded-3xl vortex-border shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <h3 class="text-lg font-bold">📤 Upload Python DAG</h3>
+                <button onclick="closeUploadModal()" class="p-2 rounded-full hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <div class="p-8">
+                <div id="upload-dropzone" class="border-2 border-dashed border-white/10 rounded-2xl p-12 text-center hover:border-vortex-primary/40 transition-all cursor-pointer">
+                    <input type="file" id="dag-file-input" accept=".py" class="hidden" onchange="handleFileSelect()">
+                    <div onclick="document.getElementById('dag-file-input').click()">
+                        <div class="w-16 h-16 bg-vortex-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg class="w-8 h-8 text-vortex-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+                        </div>
+                        <p class="font-bold text-white">Click or drag Python file</p>
+                        <p class="text-xs text-white/40 mt-1">Must contain VORTEX or Airflow DAG definition</p>
+                    </div>
+                </div>
+                <div id="upload-progress" class="hidden mt-6">
+                    <div class="flex justify-between text-xs mb-2"><span id="upload-status">Uploading...</span><span id="upload-percent">0%</span></div>
+                    <div class="w-full bg-white/5 h-1.5 rounded-full overflow-hidden"><div id="upload-bar" class="vortex-gradient h-full w-0 transition-all"></div></div>
+                </div>
+                <div id="upload-result" class="hidden mt-6 p-4 rounded-xl border border-white/5 bg-white/5">
+                    <h4 id="result-status" class="font-bold text-sm mb-2"></h4>
+                    <pre id="result-preview" class="text-[10px] font-mono text-white/60 overflow-auto max-h-40"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Modals -->
     <div id="secret-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
         <div class="glass w-full max-w-lg rounded-3xl vortex-border shadow-2xl overflow-hidden">
@@ -285,6 +316,64 @@
         function closeUserModal() { document.getElementById('user-modal').classList.add('hidden'); }
         async function saveUser() { await api('/api/users', 'POST', { username: document.getElementById('user-username').value, password_hash: document.getElementById('user-password').value, role: document.getElementById('user-role').value }); closeUserModal(); fetchUsers(); }
         async function deleteUser(u) { if(confirm('Delete?')) { await api(`/api/users/${u}`, 'DELETE'); fetchUsers(); } }
+
+        function showUploadModal() {
+            document.getElementById('upload-modal').classList.remove('hidden');
+            document.getElementById('upload-modal').classList.add('flex');
+            document.getElementById('upload-progress').classList.add('hidden');
+            document.getElementById('upload-result').classList.add('hidden');
+            document.getElementById('dag-file-input').value = '';
+        }
+        function closeUploadModal() { document.getElementById('upload-modal').classList.add('hidden'); }
+        
+        async function handleFileSelect() {
+            const input = document.getElementById('dag-file-input');
+            if (!input.files.length) return;
+            
+            const file = input.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const progress = document.getElementById('upload-progress');
+            const result = document.getElementById('upload-result');
+            const bar = document.getElementById('upload-bar');
+            
+            progress.classList.remove('hidden');
+            result.classList.add('hidden');
+            bar.style.width = '0%';
+            
+            try {
+                // Simulate progress
+                let p = 0;
+                const intv = setInterval(() => { p += 10; bar.style.width = p + '%'; if(p >= 90) clearInterval(intv); }, 100);
+                
+                const res = await fetch('/api/dags/upload', {
+                    method: 'POST',
+                    headers: { 'Authorization': API_KEY },
+                    body: formData
+                });
+                
+                clearInterval(intv);
+                bar.style.width = '100%';
+                
+                const data = await res.json();
+                result.classList.remove('hidden');
+                if (res.ok) {
+                    document.getElementById('result-status').textContent = "✅ Upload Successful";
+                    document.getElementById('result-status').className = "font-bold text-sm mb-2 text-emerald-400";
+                    document.getElementById('result-preview').textContent = JSON.stringify(data, null, 2);
+                    fetchDags();
+                } else {
+                    document.getElementById('result-status').textContent = "❌ Validation Failed";
+                    document.getElementById('result-status').className = "font-bold text-sm mb-2 text-rose-400";
+                    document.getElementById('result-preview').textContent = data.error || "Unknown error";
+                }
+            } catch (e) {
+                result.classList.remove('hidden');
+                document.getElementById('result-status').textContent = "❌ Connection Error";
+                document.getElementById('result-preview').textContent = e.message;
+            }
+        }
 
         function showDetail(id) { currentDagId = id; document.getElementById('dag-container').classList.add('hidden'); document.getElementById('dag-detail').classList.remove('hidden'); refreshDetail(); }
         function hideDetail() { currentDagId = null; document.getElementById('dag-detail').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }

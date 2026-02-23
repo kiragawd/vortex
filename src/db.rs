@@ -158,7 +158,75 @@ impl Db {
             params!["admin", "admin", "Admin", "vortex_admin_key"],
         )?;
 
+        // Phase 2.4: DAG Versioning
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dag_versions (
+                id TEXT PRIMARY KEY,
+                dag_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    // --- Phase 2.4: DAG Versioning ---
+
+    pub fn store_dag_version(&self, dag_id: &str, file_path: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let next_version: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM dag_versions WHERE dag_id = ?1",
+            params![dag_id],
+            |row| row.get(0),
+        )?;
+
+        let id = format!("{}-{}", dag_id, next_version);
+        conn.execute(
+            "INSERT INTO dag_versions (id, dag_id, version, file_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, dag_id, next_version, file_path, Utc::now().to_rfc3339()],
+        )?;
+        Ok(next_version)
+    }
+
+    pub fn get_dag_versions(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, dag_id, version, file_path, created_at FROM dag_versions WHERE dag_id = ?1 ORDER BY version DESC")?;
+        let rows = stmt.query_map(params![dag_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "dag_id": row.get::<_, String>(1)?,
+                "version": row.get::<_, i32>(2)?,
+                "file_path": row.get::<_, String>(3)?,
+                "created_at": row.get::<_, String>(4)?
+            }))
+        })?;
+        let mut versions = Vec::new();
+        for row in rows {
+            versions.push(row?);
+        }
+        Ok(versions)
+    }
+
+    pub fn get_latest_version(&self, dag_id: &str) -> Result<Option<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, dag_id, version, file_path, created_at FROM dag_versions WHERE dag_id = ?1 ORDER BY version DESC LIMIT 1")?;
+        let mut rows = stmt.query_map(params![dag_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "dag_id": row.get::<_, String>(1)?,
+                "version": row.get::<_, i32>(2)?,
+                "file_path": row.get::<_, String>(3)?,
+                "created_at": row.get::<_, String>(4)?
+            }))
+        })?;
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
     }
 
     // --- RBAC Support ---
