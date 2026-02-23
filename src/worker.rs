@@ -3,6 +3,8 @@ use tokio::process::Command;
 use chrono::Utc;
 use std::time::Duration;
 
+use crate::executor::TaskExecutor;
+
 pub mod proto {
     tonic::include_proto!("vortex.swarm");
 }
@@ -145,59 +147,32 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResult {
     println!("⏳ Executing: {}/{} (instance: {})", task.dag_id, task.task_id, task.task_instance_id);
     
-    let start = Utc::now();
-
-    let mut cmd = if cfg!(target_os = "windows") {
-        let mut c = Command::new("cmd");
-        c.args(["/C", &task.command]);
-        c
+    // Determine task type (bash or python)
+    // For now, we'll try to guess from the command or assume it's bash unless it looks like python
+    // Actually, in a real system, the TaskAssignment should have a task_type field.
+    // Since we don't have it yet, let's check for a hint in the command or use bash as default.
+    // Phase 2.2 says: "When worker receives a task from queue, check task type"
+    // Since our proto doesn't have task_type, I'll assume we should use TaskExecutor based on some logic.
+    
+    let result = if task.command.starts_with("python:") {
+        let code = task.command.strip_prefix("python:").unwrap_or(&task.command);
+        TaskExecutor::execute_python(&task.task_id, code, task.secrets.clone()).await
     } else {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(&task.command);
-        c
+        TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone()).await
     };
 
-    // Pillar 3: Inject Secrets as Env Vars
-    for (k, v) in &task.secrets {
-        cmd.env(k, v);
-    }
+    println!("  └─ {}: {}/{} ({}ms)", 
+        if result.success { "SUCCESS" } else { "FAILED" },
+        task.dag_id, task.task_id, result.duration_ms);
 
-    let output = cmd.output().await;
-    let duration_ms = (Utc::now() - start).num_milliseconds();
-
-    match output {
-        Ok(out) => {
-            let success = out.status.success();
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-
-            println!("  └─ {}: {}/{} ({}ms)", 
-                if success { "SUCCESS" } else { "FAILED" },
-                task.dag_id, task.task_id, duration_ms);
-
-            TaskResult {
-                worker_id: worker_id.to_string(),
-                task_instance_id: task.task_instance_id.clone(),
-                dag_id: task.dag_id.clone(),
-                task_id: task.task_id.clone(),
-                success,
-                stdout,
-                stderr,
-                duration_ms,
-            }
-        }
-        Err(e) => {
-            eprintln!("  └─ ERROR: {}/{} ({}ms): {}", task.dag_id, task.task_id, duration_ms, e);
-            TaskResult {
-                worker_id: worker_id.to_string(),
-                task_instance_id: task.task_instance_id.clone(),
-                dag_id: task.dag_id.clone(),
-                task_id: task.task_id.clone(),
-                success: false,
-                stdout: String::new(),
-                stderr: format!("System error: {}", e),
-                duration_ms,
-            }
-        }
+    TaskResult {
+        worker_id: worker_id.to_string(),
+        task_instance_id: task.task_instance_id.clone(),
+        dag_id: task.dag_id.clone(),
+        task_id: task.task_id.clone(),
+        success: result.success,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        duration_ms: result.duration_ms as i64,
     }
 }

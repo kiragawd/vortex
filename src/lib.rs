@@ -6,3 +6,4 @@ pub mod worker;
 pub mod scheduler;
 pub mod web;
 pub mod python_parser;
+pub mod executor;

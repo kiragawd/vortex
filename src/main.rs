@@ -16,6 +16,7 @@ mod web;
 mod swarm;
 mod worker;
 mod vault;
+mod executor;
 
 #[tokio::main]
 async fn main() -> Result<()> {

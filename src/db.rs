@@ -80,6 +80,15 @@ impl Db {
         if !ti_cols.contains(&"worker_id".to_string()) {
             conn.execute("ALTER TABLE task_instances ADD COLUMN worker_id TEXT", [])?;
         }
+        if !ti_cols.contains(&"stdout".to_string()) {
+            conn.execute("ALTER TABLE task_instances ADD COLUMN stdout TEXT", [])?;
+        }
+        if !ti_cols.contains(&"stderr".to_string()) {
+            conn.execute("ALTER TABLE task_instances ADD COLUMN stderr TEXT", [])?;
+        }
+        if !ti_cols.contains(&"duration_ms".to_string()) {
+            conn.execute("ALTER TABLE task_instances ADD COLUMN duration_ms INTEGER", [])?;
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -514,6 +523,30 @@ impl Db {
         conn.execute(
             "UPDATE task_instances SET worker_id = NULL WHERE worker_id = ?1 AND state = 'Queued'",
             params![worker_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn store_task_result(&self, task_instance_id: &str, result: &crate::executor::ExecutionResult) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let state = if result.success { "Success" } else { "Failed" };
+        let now = Utc::now();
+        conn.execute(
+            "UPDATE task_instances 
+             SET state = ?1, 
+                 stdout = ?2, 
+                 stderr = ?3, 
+                 duration_ms = ?4, 
+                 end_time = ?5 
+             WHERE id = ?6",
+            params![
+                state,
+                result.stdout,
+                result.stderr,
+                result.duration_ms as i64,
+                now,
+                task_instance_id
+            ],
         )?;
         Ok(())
     }

@@ -210,9 +210,19 @@ impl SwarmController for SwarmService {
 
     async fn report_task_result(&self, request: Request<TaskResult>) -> Result<Response<TaskResultAck>, Status> {
         let result = request.into_inner();
-        let state_str = if result.success { "Success" } else { "Failed" };
-        let _ = self.state.db.update_task_state(&result.task_instance_id, state_str);
         
+        // Convert proto::TaskResult to executor::ExecutionResult for DB storage
+        let exec_result = crate::executor::ExecutionResult {
+            task_id: result.task_id.clone(),
+            success: result.success,
+            exit_code: if result.success { 0 } else { 1 },
+            stdout: result.stdout.clone(),
+            stderr: result.stderr.clone(),
+            duration_ms: result.duration_ms as u64,
+        };
+        let _ = self.state.db.store_task_result(&result.task_instance_id, &exec_result);
+        
+        let state_str = if result.success { "Success" } else { "Failed" };
         let log_dir = format!("logs/{}/{}/", result.dag_id, result.task_id);
         let _ = std::fs::create_dir_all(&log_dir);
         let log_path = format!("{}/{}.log", log_dir, Utc::now().format("%Y-%m-%d"));

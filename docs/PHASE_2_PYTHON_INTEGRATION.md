@@ -101,3 +101,50 @@ While VORTEX provides a familiar interface, there are currently some limitations
 - **Dynamic Task Mapping:** `expand()` and `partial()` syntax for dynamic tasks is not yet supported.
 - **Rich Operator Library:** VORTEX currently focuses on core operators; cloud-specific operators (S3, BigQuery, etc.) are in development.
 - **Execution Context:** The full Airflow `context` (e.g., `ds`, `task_instance`) is not yet passed to `PythonOperator` callables.
+
+## Task Execution
+
+VORTEX workers handle the execution of both Bash and Python tasks using an isolated `TaskExecutor`.
+
+### BashOperator Execution
+When a `BashOperator` task is received, the worker spawns a subprocess:
+- **Command:** `sh -c "{bash_command}"`
+- **Isolation:** Each command runs in its own process.
+- **Secrets:** All associated secrets for the task are injected as environment variables.
+- **Timeout:** Tasks are automatically timed out after 300 seconds (configurable).
+- **Result:** Captures stdout, stderr, exit code, and execution duration.
+
+### PythonOperator Execution
+When a `PythonOperator` task is received:
+- **Preparation:** The worker writes the Python code to a temporary file.
+- **Command:** `python3 /tmp/vortex_task_{task_id}.py`
+- **Secrets:** Secrets are injected via environment variables and accessible through `os.environ`.
+- **Cleanup:** The temporary file is automatically removed after execution.
+- **Result:** Captures all print statements (stdout), exceptions (stderr), and duration.
+
+### Secret Injection
+Secrets are securely fetched from the VORTEX vault and injected only at the moment of execution.
+
+```rust
+// Example of secret injection in Rust
+cmd.envs(env_vars); // Inject secrets as environment variables
+```
+
+### Execution Flow
+
+```text
+  Scheduler             Worker               TaskExecutor          OS
+      |                    |                      |                |
+      |--- (Assignment) -->|                      |                |
+      |                    |--- (Exec Bash) ----->|                |
+      |                    |                      |--- (Spawn) --->|
+      |                    |                      |<-- (Result) ---|
+      |                    |--- (Exec Python) --->|                |
+      |                    |                      |--- (Write) --->|
+      |                    |                      |--- (Spawn) --->|
+      |                    |                      |<-- (Result) ---|
+      |                    |                      |--- (Delete) ---|
+      |                    |<-- (Result Struct) --|                |
+      |--- (Ack/Result) ---|                      |                |
+      |                    |                      |                |
+```
