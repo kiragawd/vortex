@@ -93,6 +93,70 @@ with DAG(
     start >> [run_script, process_data] >> end
 ```
 
+## Airflow Compatibility
+
+VORTEX provides an Airflow-compatible shim that allows many existing Airflow DAGs to run on VORTEX with zero or minimal modifications. This is particularly useful for migrating from Airflow to VORTEX or for teams that prefer the familiar Airflow API.
+
+### Import Syntax
+
+You can use either VORTEX-native imports or standard Airflow-style imports. The VORTEX parser recognizes all of these:
+
+```python
+# Standard Airflow imports
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
+from airflow.operators.dummy import DummyOperator
+# or
+from airflow.models import DAG
+
+# VORTEX-style Airflow shim
+from vortex import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
+```
+
+### Supported Operators List
+
+The shim provides the following classes that mimic the Airflow 2.x API:
+
+- `DAG`
+- `BaseOperator` (provides `>>`, `<<`, `set_upstream`, `set_downstream`)
+- `BashOperator`
+- `PythonOperator`
+- `DummyOperator`
+- `EmptyOperator` (alias for `DummyOperator`)
+
+### Migration Example
+
+#### Before (Airflow)
+```python
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from datetime import datetime
+
+with DAG("my_airflow_dag", start_date=datetime(2023, 1, 1)) as dag:
+    t1 = BashOperator(task_id="print_date", bash_command="date")
+```
+
+#### After (VORTEX)
+No code changes required! VORTEX can parse the above file directly if the `vortex` package is available in the environment or by simply changing the import to `from vortex import DAG`.
+
+### Context Manager Syntax
+
+The `with DAG(...) as dag:` pattern is fully supported. Tasks created within the context manager (or explicitly passed `dag=dag`) will be correctly associated with the DAG.
+
+```python
+with DAG(dag_id="my_dag", schedule_interval="@daily") as dag:
+    task1 = DummyOperator(task_id="task1")
+    task2 = DummyOperator(task_id="task2")
+    task1 >> task2
+```
+
+### Limitations
+
+- **Complex Metadata:** Metadata fields like `access_control`, `doc_md`, or complex `sla_miss_callback` are ignored by the shim.
+- **Advanced Operators:** Operators not listed above (e.g., `KubernetesPodOperator`, `EmailOperator`) are not currently shimmed.
+- **Provider Packages:** Imports from `airflow.providers.*` are not supported by the shim.
+
 ## Current Limitations vs Full Airflow
 
 While VORTEX provides a familiar interface, there are currently some limitations:

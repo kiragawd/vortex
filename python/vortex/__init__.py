@@ -62,3 +62,30 @@ class BaseOperator:
 
 def get_dags():
     return [dag.to_dict() for dag in _DAG_REGISTRY]
+
+# ─── Airflow Compatibility Shim ───────────────────────────────────────────────
+# Re-export the full Airflow-compatible shim classes so users can do:
+#   from vortex import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
+#
+# The shim's DAG is a separate, richer class that does NOT touch _DAG_REGISTRY
+# (it is used purely for static parsing / Airflow migration). The native DAG
+# class above is kept for PyO3 runtime execution.
+
+from .airflow_shim import (
+    DAG,
+    BaseOperator,
+    BashOperator,
+    PythonOperator,
+    DummyOperator,
+    EmptyOperator,
+)
+
+__all__ = [
+    "DAG",
+    "BaseOperator",
+    "BashOperator",
+    "PythonOperator",
+    "DummyOperator",
+    "EmptyOperator",
+    "get_dags",
+]

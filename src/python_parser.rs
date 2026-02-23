@@ -29,11 +29,37 @@ pub struct VortexDAG {
 
 // ─── Regex-based parser ──────────────────────────────────────────────────────
 
+/// Detect whether a Python DAG file was authored with the Airflow API surface.
+///
+/// Returns `true` when the file contains either:
+///   - `from airflow import DAG`  (native Airflow)
+///   - `from vortex import DAG`   (VORTEX Airflow shim)
+///   - `from airflow.models import DAG`
+///
+/// This is used by the regex parser to decide whether to accept the file.
+pub fn is_airflow_compatible_dag(content: &str) -> bool {
+    let shim_re = Regex::new(
+        r#"from\s+(airflow(?:\.[\w\.]+)?|vortex)\s+import\s+[^\n]*\bDAG\b"#,
+    )
+    .unwrap();
+    shim_re.is_match(content)
+}
+
 /// Parse a raw Python DAG file using regex (no Python runtime required).
 /// Returns a `VortexDAG` or an error.
+///
+/// Accepts files that define a DAG via:
+///   - Native VORTEX syntax
+///   - `from airflow import DAG` (Airflow native)
+///   - `from vortex import DAG`  (VORTEX Airflow-compatibility shim)
 pub fn parse_dag_file(content: &str) -> Result<VortexDAG> {
     if content.trim().is_empty() {
         return Err(anyhow!("DAG file is empty or malformed"));
+    }
+
+    // Phase 2.3: Check for Airflow/VORTEX shim imports before proceeding
+    if !is_airflow_compatible_dag(content) {
+        return Err(anyhow!("File is not a valid VORTEX/Airflow DAG (missing imports)"));
     }
 
     // --- dag_id ----------------------------------------------------------
