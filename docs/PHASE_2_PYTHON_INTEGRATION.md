@@ -232,3 +232,65 @@ task = BashOperator(
 -   **max_retries:** Number of retry attempts (default: 0).
 -   **retry_delay_secs:** Delay between retries in seconds (default: 30).
 -   **Retry Tracking:** The `retry_count` is tracked in the database and visible in the UI logs.
+
+## Testing
+
+VORTEX includes a comprehensive integration test suite to verify the full end-to-end pipeline: **DAG Upload → Parsing → Scheduling → Execution → Monitoring.**
+
+### Running Integration Tests
+
+Ensure the VORTEX server is running (defaulting to `http://localhost:3000`):
+
+```bash
+# In one terminal, start VORTEX
+cargo run -- server
+
+# In another terminal, run the integration test
+python3 tests/integration_full.py
+```
+
+### Test Coverage
+
+The integration suite (`tests/integration_full.py`) covers:
+1.  **Full Pipeline:**
+    - Multipart DAG upload via API.
+    - Registry validation.
+    - Manual trigger.
+    - Multi-task dependency execution (Bash & Python).
+    - Secret injection from the vault into task environment variables.
+    - Log capturing and state assertion.
+2.  **Error Handling & Retries:**
+    - Verifies that failing tasks are retried the correct number of times.
+    - Ensures failure tracebacks are correctly captured in logs.
+
+### Example Test Log
+
+```text
+--- Testing Full Pipeline ---
+Creating secret...
+Uploading complex DAG...
+DAG uploaded: integration_test_dag
+Validating DAG registry...
+Triggering DAG run for integration_test_dag...
+Monitoring DAG run status...
+Current task states: ['Queued', 'Queued', 'Queued']
+Current task states: ['Success', 'Queued', 'Queued']
+Current task states: ['Success', 'Success', 'Queued']
+Current task states: ['Success', 'Success', 'Success']
+All tasks succeeded!
+Task 1 logs verified.
+Task 2 logs verified.
+Task 3 (Secret Injection) verified.
+Full pipeline test PASSED.
+
+--- Testing Error Handling & Retries ---
+Uploading retry test DAG...
+Triggering retry test for retry_test_dag...
+Monitoring retries (expecting 3 attempts total)...
+Task state: Failed, Retry count: 1
+Task state: Failed, Retry count: 2
+Retries verified in logs.
+Error handling and retries test PASSED.
+
+✅ ALL INTEGRATION TESTS PASSED!
+```
