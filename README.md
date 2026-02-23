@@ -39,7 +39,7 @@ Questions? Email: `licensing@vortex.dev`
 - [x] "Hello World" DAG in Rust
 
 ### Phase 2: Python Integration
-- [ ] PyO3-based DAG Parser
+- [~] PyO3-based DAG Parser
 - [ ] Airflow-compatible Shim layer
 - [ ] Python Task Executor
 
@@ -84,6 +84,7 @@ See `tests/ui/README.md` for detailed UI test documentation.
 
 Complete documentation is available in the `docs/` directory:
 
+- **[Python Integration](./docs/PHASE_2_PYTHON_INTEGRATION.md)** — Defining DAGs in Python, supported operators, and current limitations
 - **[Pillar 3: Secrets Vault](./docs/PILLAR_3_SECRETS_VAULT.md)** — Encrypted secret management, API endpoints, and best practices
 - **[Pillar 4: Resilience](./docs/PILLAR_4_RESILIENCE.md)** — High availability, worker health monitoring, and auto-recovery
 - **[Architecture Overview](./docs/ARCHITECTURE.md)** — System design, data flow, and component interactions

@@ -1922,6 +1922,7 @@ dependencies = [
  "prost",
  "prost-types",
  "pyo3",
+ "regex",
  "rusqlite",
  "rust-embed",
  "serde",
