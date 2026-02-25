@@ -26,9 +26,9 @@
 
 ---
 
-## Phase 1 — Security & Scheduling 🔥🔥🔥
+## Phase 1 — Security & Scheduling ✅ COMPLETE
 
-> Must ship before any enterprise eval. Without these, VORTEX is a demo.
+> Shipped 2026-02-26. Commit `4cd8550`.
 
 ### 1. Cron Scheduler Loop (Auto-Trigger DAGs)
 - [x] Tokio task that wakes every 60 seconds
@@ -223,7 +223,7 @@
 - [ ] `BackfillRequest` struct fields are never read (web.rs)
 - [ ] `Scheduler::new()` and `Scheduler::run()` are never called (only `new_with_arc` + `run_with_trigger`)
 - [ ] `dag_to_json()` in python_parser.rs is never used
-- [ ] Several DB methods are unused: `get_dag_versions`, `update_dag_last_run`, `update_dag_next_run`, `get_scheduled_dags`, `get_active_dag_run_count`, `worker_count`
+- [ ] Several DB methods are unused: `get_dag_versions`, `worker_count`
 - [ ] Consolidate duplicate proto module definitions in `swarm.rs` and `worker.rs`
 - [ ] Add `#[cfg(test)]` module structure to all source files
 - [ ] CI/CD pipeline (GitHub Actions): build, test, lint, release binaries
