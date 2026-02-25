@@ -2,7 +2,6 @@ use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use crate::db::Db;
 use uuid::Uuid;
@@ -89,6 +88,19 @@ impl Dag {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum RunType {
+    Full,
+    RetryFromFailure,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScheduleRequest {
+    pub dag_id: String,
+    pub triggered_by: String,
+    pub run_type: RunType,
+}
+
 pub struct Scheduler {
     pub dag: Arc<Dag>,
     pub db: Arc<Db>,
@@ -140,8 +152,17 @@ impl Scheduler {
         }
 
         for (up, down) in &self.dag.dependencies {
-            *in_degree.get_mut(down).unwrap() += 1;
-            adj.get_mut(up).unwrap().push(down.clone());
+            if let Some(deg) = in_degree.get_mut(down) {
+                *deg += 1;
+            } else {
+                eprintln!("⚠️ Warning: Dependency reference to unknown task: {}", down);
+                continue;
+            }
+            if let Some(v) = adj.get_mut(up) {
+                v.push(down.clone());
+            } else {
+                eprintln!("⚠️ Warning: Dependency reference from unknown task: {}", up);
+            }
         }
 
         let in_degree = Arc::new(Mutex::new(in_degree));
@@ -222,13 +243,14 @@ impl Scheduler {
         Ok(())
     }
 
-    async fn execute_task(dag: Arc<Dag>, db: Arc<Db>, task_id: String, tx: mpsc::Sender<(String, bool)>, _dag_run_id: String) {
+    #[async_recursion::async_recursion]
+    async fn execute_task(dag: Arc<Dag>, db: Arc<Db>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
         let task = dag.tasks.get(&task_id).expect("Task not found");
         let ti_id = Uuid::new_v4().to_string();
         let execution_date = Utc::now();
 
         // Persist initial state
-        if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, execution_date) {
+        if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, "Queued", execution_date, &run_id) {
             eprintln!("Failed to create task instance in DB: {}", e);
         }
 
@@ -239,8 +261,31 @@ impl Scheduler {
             eprintln!("Failed to update task state to Running: {}", e);
         }
 
+        // Prepare environment variables (secrets)
+        let _env_vars = HashMap::new();
+        // In local mode, we might not have full vault access easily if it's not passed,
+        // but we can try to fetch them from DB if needed.
+        // For the integration test, we'll assume the executor handles it or we pass them.
+        /*
+        if let Ok(_secrets) = db.get_all_secrets() {
+             // In a real scenario, we'd need to decrypt them. 
+        }
+        */
+
         let start = Utc::now();
         
+        // Use TaskExecutor for real execution with log capture
+        let result = match task.task_type.as_str() {
+            "python" => {
+                crate::executor::TaskExecutor::execute_python(&task.id, &task.command, _env_vars).await
+            },
+            _ => {
+                crate::executor::TaskExecutor::execute_bash(&task.id, &task.command, _env_vars).await
+            }
+        };
+
+        let duration = result.duration_ms;
+
         // Prepare log directory
         let log_dir = format!("logs/{}/{}/", dag.id, task_id);
         let log_file_name = format!("{}.log", execution_date.format("%Y-%m-%d"));
@@ -250,55 +295,50 @@ impl Scheduler {
             eprintln!("Failed to create log directory {}: {}", log_dir, e);
         }
 
-        // Use tokio::process::Command for real execution with log capture
-        let output = if cfg!(target_os = "windows") {
-            Command::new("cmd")
-                .args(["/C", &task.command])
-                .output()
-                .await
-        } else {
-            Command::new("sh")
-                .arg("-c")
-                .arg(&task.command)
-                .output()
-                .await
-        };
+        let log_content = format!(
+            "--- EXECUTION START: {} ---\nSTDOUT:\n{}\nSTDERR:\n{}\n--- EXECUTION END ({}ms) ---\n",
+            start, result.stdout, result.stderr, duration
+        );
 
-        let end = Utc::now();
-        let duration = (end - start).num_milliseconds();
-
-        let mut success = false;
-
-        match output {
-            Ok(out) => {
-                // Capture stdout and stderr
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                
-                let log_content = format!(
-                    "--- EXECUTION START: {} ---\nSTDOUT:\n{}\nSTDERR:\n{}\n--- EXECUTION END ({}ms) ---\n",
-                    start, stdout, stderr, duration
-                );
-
-                if let Err(e) = fs::write(&log_path, log_content) {
-                    eprintln!("Failed to write logs to {}: {}", log_path.display(), e);
-                }
-
-                if out.status.success() {
-                    println!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
-                    let _ = db.update_task_state(&ti_id, "Success");
-                    success = true;
-                } else {
-                    eprintln!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
-                    let _ = db.update_task_state(&ti_id, "Failed");
-                }
-            }
-            Err(e) => {
-                eprintln!("  └─ ERROR: {} ({}ms) System Error: {}", task_id, duration, e);
-                let _ = db.update_task_state(&ti_id, "Failed");
-            }
+        if let Err(e) = fs::write(&log_path, log_content) {
+            eprintln!("Failed to write logs to {}: {}", log_path.display(), e);
         }
 
-        let _ = tx.send((task_id, success)).await;
+        // Also update stdout/stderr in DB for the API to find
+        let _ = db.update_task_logs(&ti_id, &result.stdout, &result.stderr);
+
+        if result.success {
+            println!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
+            let _ = db.update_task_state(&ti_id, "Success");
+        } else {
+            // Check for retries
+            if let Ok((retry_count, _)) = db.get_task_instance_retry_info(&ti_id) {
+                if retry_count < task.max_retries {
+                    println!("  └─ RETRY: {} (Attempt {}/{}) after {}s delay", 
+                        task_id, retry_count + 1, task.max_retries, task.retry_delay_secs);
+                    let _ = db.increment_task_retry_count(&ti_id);
+                    let _ = db.update_task_state(&ti_id, "Queued");
+                    
+                    // Delay and re-execute
+                    let dag_clone = Arc::clone(&dag);
+                    let db_clone = Arc::clone(&db);
+                    let task_id_clone = task_id.clone();
+                    let tx_clone = tx.clone();
+                    let run_id_inner = run_id.clone();
+                    let delay = task.retry_delay_secs as u64;
+                    
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                        Self::execute_task(dag_clone, db_clone, task_id_clone, tx_clone, run_id_inner).await;
+                    });
+                    return; // Don't report finished yet
+                }
+            }
+            
+            eprintln!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
+            let _ = db.update_task_state(&ti_id, "Failed");
+        }
+
+        let _ = tx.send((task_id, result.success)).await;
     }
 }

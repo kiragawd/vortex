@@ -15,30 +15,36 @@ use crate::python_parser;
 use serde_json::json;
 use serde::Deserialize;
 use std::fs;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use rusqlite::params;
+use std::sync::Mutex;
 
 #[derive(RustEmbed)]
 #[folder = "assets/"]
 struct Assets;
 
+use crate::scheduler::{ScheduleRequest, RunType};
+
 pub struct AppState {
     pub db: Arc<Db>,
-    pub tx: mpsc::Sender<(String, String)>,
+    pub tx: mpsc::Sender<ScheduleRequest>,
     pub swarm: Arc<SwarmState>,
     pub vault: Option<Arc<Vault>>,
+    pub dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
 }
 
 pub struct WebServer {
     db: Arc<Db>,
-    tx: mpsc::Sender<(String, String)>,
+    tx: mpsc::Sender<ScheduleRequest>,
     swarm: Arc<SwarmState>,
     vault: Option<Arc<Vault>>,
+    dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
 }
 
 impl WebServer {
-    pub fn new(db: Arc<Db>, tx: mpsc::Sender<(String, String)>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>) -> Self {
-        Self { db, tx, swarm, vault }
+    pub fn new(db: Arc<Db>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>) -> Self {
+        Self { db, tx, swarm, vault, dags }
     }
 
     pub async fn run(self, port: u16) {
@@ -47,9 +53,10 @@ impl WebServer {
             tx: self.tx,
             swarm: self.swarm,
             vault: self.vault,
+            dags: self.dags,
         });
 
-        let app = Router::new()
+        let api_routes = Router::new()
             .route("/api/dags", get(get_dags))
             .route("/api/dags/upload", post(upload_dag))
             .route("/api/dags/:id/tasks", get(get_dag_tasks))
@@ -60,6 +67,9 @@ impl WebServer {
             .route("/api/dags/:id/schedule", patch(update_schedule))
             .route("/api/dags/:id/backfill", post(backfill_dag))
             .route("/api/dags/:id/validate", get(validate_dag_id))
+            .route("/api/dags/:id/source", get(get_dag_source))
+            .route("/api/dags/:id/source", patch(update_dag_source))
+            .route("/api/dags/:id/retry", post(retry_dag))
             .route("/api/tasks/:id/logs", get(get_task_logs))
             // Swarm
             .route("/api/swarm/status", get(swarm_status))
@@ -74,7 +84,11 @@ impl WebServer {
             .route("/api/users", get(get_users))
             .route("/api/users", post(create_user))
             .route("/api/users/:username", delete(delete_user))
-            .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+            .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+        let app = Router::new()
+            .merge(api_routes)
+            .route("/api/login", post(login))
             .fallback(static_handler)
             .with_state(state);
 
@@ -143,23 +157,51 @@ async fn upload_dag(State(state): State<Arc<AppState>>, mut multipart: Multipart
             // Validate content
             match python_parser::parse_dag_file(&content) {
                 Ok(dag_meta) => {
-                    let dags_dir = "/Users/ashwin/vortex/dags";
-                    fs::create_dir_all(dags_dir).ok();
+                    let dags_dir = std::env::current_dir()
+                        .map(|p| p.join("dags").to_string_lossy().to_string())
+                        .unwrap_or_else(|_| "dags".to_string());
+                    fs::create_dir_all(&dags_dir).ok();
                     let file_path = format!("{}/{}", dags_dir, file_name);
                     if let Err(e) = fs::write(&file_path, &data) {
                         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to save file: {}", e)}))).into_response();
                     }
                     
-                    // Store in DB
-                    let _ = state.db.save_dag(&dag_meta.dag_id, dag_meta.schedule_interval.as_deref());
-                    for task in &dag_meta.tasks {
-                        let cmd = task.config.get("bash_command").and_then(|c| c.as_str()).unwrap_or("");
-                        let task_type = if task.config.get("python_callable").is_some() { "python" } else { "bash" };
-                        let _ = state.db.save_task(&dag_meta.dag_id, &task.task_id, &task.task_id, cmd, task_type, "{}", 0, 30);
+                    // Store in memory map
+                    let mut dag = crate::scheduler::Dag::new(&dag_meta.dag_id);
+                    dag.schedule_interval = dag_meta.schedule_interval.clone();
+                    for task_meta in &dag_meta.tasks {
+                        let task_type_str = if task_meta.config.get("python_callable").is_some() { "python" } else { "bash" };
+                        let mut cmd = if task_type_str == "python" {
+                             task_meta.config.get("python_callable").and_then(|c| c.as_str()).unwrap_or("").to_string()
+                        } else {
+                             task_meta.config.get("bash_command").and_then(|c| c.as_str()).unwrap_or("").to_string()
+                        };
+                        
+                        // If it's a python task and we saved the file, we can try to run the file with arguments
+                        let mut final_task_type = task_type_str.to_string();
+                        if task_type_str == "python" {
+                             cmd = format!("python3 {} {}", file_path, task_meta.task_id);
+                             final_task_type = "bash".to_string(); // Run it as a bash command now
+                        }
+
+                        dag.tasks.insert(task_meta.task_id.clone(), crate::scheduler::Task {
+                            id: task_meta.task_id.clone(),
+                            name: task_meta.task_id.clone(),
+                            command: cmd,
+                            task_type: final_task_type,
+                            config: task_meta.config.clone(),
+                            max_retries: task_meta.config.get("retries").and_then(|r| r.as_i64()).unwrap_or(0) as i32,
+                            retry_delay_secs: task_meta.config.get("retry_delay").and_then(|r| r.as_i64()).unwrap_or(30) as i32,
+                        });
                     }
-                    
-                    // Versioning
-                    let _ = state.db.store_dag_version(&dag_meta.dag_id, &file_path);
+                    for (u, d) in &dag_meta.edges {
+                        dag.add_dependency(u, d);
+                    }
+
+                    {
+                        let mut dags = state.dags.lock().unwrap();
+                        dags.insert(dag_meta.dag_id.clone(), Arc::new(dag));
+                    }
                     
                     println!("🚀 DAG Uploaded: {} ({} tasks)", dag_meta.dag_id, dag_meta.tasks.len());
                     return Json(dag_meta).into_response();
@@ -203,6 +245,23 @@ struct CreateUserRequest {
     username: String,
     password_hash: String, // Simplified for now (plain storage or pre-hashed)
     role: String,
+}
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    username: String,
+    password_hash: String,
+}
+
+async fn login(State(state): State<Arc<AppState>>, Json(body): Json<LoginRequest>) -> Response {
+    match state.db.validate_user(&body.username, &body.password_hash) {
+        Ok(Some((api_key, role))) => {
+            println!("🔑 User logged in: {} (Role: {})", body.username, role);
+            Json(json!({ "api_key": api_key, "role": role, "username": body.username })).into_response()
+        }
+        Ok(None) => (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 async fn create_user(State(state): State<Arc<AppState>>, Json(body): Json<CreateUserRequest>) -> Response {
@@ -269,9 +328,24 @@ async fn get_dags(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 async fn get_dag_tasks(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let tasks = state.db.get_dag_tasks(&id).unwrap_or_default();
+    
+    // Pillar 4: Pass run_id if it exists in task_instances table
     let instances = state.db.get_task_instances(&id).unwrap_or_default();
-    let dag = state.db.get_dag_by_id(&id).ok().flatten();
-    Json(json!({"dag_id": id, "tasks": tasks, "instances": instances, "dag": dag}))
+    let dag_db = state.db.get_dag_by_id(&id).ok().flatten();
+    
+    // Get dependencies from in-memory map
+    let dependencies = {
+        let map = state.dags.lock().unwrap();
+        map.get(&id).map(|d| d.dependencies.clone()).unwrap_or_default()
+    };
+    
+    Json(json!({
+        "dag_id": id, 
+        "tasks": tasks, 
+        "instances": instances, 
+        "dag": dag_db,
+        "dependencies": dependencies
+    }))
 }
 async fn get_dag_runs(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let runs = state.db.get_dag_runs(&id).unwrap_or_default();
@@ -311,9 +385,75 @@ async fn get_task_logs(Path(id): Path<String>, State(state): State<Arc<AppState>
     (StatusCode::NOT_FOUND, Json(json!({ "error": "Log not found" }))).into_response()
 }
 async fn trigger_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = state.tx.send((id, "manual".to_string())).await;
-    Json(json!({ "message": "Triggered" }))
+    let _ = state.tx.send(ScheduleRequest {
+        dag_id: id,
+        triggered_by: "api".to_string(),
+        run_type: RunType::Full,
+    }).await;
+    Json(json!({"message": "Triggered"}))
 }
+
+async fn retry_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let _ = state.tx.send(ScheduleRequest {
+        dag_id: id,
+        triggered_by: "api".to_string(),
+        run_type: RunType::RetryFromFailure,
+    }).await;
+    Json(json!({"message": "Retry triggered"}))
+}
+
+async fn get_dag_source(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Response {
+    match state.db.get_latest_version(&id) {
+        Ok(Some(version)) => {
+            let path = version["file_path"].as_str().unwrap_or("");
+            match fs::read_to_string(path) {
+                Ok(content) => Json(json!({"dag_id": id, "source": content, "file_path": path})).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+            }
+        },
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "DAG source not found"}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateSource { source: String }
+async fn update_dag_source(Path(id): Path<String>, State(state): State<Arc<AppState>>, Json(body): Json<UpdateSource>) -> Response {
+    match state.db.get_latest_version(&id) {
+        Ok(Some(version)) => {
+            let path = version["file_path"].as_str().unwrap_or("");
+            if let Err(e) = fs::write(path, &body.source) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+            }
+            
+            // Re-parse and update internal map
+            match crate::python_parser::parse_python_dag(path) {
+                Ok(dags) => {
+                    let mut map = state.dags.lock().unwrap();
+                    let mut found = false;
+                    for dag in dags {
+                        if dag.id == id {
+                            // Pillar 4: Update the DB schema/tasks for the new version
+                            let _ = state.db.register_dag(&dag);
+                            map.insert(id.clone(), Arc::new(dag));
+                            found = true;
+                        }
+                    }
+                    if found {
+                        let _ = state.db.store_dag_version(&id, path);
+                        Json(json!({"message": "Source updated and re-parsed"})).into_response()
+                    } else {
+                        (StatusCode::BAD_REQUEST, Json(json!({"error": format!("No DAG with ID '{}' found in file", id)}))).into_response()
+                    }
+                },
+                Err(e) => {
+                    (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Failed to parse updated source: {}", e)}))).into_response()
+                }
+            }
+        },
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response(),
+    }
+}
+
 async fn pause_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let _ = state.db.pause_dag(&id); Json(json!({"message": "Paused"}))
 }
@@ -336,7 +476,11 @@ async fn update_schedule(Path(id): Path<String>, State(state): State<Arc<AppStat
 #[derive(Deserialize)]
 struct BackfillRequest { start_date: String, end_date: String, }
 async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>, Json(_body): Json<BackfillRequest>) -> impl IntoResponse {
-    let _ = state.tx.send((id, "backfill".to_string())).await;
+    let _ = state.tx.send(ScheduleRequest {
+        dag_id: id,
+        triggered_by: "backfill".to_string(),
+        run_type: RunType::Full,
+    }).await;
     Json(json!({"message": "Backfill triggered"}))
 }
 async fn swarm_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {

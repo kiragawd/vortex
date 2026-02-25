@@ -27,6 +27,22 @@ impl Db {
             [],
         )?;
 
+        // Ensure task_instances exists before checking columns
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_instances (
+                id TEXT PRIMARY KEY,
+                dag_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                execution_date DATETIME NOT NULL,
+                start_time DATETIME,
+                end_time DATETIME,
+                try_number INTEGER DEFAULT 1,
+                FOREIGN KEY (dag_id) REFERENCES dags(id)
+            )",
+            [],
+        )?;
+
         // Pillars migrations logic
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(dags)")?
@@ -92,6 +108,9 @@ impl Db {
         if !ti_cols.contains(&"retry_count".to_string()) {
             conn.execute("ALTER TABLE task_instances ADD COLUMN retry_count INTEGER DEFAULT 0", [])?;
         }
+        if !ti_cols.contains(&"run_id".to_string()) {
+            conn.execute("ALTER TABLE task_instances ADD COLUMN run_id TEXT", [])?;
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -129,21 +148,7 @@ impl Db {
             conn.execute("ALTER TABLE tasks ADD COLUMN retry_delay_secs INTEGER DEFAULT 30", [])?;
         }
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS task_instances (
-                id TEXT PRIMARY KEY,
-                dag_id TEXT NOT NULL,
-                task_id TEXT NOT NULL,
-                state TEXT NOT NULL,
-                execution_date DATETIME NOT NULL,
-                start_time DATETIME,
-                end_time DATETIME,
-                try_number INTEGER DEFAULT 1,
-                FOREIGN KEY (dag_id) REFERENCES dags(id),
-                FOREIGN KEY (task_id, dag_id) REFERENCES tasks(id, dag_id)
-            )",
-            [],
-        )?;
+        // task_instances is now created at the beginning of init
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dag_runs (
@@ -284,10 +289,17 @@ impl Db {
             }))
         })?;
         let mut users = Vec::new();
-        for row in rows {
-            users.push(row?);
+        for user in rows {
+            users.push(user?);
         }
         Ok(users)
+    }
+
+    pub fn validate_user(&self, username: &str, password_hash: &str) -> Result<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT api_key, role FROM users WHERE username = ?1 AND password_hash = ?2")?;
+        let mut rows = stmt.query_map(params![username, password_hash], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        if let Some(row) = rows.next() { Ok(Some(row?)) } else { Ok(None) }
     }
 
     // --- Secrets Support ---
@@ -333,6 +345,24 @@ impl Db {
     pub fn register_dag(&self, dag: &crate::scheduler::Dag) -> Result<()> {
         self.save_dag(&dag.id, dag.schedule_interval.as_deref())?;
         self.update_dag_config(&dag.id, dag.schedule_interval.as_deref(), &dag.timezone, dag.max_active_runs, dag.catchup)?;
+        
+        {
+            let conn = self.conn.lock().unwrap();
+            let task_ids: Vec<String> = dag.tasks.keys().cloned().collect();
+            if task_ids.is_empty() {
+                conn.execute("DELETE FROM tasks WHERE dag_id = ?1", params![dag.id])?;
+            } else {
+                let placeholders: String = task_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let query = format!("DELETE FROM tasks WHERE dag_id = ?1 AND id NOT IN ({})", placeholders);
+                
+                let mut params_vec: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(dag.id.clone())];
+                for tid in task_ids { params_vec.push(rusqlite::types::Value::Text(tid)); }
+                
+                let mut stmt = conn.prepare(&query)?;
+                stmt.execute(rusqlite::params_from_iter(params_vec))?;
+            }
+        }
+
         for task in dag.tasks.values() {
             self.save_task(&dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs)?;
         }
@@ -388,9 +418,17 @@ impl Db {
 
     pub fn get_dag_tasks(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, command FROM tasks WHERE dag_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, name, command, task_type, config, max_retries, retry_delay_secs FROM tasks WHERE dag_id = ?1")?;
         let rows = stmt.query_map(params![dag_id], |row| {
-            Ok(serde_json::json!({"id": row.get::<_, String>(0)?, "name": row.get::<_, String>(1)?, "command": row.get::<_, String>(2)?}))
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?, 
+                "name": row.get::<_, String>(1)?, 
+                "command": row.get::<_, String>(2)?,
+                "task_type": row.get::<_, String>(3)?,
+                "config": serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(4)?).unwrap_or(serde_json::json!({})),
+                "max_retries": row.get::<_, i32>(5)?,
+                "retry_delay_secs": row.get::<_, i32>(6)?
+            }))
         })?;
         let mut tasks = Vec::new();
         for row in rows { tasks.push(row?); }
@@ -399,7 +437,7 @@ impl Db {
 
     pub fn get_task_instances(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, task_id, state, execution_date, start_time, end_time, stdout, stderr, duration_ms, retry_count FROM task_instances WHERE dag_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, task_id, state, execution_date, start_time, end_time, stdout, stderr, duration_ms, retry_count, run_id FROM task_instances WHERE dag_id = ?1")?;
         let rows = stmt.query_map(params![dag_id], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?, 
@@ -411,7 +449,8 @@ impl Db {
                 "stdout": row.get::<_, Option<String>>(6)?,
                 "stderr": row.get::<_, Option<String>>(7)?,
                 "duration_ms": row.get::<_, Option<i64>>(8)?,
-                "retry_count": row.get::<_, i32>(9)?
+                "retry_count": row.get::<_, i32>(9)?,
+                "run_id": row.get::<_, Option<String>>(10)?
             }))
         })?;
         let mut instances = Vec::new();
@@ -511,9 +550,9 @@ impl Db {
         Ok(())
     }
 
-    pub fn create_task_instance(&self, id: &str, dag_id: &str, task_id: &str, execution_date: DateTime<Utc>) -> Result<()> {
+    pub fn create_task_instance(&self, id: &str, dag_id: &str, task_id: &str, state: &str, execution_date: DateTime<Utc>, run_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT OR REPLACE INTO task_instances (id, dag_id, task_id, state, execution_date) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, dag_id, task_id, "Queued", execution_date])?;
+        conn.execute("INSERT OR REPLACE INTO task_instances (id, dag_id, task_id, state, execution_date, run_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![id, dag_id, task_id, state, execution_date, run_id])?;
         Ok(())
     }
 
@@ -664,6 +703,15 @@ impl Db {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn update_task_logs(&self, ti_id: &str, stdout: &str, stderr: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE task_instances SET stdout = ?1, stderr = ?2 WHERE id = ?3",
+            params![stdout, stderr, ti_id],
+        )?;
+        Ok(())
     }
 
     pub fn store_task_result(&self, task_instance_id: &str, result: &crate::executor::ExecutionResult) -> Result<()> {

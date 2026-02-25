@@ -1,12 +1,9 @@
-import json
-
 # Global list to store defined DAGs
 _DAG_REGISTRY = []
 
-class DAG:
-    def __init__(self, dag_id, schedule_interval=None, start_date=None,
-                 timezone='UTC', max_active_runs=1, catchup=False):
-        self.dag_id = dag_id
+class Dag:
+    def __init__(self, id, schedule_interval=None, timezone='UTC', max_active_runs=1, catchup=False):
+        self.dag_id = id
         self.schedule_interval = schedule_interval
         self.timezone = timezone
         self.max_active_runs = max_active_runs
@@ -15,20 +12,11 @@ class DAG:
         self.dependencies = []
         _DAG_REGISTRY.append(self)
 
-    def __enter__(self):
-        from . import context
-        context._CURRENT_DAG = self
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        from . import context
-        context._CURRENT_DAG = None
-
     def add_task(self, task):
         self.tasks.append(task)
 
-    def add_dependency(self, upstream, downstream):
-        self.dependencies.append((upstream.task_id, downstream.task_id))
+    def add_dependency(self, upstream_id, downstream_id):
+        self.dependencies.append((upstream_id, downstream_id))
 
     def to_dict(self):
         return {
@@ -41,36 +29,33 @@ class DAG:
             "dependencies": self.dependencies
         }
 
-class BaseOperator:
-    def __init__(self, task_id, dag=None):
-        self.task_id = task_id
-        from . import context
-        self.dag = dag or context._CURRENT_DAG
-        if self.dag:
-            self.dag.add_task(self)
-
-    def __rshift__(self, other):
-        if self.dag:
-            self.dag.add_dependency(self, other)
-        return other
+class Task:
+    def __init__(self, id, name=None, command="", task_type="bash", config=None):
+        self.id = id
+        self.task_id = id
+        self.name = name or id
+        self.command = command
+        self.task_type = task_type
+        self.config = config or {}
 
     def to_dict(self):
-        return {
+        d = {
             "task_id": self.task_id,
-            "type": self.__class__.__name__
+            "name": self.name,
+            "command": self.command,
+            "task_type": self.task_type,
+            "config": self.config
         }
+        if self.task_type == "bash":
+            d["bash_command"] = self.command
+        elif self.task_type == "python":
+            d["python_callable"] = self.command
+        return d
 
 def get_dags():
     return [dag.to_dict() for dag in _DAG_REGISTRY]
 
-# ─── Airflow Compatibility Shim ───────────────────────────────────────────────
-# Re-export the full Airflow-compatible shim classes so users can do:
-#   from vortex import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
-#
-# The shim's DAG is a separate, richer class that does NOT touch _DAG_REGISTRY
-# (it is used purely for static parsing / Airflow migration). The native DAG
-# class above is kept for PyO3 runtime execution.
-
+# Airflow Compatibility Shim (Imported at bottom to avoid circularity)
 from .airflow_shim import (
     DAG,
     BaseOperator,
@@ -79,13 +64,3 @@ from .airflow_shim import (
     DummyOperator,
     EmptyOperator,
 )
-
-__all__ = [
-    "DAG",
-    "BaseOperator",
-    "BashOperator",
-    "PythonOperator",
-    "DummyOperator",
-    "EmptyOperator",
-    "get_dags",
-]

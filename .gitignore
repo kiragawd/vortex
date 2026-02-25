@@ -11,3 +11,9 @@ dist/
 *.iml
 vortex.db-shm
 vortex.db-wal
+*.pyc
+
+playwright-report/
+test-results/
+__pycache__/
+*.pyc

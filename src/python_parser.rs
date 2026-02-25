@@ -269,23 +269,34 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         let sys = py.import("sys")?;
         let path: Bound<'_, PyList> = sys.getattr("path")?.downcast_into()?;
 
-        // Use absolute path for the python shim
-        let python_shim_path = "/Users/ashwin/vortex/python";
+        // Use path relative to the executable / current directory
+        let python_shim_path = std::env::current_dir()
+            .map(|p| p.join("python").to_string_lossy().to_string())
+            .unwrap_or_else(|_| "python".to_string());
         path.insert(0, python_shim_path)?;
 
+        // Phase 2.4: Clear registry before loading a new file
+        let vortex = py.import("vortex")?;
+        let registry: Bound<'_, PyList> = vortex.getattr("_DAG_REGISTRY")?.downcast_into()?;
+        println!("🐍 PyO3: Registry count before clear: {}", registry.len());
+        registry.call_method0("clear")?;
+
         // Read and execute the DAG file
+        println!("🐍 PyO3: Reading DAG file: {}", file_path);
         let code = std::fs::read_to_string(file_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to read DAG file: {}", e)))?;
 
         let locals = PyDict::new(py);
         let py_code = CString::new(code)
             .map_err(|e| PyRuntimeError::new_err(format!("NulError: {}", e)))?;
-        py.run(&py_code, None, Some(&locals))?;
+        
+        println!("🐍 PyO3: Executing Python code...");
+        // Use the same dict for globals and locals to support typical script behavior
+        py.run(&py_code, Some(&locals), Some(&locals))?;
 
-        // Import vortex and get dags
-        let vortex = py.import("vortex")?;
         let get_dags = vortex.getattr("get_dags")?;
         let dags_data: Bound<'_, PyList> = get_dags.call0()?.downcast_into()?;
+        println!("🐍 PyO3: get_dags() returned {} items", dags_data.len());
 
         let mut dags = Vec::new();
 
@@ -326,18 +337,13 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
                 let task_dict: Bound<'_, PyDict> = task_data.downcast_into()?;
                 let task_id: String = task_dict.get_item("task_id")?.unwrap().extract()?;
 
-                let command = if let Some(cmd) = task_dict.get_item("bash_command")? {
-                    cmd.extract()?
+                if let Some(cmd) = task_dict.get_item("bash_command")? {
+                    dag.add_task(&task_id, &task_id, &cmd.extract::<String>()?);
                 } else if let Some(callable) = task_dict.get_item("python_callable")? {
-                    format!(
-                        "echo 'Executing Python callable: {}'",
-                        callable.extract::<String>()?
-                    )
+                    dag.add_python_task(&task_id, &task_id, &callable.extract::<String>()?);
                 } else {
-                    "echo 'unknown operator'".to_string()
+                    dag.add_task(&task_id, &task_id, "echo 'unknown operator'");
                 };
-
-                dag.add_task(&task_id, &task_id, &command);
             }
 
             let deps_data: Bound<'_, PyList> =

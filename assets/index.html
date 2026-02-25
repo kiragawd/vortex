@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VORTEX | Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre-d3/0.6.4/dagre-d3.min.js"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -31,495 +33,794 @@
         ::-webkit-scrollbar-track { background: #0a0a0c; }
         ::-webkit-scrollbar-thumb { background: #1f1f23; border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: #2f2f35; }
-        .paused-overlay { opacity: 0.5; }
         .tab-active { border-bottom: 2px solid #00f2ff; color: #00f2ff; }
         .tab-inactive { border-bottom: 2px solid transparent; color: rgba(255,255,255,0.4); }
-        .tab-inactive:hover { color: rgba(255,255,255,0.7); }
+
+        #login-overlay { position: fixed; inset: 0; background: #0a0a0c; z-index: 9999; display: none; align-items: center; justify-content: center; padding: 20px; }
+        .view-container { display: none; }
+
+        /* Graph Styles */
+        .node rect { stroke: #333; fill: #1a1a24; stroke-width: 2px; }
+        .node.Success rect { stroke: #10b981; fill: rgba(16, 185, 129, 0.2); }
+        .node.Failed rect { stroke: #f43f5e; fill: rgba(244, 63, 94, 0.2); }
+        .node.Running rect { stroke: #00f2ff; fill: rgba(0, 242, 255, 0.2); stroke-dasharray: 5; animation: dash 2s linear infinite; }
+        .edgePath path { stroke: #00f2ff; stroke-width: 3px; fill: none; opacity: 0.8; }
+        .node text { fill: #fff; font-size: 14px; font-family: 'Inter', sans-serif; font-weight: 900; text-shadow: 0 0 10px rgba(0,0,0,0.5); }
+        @keyframes dash { to { stroke-dashoffset: -20; } }
+
+        #arrowhead { fill: #00f2ff; opacity: 0.6; }
+
+        .run-header:hover { background: rgba(255,255,255,0.03); }
+        .run-accordion-content { transition: max-height 0.3s ease-out; overflow: hidden; }
+
+        /* Upload modal */
+        .drop-zone { border: 2px dashed rgba(0, 242, 255, 0.3); transition: all 0.2s; }
+        .drop-zone:hover, .drop-zone.drag-over { border-color: #00f2ff; background: rgba(0, 242, 255, 0.05); }
     </style>
 </head>
 <body class="min-h-screen">
-    <nav class="border-b border-white/5 glass sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
-                <div class="flex items-center gap-2">
+    <!-- Login Screen -->
+    <div id="login-overlay">
+        <div class="glass w-full max-w-md p-10 rounded-3xl vortex-border shadow-2xl">
+            <div class="flex items-center gap-3 justify-center mb-8">
+                <div class="w-10 h-10 vortex-gradient rounded-xl flex items-center justify-center font-bold text-black text-xl">V</div>
+                <h1 class="text-3xl font-black tracking-tighter text-white">VORTEX</h1>
+            </div>
+            <div class="space-y-6">
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Username</label>
+                    <input id="login-user" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-vortex-primary/50 outline-none transition-all" placeholder="Enter username">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Password</label>
+                    <input id="login-pass" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-vortex-primary/50 outline-none transition-all" placeholder="••••••••" onkeydown="if(event.key==='Enter') handleLogin()">
+                </div>
+                <div id="login-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
+                <button onclick="handleLogin()" id="login-btn" class="w-full py-4 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-vortex-primary/10">AUTHENTICATE</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="main-content" style="display:none">
+        <nav class="border-b border-white/5 glass sticky top-0 z-50">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+                <div class="flex items-center gap-2 cursor-pointer" onclick="showView('registry')">
                     <div class="w-8 h-8 vortex-gradient rounded-lg flex items-center justify-center font-bold text-black">V</div>
                     <span class="text-xl font-black tracking-tighter text-white">VORTEX</span>
-                    <span class="text-[10px] ml-2 px-2 py-0.5 rounded bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold">CHRONOS v2</span>
-                    <span class="text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 border border-amber-400/20 font-bold">🐝 SWARM</span>
                 </div>
                 <div class="flex items-center gap-6">
-                    <button onclick="showUploadModal()" class="px-4 py-1.5 rounded-lg bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold text-sm hover:bg-vortex-primary/20 transition-all">📤 Upload DAG</button>
-                    <button onclick="showUsers()" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">👥 Users</button>
-                    <button onclick="showSecrets()" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">🔐 Secrets</button>
-                    <div class="flex items-center gap-4 text-sm font-medium">
-                        <span class="text-white/40">Status:</span>
-                        <span class="flex items-center gap-1.5 text-emerald-400">
-                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                            Active
-                        </span>
-                        <div class="h-4 w-px bg-white/10 mx-2"></div>
-                        <button class="px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/10 transition-colors">Admin</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- Stats -->
-        <div id="stats-row" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
-            <div class="glass p-5 rounded-2xl vortex-border">
-                <p class="text-xs text-white/40 mb-1">Total DAGs</p>
-                <h3 class="text-2xl font-bold" id="total-dags">-</h3>
-            </div>
-            <div class="glass p-5 rounded-2xl vortex-border">
-                <p class="text-xs text-white/40 mb-1">Active</p>
-                <h3 class="text-2xl font-bold text-emerald-400" id="active-dags">0</h3>
-            </div>
-            <div class="glass p-5 rounded-2xl vortex-border">
-                <p class="text-xs text-white/40 mb-1">Paused</p>
-                <h3 class="text-2xl font-bold text-amber-400" id="paused-dags">0</h3>
-            </div>
-            <div class="glass p-5 rounded-2xl vortex-border">
-                <p class="text-xs text-white/40 mb-1">Success (Total)</p>
-                <h3 class="text-2xl font-bold text-emerald-400" id="success-tasks">0</h3>
-            </div>
-            <div class="glass p-5 rounded-2xl vortex-border text-rose-400">
-                <p class="text-xs text-white/40 mb-1">Failures</p>
-                <h3 class="text-2xl font-bold" id="failed-tasks">0</h3>
-            </div>
-        </div>
-
-        <!-- Swarm Panel -->
-        <div id="swarm-panel" class="glass rounded-2xl vortex-border mb-8 overflow-hidden">
-            <div class="p-4 border-b border-white/5 flex items-center justify-between cursor-pointer" onclick="toggleSwarmPanel()">
-                <div class="flex items-center gap-3">
-                    <span class="text-lg">🐝</span>
-                    <h3 class="font-bold">VORTEX Swarm</h3>
-                    <span id="swarm-status-badge" class="text-[10px] px-2 py-0.5 rounded bg-white/5 text-white/40 font-bold">LOADING...</span>
-                </div>
-                <div class="flex items-center gap-4">
-                    <div class="flex items-center gap-6 text-sm">
-                        <div><span class="text-white/40">Workers:</span> <span id="swarm-worker-count" class="font-bold">0</span></div>
-                        <div><span class="text-white/40">Queue:</span> <span id="swarm-queue-depth" class="font-bold">0</span></div>
-                    </div>
-                    <svg id="swarm-chevron" class="w-5 h-5 text-white/30 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                </div>
-            </div>
-            <div id="swarm-details" class="hidden p-4">
-                <div id="swarm-workers-list" class="space-y-2"></div>
-            </div>
-        </div>
-
-        <!-- DAG List -->
-        <div id="dag-container">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-bold">DAG Registry</h2>
-                <button onclick="fetchDags()" class="text-sm text-vortex-primary hover:underline">Refresh</button>
-            </div>
-            <div class="grid grid-cols-1 gap-4" id="dag-list">
-                <div class="animate-pulse glass h-24 rounded-2xl"></div>
-            </div>
-        </div>
-
-        <!-- DAG Detail Section -->
-        <div id="dag-detail" class="mt-8 hidden">
-            <div class="flex items-center justify-between mb-6">
-                <div class="flex items-center gap-4">
-                    <button onclick="hideDetail()" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-                    </button>
-                    <div>
-                        <div class="flex items-center gap-3">
-                            <h2 class="text-2xl font-bold" id="detail-title">DAG Details</h2>
-                            <span id="detail-pause-badge" class="hidden text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 font-bold border border-amber-400/20">⏸ PAUSED</span>
+                    <button id="nav-upload" onclick="showUploadModal()" class="px-4 py-1.5 rounded-lg bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold text-sm hover:bg-vortex-primary/20 transition-all">📤 Upload</button>
+                    <button id="nav-users" onclick="showView('users')" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">👥 Users</button>
+                    <button id="nav-secrets" onclick="showView('secrets')" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">🔐 Secrets</button>
+                    <div class="h-4 w-px bg-white/10 mx-2"></div>
+                    <div class="flex items-center gap-3">
+                        <div class="text-right">
+                            <p id="nav-username" class="text-xs font-black text-white leading-none">Admin</p>
+                            <p id="nav-role" class="text-[9px] font-bold text-white/30 uppercase tracking-tighter">Administrator</p>
                         </div>
-                        <p class="text-sm text-white/40" id="detail-id-sub"></p>
+                        <button onclick="logout()" class="px-3 py-1.5 rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-all text-[10px] font-black">LOGOUT</button>
                     </div>
                 </div>
-                <div class="flex items-center gap-3">
-                    <button id="pause-btn" onclick="togglePause()" class="px-4 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold hover:bg-amber-500/20 transition-all text-sm">⏸ Pause</button>
-                    <button id="schedule-btn" onclick="showScheduleModal()" class="px-4 py-2.5 rounded-xl bg-white/5 text-white/70 border border-white/10 font-bold hover:bg-white/10 transition-all text-sm">📅 Schedule</button>
-                    <button id="backfill-btn" onclick="showBackfillModal()" class="px-4 py-2.5 rounded-xl bg-vortex-secondary/10 text-vortex-secondary border border-vortex-secondary/20 font-bold hover:bg-vortex-secondary/20 transition-all text-sm">🔄 Backfill</button>
-                    <button id="trigger-btn" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black shadow-lg shadow-vortex-primary/20 hover:scale-105 active:scale-95 transition-all">TRIGGER RUN</button>
+            </div>
+        </nav>
+
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <!-- Global Stats -->
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Total DAGs</p><h3 class="text-2xl font-bold" id="stat-total">-</h3></div>
+                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Active</p><h3 class="text-2xl font-bold text-emerald-400" id="stat-active">0</h3></div>
+                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Paused</p><h3 class="text-2xl font-bold text-amber-400" id="stat-paused">0</h3></div>
+                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Worker Nodes</p><h3 class="text-2xl font-bold text-vortex-primary" id="stat-workers">0</h3></div>
+                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Queue Depth</p><h3 class="text-2xl font-bold text-rose-400" id="stat-queue">0</h3></div>
+            </div>
+
+            <!-- View: DAG Registry -->
+            <div id="view-registry" class="view-container">
+                <div id="swarm-panel" class="glass rounded-2xl vortex-border mb-8 overflow-hidden">
+                    <div class="p-4 border-b border-white/5 flex items-center justify-between cursor-pointer" onclick="toggleSwarmPanel()">
+                        <div class="flex items-center gap-3"><span class="text-lg">🐝</span><h3 class="font-bold">VORTEX Swarm</h3><span id="swarm-status-badge" class="text-[10px] px-2 py-0.5 rounded font-bold">LOADING...</span></div>
+                        <svg id="swarm-chevron" class="w-5 h-5 text-white/30 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <div id="swarm-details" class="hidden p-4"><div id="swarm-workers-list" class="space-y-2"></div></div>
+                </div>
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold">DAG Registry</h2>
+                    <button onclick="fetchDags()" class="text-sm text-vortex-primary hover:underline">Refresh</button>
+                </div>
+                <div class="grid grid-cols-1 gap-4" id="dag-list"></div>
+            </div>
+
+            <!-- View: DAG Details -->
+            <div id="view-details" class="view-container">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center gap-4">
+                        <button onclick="showView('registry')" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <div><div class="flex items-center gap-3"><h2 class="text-2xl font-bold" id="detail-title">-</h2><span id="detail-pause-badge" class="hidden text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 font-bold border border-amber-400/20">⏸ PAUSED</span></div><p class="text-sm text-white/40" id="detail-sub"></p></div>
+                    </div>
+                    <div id="detail-actions" class="flex items-center gap-3">
+                        <button id="btn-edit" onclick="showEditSource()" class="px-4 py-2.5 rounded-xl bg-white/5 text-white/70 border border-white/10 font-bold text-sm">📝 Edit Code</button>
+                        <button id="btn-retry" onclick="retryDagFailures()" class="px-4 py-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-sm">♻️ Retry Failures</button>
+                        <button id="btn-pause" onclick="togglePause()" class="px-4 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold text-sm">⏸ Pause</button>
+                        <button id="btn-trigger" onclick="triggerCurrentDag()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black shadow-lg shadow-vortex-primary/20 hover:scale-105 transition-all">TRIGGER RUN</button>
+                    </div>
+                </div>
+
+                <div class="flex gap-6 mb-6 border-b border-white/5">
+                    <button onclick="switchDetailTab('graph')" id="tab-graph" class="pb-3 px-1 text-sm font-bold tab-active transition-all">Visual Graph</button>
+                    <button onclick="switchDetailTab('history')" id="tab-history" class="pb-3 px-1 text-sm font-bold tab-inactive transition-all">Run History</button>
+                </div>
+
+                <div id="detail-tab-graph" class="glass p-8 rounded-3xl vortex-border min-h-[500px] flex items-center justify-center overflow-auto">
+                    <svg id="dag-svg" width="100%" height="600"></svg>
+                </div>
+
+                <div id="detail-tab-history" class="hidden space-y-4">
+                    <div id="runs-list" class="space-y-2"></div>
                 </div>
             </div>
 
-            <!-- Schedule Info Bar -->
-            <div id="schedule-info" class="glass p-4 rounded-xl vortex-border mb-6 flex items-center gap-8 text-sm">
-                <div><span class="text-white/40">Schedule:</span> <span class="ml-2 font-mono text-vortex-primary" id="info-schedule">—</span></div>
-                <div><span class="text-white/40">Timezone:</span> <span class="ml-2 font-mono" id="info-timezone">UTC</span></div>
-                <div><span class="text-white/40">Max Active Runs:</span> <span class="ml-2 font-mono" id="info-max-runs">1</span></div>
-                <div><span class="text-white/40">Catchup:</span> <span class="ml-2 font-mono" id="info-catchup">No</span></div>
-                <div><span class="text-white/40">Next Run:</span> <span class="ml-2 font-mono text-emerald-400" id="info-next-run">—</span></div>
-            </div>
-
-            <!-- Tabs -->
-            <div class="flex gap-6 mb-6 border-b border-white/5">
-                <button onclick="switchTab('tasks')" id="tab-tasks" class="pb-3 px-1 text-sm font-bold tab-active transition-all">Tasks & Instances</button>
-                <button onclick="switchTab('runs')" id="tab-runs" class="pb-3 px-1 text-sm font-bold tab-inactive transition-all">DAG Runs</button>
-            </div>
-            
-            <!-- Tasks Tab -->
-            <div id="tab-content-tasks" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <div class="lg:col-span-1"><h3 class="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Task Graph</h3><div id="task-list" class="space-y-2"></div></div>
-                <div class="lg:col-span-2"><h3 class="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Task Instances</h3><div id="instance-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-2"></div></div>
-            </div>
-
-            <!-- Runs Tab -->
-            <div id="tab-content-runs" class="hidden">
-                <h3 class="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">DAG Run History</h3>
-                <div id="runs-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-2"></div>
-            </div>
-        </div>
-
-        <!-- Pillar 3: Secrets Section -->
-        <div id="secrets-section" class="mt-8 hidden">
-            <div class="flex items-center justify-between mb-6">
-                <div class="flex items-center gap-4">
-                    <button onclick="hideSecrets()" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-                    </button>
-                    <h2 class="text-2xl font-bold">🔐 Enterprise Secret Vault</h2>
+            <!-- View: Users -->
+            <div id="view-users" class="view-container">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center gap-4">
+                        <button onclick="showView('registry')" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <h2 class="text-2xl font-bold">👥 Access Control</h2>
+                    </div>
+                    <button onclick="showAddUserModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black">ADD USER</button>
                 </div>
-                <button onclick="showAddSecretModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black hover:scale-105 active:scale-95 transition-all">ADD SECRET</button>
+                <div id="users-list" class="grid grid-cols-1 gap-4"></div>
             </div>
-            <div class="grid grid-cols-1 gap-4" id="secrets-list"></div>
-        </div>
 
-        <!-- RBAC: Users Section -->
-        <div id="users-section" class="mt-8 hidden">
-            <div class="flex items-center justify-between mb-6">
-                <div class="flex items-center gap-4">
-                    <button onclick="hideUsers()" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-                    </button>
-                    <h2 class="text-2xl font-bold">👥 User & Access Control</h2>
+            <!-- View: Secrets -->
+            <div id="view-secrets" class="view-container">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center gap-4">
+                        <button onclick="showView('registry')" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <h2 class="text-2xl font-bold">🔐 Secret Vault</h2>
+                    </div>
+                    <button onclick="showAddSecretModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black">ADD SECRET</button>
                 </div>
-                <button onclick="showAddUserModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black hover:scale-105 active:scale-95 transition-all">ADD USER</button>
+                <div id="secrets-list" class="grid grid-cols-1 gap-4"></div>
             </div>
-            <div class="grid grid-cols-1 gap-4" id="users-list"></div>
-        </div>
-    </main>
+        </main>
+    </div>
 
-    <!-- Logs Modal -->
-    <div id="logs-modal" class="fixed inset-0 bg-black/95 hidden z-50 items-center justify-center p-4 lg:p-12">
-        <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col shadow-2xl overflow-hidden">
+    <!-- Modals -->
+    <div id="logs-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
-                <div><h3 class="text-lg font-bold flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-vortex-primary"></span><span id="modal-task-id">Logs</span></h3><p class="text-xs text-white/40 mt-1">Instance: <span id="modal-ti-id" class="font-mono"></span></p></div>
-                <button onclick="closeLogs()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+                <div><h3 class="text-lg font-bold" id="modal-task-id">Logs</h3><p class="text-xs text-white/40" id="modal-ti-id"></p></div>
+                <button onclick="closeLogs()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
-            <div class="flex-1 overflow-auto bg-black/60 p-8 font-mono text-sm leading-relaxed" id="logs-content"></div>
+            <div class="flex-1 overflow-auto bg-black/60 p-8 font-mono text-sm" id="logs-content"></div>
+        </div>
+    </div>
+
+    <div id="editor-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <div><h3 class="text-lg font-bold">Edit DAG Source Code</h3><p class="text-xs text-white/40" id="editor-dag-id"></p></div>
+                <div class="flex gap-4">
+                    <button onclick="saveSource()" class="px-6 py-2 rounded-xl vortex-gradient text-black font-black">SAVE &amp; RE-PARSE</button>
+                    <button onclick="closeEditor()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-hidden p-8"><textarea id="editor-content" class="w-full h-full bg-black/40 text-emerald-400 font-mono text-sm p-6 rounded-xl border border-white/5 outline-none resize-none"></textarea></div>
         </div>
     </div>
 
     <!-- Upload Modal -->
-    <div id="upload-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
-        <div class="glass w-full max-w-xl rounded-3xl vortex-border shadow-2xl overflow-hidden">
+    <div id="upload-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full max-w-lg rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
-                <h3 class="text-lg font-bold">📤 Upload Python DAG</h3>
-                <button onclick="closeUploadModal()" class="p-2 rounded-full hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+                <h3 class="text-lg font-bold">📤 Upload DAG File</h3>
+                <button onclick="closeUploadModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
-            <div class="p-8">
-                <div id="upload-dropzone" class="border-2 border-dashed border-white/10 rounded-2xl p-12 text-center hover:border-vortex-primary/40 transition-all cursor-pointer">
-                    <input type="file" id="dag-file-input" accept=".py" class="hidden" onchange="handleFileSelect()">
-                    <div onclick="document.getElementById('dag-file-input').click()">
-                        <div class="w-16 h-16 bg-vortex-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="w-8 h-8 text-vortex-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
-                        </div>
-                        <p class="font-bold text-white">Click or drag Python file</p>
-                        <p class="text-xs text-white/40 mt-1">Must contain VORTEX or Airflow DAG definition</p>
-                    </div>
+            <div class="p-8 space-y-4">
+                <div class="drop-zone rounded-2xl p-10 text-center cursor-pointer" onclick="document.getElementById('upload-file').click()">
+                    <p class="text-white/40 text-sm">Click to select a <span class="text-vortex-primary font-bold">.py</span> DAG file</p>
+                    <input type="file" id="upload-file" accept=".py" class="hidden" onchange="handleFileSelect(this)">
+                    <p id="upload-filename" class="text-vortex-primary font-bold text-sm mt-2 hidden"></p>
                 </div>
-                <div id="upload-progress" class="hidden mt-6">
-                    <div class="flex justify-between text-xs mb-2"><span id="upload-status">Uploading...</span><span id="upload-percent">0%</span></div>
-                    <div class="w-full bg-white/5 h-1.5 rounded-full overflow-hidden"><div id="upload-bar" class="vortex-gradient h-full w-0 transition-all"></div></div>
-                </div>
-                <div id="upload-result" class="hidden mt-6 p-4 rounded-xl border border-white/5 bg-white/5">
-                    <h4 id="result-status" class="font-bold text-sm mb-2"></h4>
-                    <pre id="result-preview" class="text-[10px] font-mono text-white/60 overflow-auto max-h-40"></pre>
-                </div>
+                <div id="upload-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
+                <button onclick="doUpload()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">UPLOAD &amp; PARSE</button>
             </div>
         </div>
     </div>
 
-    <!-- Modals -->
-    <div id="secret-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
-        <div class="glass w-full max-w-lg rounded-3xl vortex-border shadow-2xl overflow-hidden">
-            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5"><h3 class="text-lg font-bold">🔐 New Secret</h3><button onclick="closeSecretModal()" class="p-2 rounded-full hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div>
-            <div class="p-6 space-y-5">
-                <input id="secret-key" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-mono" placeholder="KEY_NAME">
-                <input id="secret-value" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-mono" placeholder="VALUE">
-                <button onclick="saveSecret()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02]">Store Secret</button>
+    <!-- Add User Modal -->
+    <div id="add-user-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full max-w-md rounded-3xl vortex-border flex flex-col overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <h3 class="text-lg font-bold">👥 Add User</h3>
+                <button onclick="closeAddUserModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            </div>
+            <div class="p-8 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Username</label>
+                    <input id="new-user-name" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none" placeholder="username">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Password</label>
+                    <input id="new-user-pass" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none" placeholder="password">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Role</label>
+                    <select id="new-user-role" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none">
+                        <option value="Admin">Admin</option>
+                        <option value="Operator" selected>Operator</option>
+                        <option value="Viewer">Viewer</option>
+                    </select>
+                </div>
+                <div id="add-user-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
+                <button onclick="doAddUser()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">CREATE USER</button>
             </div>
         </div>
     </div>
 
-    <div id="user-modal" class="fixed inset-0 bg-black/90 hidden z-50 items-center justify-center p-4">
-        <div class="glass w-full max-w-lg rounded-3xl vortex-border shadow-2xl overflow-hidden">
-            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5"><h3 class="text-lg font-bold">👥 New User</h3><button onclick="closeUserModal()" class="p-2 rounded-full hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div>
-            <div class="p-6 space-y-5">
-                <input id="user-username" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm" placeholder="Username">
-                <input id="user-password" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm" placeholder="Password">
-                <select id="user-role" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm">
-                    <option value="Admin">Admin (Full Access)</option>
-                    <option value="Operator">Operator (Manage DAGs)</option>
-                    <option value="Viewer">Viewer (Read Only)</option>
-                </select>
-                <button onclick="saveUser()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02]">Create User</button>
+    <!-- Add Secret Modal -->
+    <div id="add-secret-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full max-w-md rounded-3xl vortex-border flex flex-col overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <h3 class="text-lg font-bold">🔐 Add Secret</h3>
+                <button onclick="closeAddSecretModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            </div>
+            <div class="p-8 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Key</label>
+                    <input id="new-secret-key" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none font-mono" placeholder="MY_SECRET_KEY">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Value</label>
+                    <input id="new-secret-val" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none font-mono" placeholder="••••••••">
+                </div>
+                <div id="add-secret-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
+                <button onclick="doAddSecret()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">SAVE SECRET</button>
             </div>
         </div>
     </div>
 
     <script>
-        const API_KEY = 'vortex_admin_key';
         let currentDagId = null;
-        let autoRefreshInterval = null;
+        let globalData = null;
+        let lastRunsData = null;  // separate store for run history data
+
+        // ─── Auth helpers ───────────────────────────────────────────
+        function getAuth() {
+            return {
+                key: localStorage.getItem('vortex_api_key'),
+                role: localStorage.getItem('vortex_role'),
+                user: localStorage.getItem('vortex_user')
+            };
+        }
 
         async function api(path, method = 'GET', body = null) {
-            const opts = { method, headers: { 'Authorization': API_KEY } };
-            if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+            const auth = getAuth();
+            if (!auth.key && !path.includes('login')) {
+                showLoginScreen();
+                throw new Error('No Auth');
+            }
+            const opts = { method, headers: { 'Authorization': auth.key || '' } };
+            if (body) {
+                opts.headers['Content-Type'] = 'application/json';
+                opts.body = JSON.stringify(body);
+            }
             const res = await fetch(path, opts);
-            if (!res.ok) throw new Error(`API Error: ${res.status}`);
+            if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
+            if (!res.ok) {
+                let errMsg = 'API Error';
+                try { const err = await res.json(); errMsg = err.error || errMsg; } catch(_) {}
+                throw new Error(errMsg);
+            }
             return res.json();
         }
 
+        // ─── Login ──────────────────────────────────────────────────
+        function showLoginScreen() {
+            document.getElementById('login-overlay').style.display = 'flex';
+            document.getElementById('main-content').style.display = 'none';
+        }
+
+        async function handleLogin() {
+            const user = document.getElementById('login-user').value.trim();
+            const pass = document.getElementById('login-pass').value;
+            const errEl = document.getElementById('login-error');
+            errEl.classList.add('hidden');
+            if (!user || !pass) return;
+            try {
+                const data = await api('/api/login', 'POST', { username: user, password_hash: pass });
+                localStorage.setItem('vortex_api_key', data.api_key);
+                localStorage.setItem('vortex_role', data.role);
+                localStorage.setItem('vortex_user', data.username);
+                location.reload();
+            } catch (e) {
+                errEl.textContent = e.message;
+                errEl.classList.remove('hidden');
+            }
+        }
+
+        function logout() {
+            localStorage.clear();
+            location.reload();
+        }
+
+        // ─── View Router ────────────────────────────────────────────
+        function showView(viewName, dagId) {
+            document.querySelectorAll('.view-container').forEach(c => c.style.display = 'none');
+            const target = document.getElementById('view-' + viewName);
+            if (target) target.style.display = 'block';
+
+            if (viewName === 'registry') {
+                currentDagId = null;
+                localStorage.removeItem('vortex_active_dag');
+                fetchDags();
+            }
+            if (viewName === 'details' && dagId) {
+                currentDagId = dagId;
+                localStorage.setItem('vortex_active_dag', dagId);
+            }
+            if (viewName === 'users') fetchUsers();
+            if (viewName === 'secrets') fetchSecrets();
+        }
+
+        function switchDetailTab(tab) {
+            document.getElementById('tab-graph').className = 'pb-3 px-1 text-sm font-bold transition-all ' + (tab === 'graph' ? 'tab-active' : 'tab-inactive');
+            document.getElementById('tab-history').className = 'pb-3 px-1 text-sm font-bold transition-all ' + (tab === 'history' ? 'tab-active' : 'tab-inactive');
+            document.getElementById('detail-tab-graph').style.display = tab === 'graph' ? 'flex' : 'none';
+            document.getElementById('detail-tab-history').style.display = tab === 'history' ? 'block' : 'none';
+            if (tab === 'history') fetchHistory();
+        }
+
+        // ─── Init / Auth Check ──────────────────────────────────────
+        function checkAuth() {
+            const auth = getAuth();
+            if (!auth.key) {
+                showLoginScreen();
+                return;
+            }
+            document.getElementById('login-overlay').style.display = 'none';
+            document.getElementById('main-content').style.display = 'block';
+            document.getElementById('nav-username').textContent = auth.user || 'User';
+            document.getElementById('nav-role').textContent = auth.role || 'Unknown';
+
+            // RBAC: hide controls based on role
+            if (auth.role === 'Viewer') {
+                ['nav-upload', 'nav-users', 'nav-secrets', 'btn-trigger', 'btn-pause', 'btn-edit', 'btn-retry'].forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (el) el.style.display = 'none';
+                });
+            } else if (auth.role === 'Operator') {
+                ['nav-users', 'nav-secrets'].forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (el) el.style.display = 'none';
+                });
+            }
+
+            // Restore session state
+            var savedDag = localStorage.getItem('vortex_active_dag');
+            if (savedDag) {
+                showDagDetails(savedDag);
+            } else {
+                showView('registry');
+            }
+            startGlobalTimers();
+        }
+
+        // ─── DAG List ───────────────────────────────────────────────
         async function fetchDags() {
             try {
                 const dags = await api('/api/dags');
-                document.getElementById('total-dags').textContent = dags.length;
-                document.getElementById('active-dags').textContent = dags.filter(d => !d.is_paused).length;
-                document.getElementById('paused-dags').textContent = dags.filter(d => d.is_paused).length;
-                const list = document.getElementById('dag-list');
-                list.innerHTML = dags.map(dag => `<div class="glass p-6 rounded-2xl vortex-border flex items-center justify-between hover:border-vortex-primary/50 transition-all cursor-pointer" onclick="showDetail('${dag.id}')"><div class="flex items-center gap-5"><div class="w-12 h-12 rounded-xl bg-vortex-primary/10 border border-vortex-primary/20 flex items-center justify-center">${dag.is_paused ? '⏸' : '⚡'}</div><div><h4 class="font-bold text-white">${dag.id}</h4><p class="text-xs text-white/40">${dag.schedule_interval || 'No Schedule'}</p></div></div><svg class="w-5 h-5 text-white/10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>`).join('');
-            } catch (e) { console.error(e); }
-        }
-
-        function showSecrets() { document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden')); document.getElementById('secrets-section').classList.remove('hidden'); fetchSecrets(); }
-        function hideSecrets() { document.getElementById('secrets-section').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }
-        async function fetchSecrets() {
-            const data = await api('/api/secrets');
-            document.getElementById('secrets-list').innerHTML = data.secrets.map(s => `<div class="glass p-4 rounded-xl flex items-center justify-between"><div><p class="font-bold text-white font-mono">${s}</p></div><button onclick="deleteSecret('${s}')" class="text-rose-500 hover:underline text-xs">Delete</button></div>`).join('');
-        }
-        function showAddSecretModal() { document.getElementById('secret-modal').classList.remove('hidden'); document.getElementById('secret-modal').classList.add('flex'); }
-        function closeSecretModal() { document.getElementById('secret-modal').classList.add('hidden'); }
-        async function saveSecret() { await api('/api/secrets', 'POST', { key: document.getElementById('secret-key').value, value: document.getElementById('secret-value').value }); closeSecretModal(); fetchSecrets(); }
-        async function deleteSecret(k) { if(confirm('Delete?')) { await api(`/api/secrets/${k}`, 'DELETE'); fetchSecrets(); } }
-
-        function showUsers() { document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden')); document.getElementById('users-section').classList.remove('hidden'); fetchUsers(); }
-        function hideUsers() { document.getElementById('users-section').classList.add('hidden'); document.getElementById('dag-container').classList.remove('hidden'); }
-        async function fetchUsers() {
-            const users = await api('/api/users');
-            document.getElementById('users-list').innerHTML = users.map(u => `<div class="glass p-4 rounded-xl flex items-center justify-between"><div><p class="font-bold text-white">${u.username} <span class="ml-2 text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/40">${u.role}</span></p><p class="text-[10px] text-white/20 font-mono mt-1">${u.api_key}</p></div><button onclick="deleteUser('${u.username}')" class="text-rose-500 hover:underline text-xs">Delete</button></div>`).join('');
-        }
-        function showAddUserModal() { document.getElementById('user-modal').classList.remove('hidden'); document.getElementById('user-modal').classList.add('flex'); }
-        function closeUserModal() { document.getElementById('user-modal').classList.add('hidden'); }
-        async function saveUser() { await api('/api/users', 'POST', { username: document.getElementById('user-username').value, password_hash: document.getElementById('user-password').value, role: document.getElementById('user-role').value }); closeUserModal(); fetchUsers(); }
-        async function deleteUser(u) { if(confirm('Delete?')) { await api(`/api/users/${u}`, 'DELETE'); fetchUsers(); } }
-
-        function showUploadModal() {
-            document.getElementById('upload-modal').classList.remove('hidden');
-            document.getElementById('upload-modal').classList.add('flex');
-            document.getElementById('upload-progress').classList.add('hidden');
-            document.getElementById('upload-result').classList.add('hidden');
-            document.getElementById('dag-file-input').value = '';
-        }
-        function closeUploadModal() { document.getElementById('upload-modal').classList.add('hidden'); }
-        
-        async function handleFileSelect() {
-            const input = document.getElementById('dag-file-input');
-            if (!input.files.length) return;
-            
-            const file = input.files[0];
-            const formData = new FormData();
-            formData.append('file', file);
-            
-            const progress = document.getElementById('upload-progress');
-            const result = document.getElementById('upload-result');
-            const bar = document.getElementById('upload-bar');
-            
-            progress.classList.remove('hidden');
-            result.classList.add('hidden');
-            bar.style.width = '0%';
-            
-            try {
-                // Simulate progress
-                let p = 0;
-                const intv = setInterval(() => { p += 10; bar.style.width = p + '%'; if(p >= 90) clearInterval(intv); }, 100);
-                
-                const res = await fetch('/api/dags/upload', {
-                    method: 'POST',
-                    headers: { 'Authorization': API_KEY },
-                    body: formData
+                document.getElementById('stat-total').textContent = dags.length;
+                document.getElementById('stat-active').textContent = dags.filter(function(d) { return !d.is_paused; }).length;
+                document.getElementById('stat-paused').textContent = dags.filter(function(d) { return d.is_paused; }).length;
+                var html = '';
+                dags.forEach(function(dag) {
+                    html += '<div class="glass p-6 rounded-2xl vortex-border flex items-center justify-between hover:border-vortex-primary/50 transition-all cursor-pointer" onclick="showDagDetails(\'' + dag.id + '\')">'
+                        + '<div class="flex items-center gap-5">'
+                        + '<div class="w-12 h-12 rounded-xl bg-vortex-primary/10 flex items-center justify-center">' + (dag.is_paused ? '⏸' : '⚡') + '</div>'
+                        + '<div><h4 class="font-bold text-white">' + dag.id + '</h4>'
+                        + '<p class="text-xs text-white/40">' + (dag.schedule_interval || 'No Schedule') + '</p></div></div>'
+                        + '<svg class="w-5 h-5 text-white/10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>';
                 });
-                
-                clearInterval(intv);
-                bar.style.width = '100%';
-                
-                const data = await res.json();
-                result.classList.remove('hidden');
-                if (res.ok) {
-                    document.getElementById('result-status').textContent = "✅ Upload Successful";
-                    document.getElementById('result-status').className = "font-bold text-sm mb-2 text-emerald-400";
-                    document.getElementById('result-preview').textContent = JSON.stringify(data, null, 2);
-                    fetchDags();
-                } else {
-                    document.getElementById('result-status').textContent = "❌ Validation Failed";
-                    document.getElementById('result-status').className = "font-bold text-sm mb-2 text-rose-400";
-                    document.getElementById('result-preview').textContent = data.error || "Unknown error";
+                document.getElementById('dag-list').innerHTML = html;
+            } catch (e) { console.error('fetchDags error:', e); }
+        }
+
+        // ─── Graph Renderer ─────────────────────────────────────────
+        function renderGraph(svgId, tasks, instances, edges) {
+            try {
+                var g = new dagreD3.graphlib.Graph().setGraph({
+                    rankdir: 'LR',
+                    nodesep: 50,
+                    ranksep: 100,
+                    marginx: 40,
+                    marginy: 40
+                }).setDefaultEdgeLabel(function() { return {}; });
+
+                tasks.forEach(function(t) {
+                    var ti = instances ? instances.find(function(i) { return i.task_id === t.id; }) : null;
+                    var state = ti ? ti.state : 'Pending';
+                    g.setNode(t.id, {
+                        label: t.name || t.id,
+                        labelStyle: "font-weight: 900; fill: #fff; text-shadow: 0 0 10px rgba(0,0,0,0.5);",
+                        class: state,
+                        rx: 10,
+                        ry: 10,
+                        padding: 15
+                    });
+                });
+
+                if (edges && edges.length > 0) {
+                    edges.forEach(function(e) {
+                        var up = Array.isArray(e) ? e[0] : e.upstream;
+                        var down = Array.isArray(e) ? e[1] : e.downstream;
+                        if (up && down) {
+                            g.setEdge(up, down, {
+                                curve: d3.curveBasis,
+                                style: "stroke: #00f2ff; stroke-width: 3px; fill: none; opacity: 0.8;",
+                                arrowheadStyle: "fill: #00f2ff; opacity: 0.8;"
+                            });
+                        }
+                    });
+                }
+
+                var svg = d3.select('#' + svgId);
+                svg.selectAll("*").remove();
+
+                var inner = svg.append('g');
+                var render = new dagreD3.render();
+                render(inner, g);
+
+                // Adjust SVG height to content
+                var graphHeight = (g.graph().height || 200) + 100;
+                svg.attr('height', graphHeight);
+
+                // Center the graph
+                var svgNode = svg.node();
+                if (svgNode) {
+                    var svgWidth = svgNode.getBoundingClientRect().width;
+                    var xCenterOffset = Math.max(0, (svgWidth - (g.graph().width || 0)) / 2);
+                    inner.attr('transform', 'translate(' + xCenterOffset + ', 20)');
                 }
             } catch (e) {
-                result.classList.remove('hidden');
-                document.getElementById('result-status').textContent = "❌ Connection Error";
-                document.getElementById('result-preview').textContent = e.message;
+                console.error('renderGraph error:', e);
             }
         }
 
-        function showDetail(id) { 
-            currentDagId = id; 
-            document.getElementById('dag-container').classList.add('hidden'); 
-            document.getElementById('dag-detail').classList.remove('hidden'); 
-            refreshDetail(); 
-            // Phase 2.5: Auto-refresh every 10s
-            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
-            autoRefreshInterval = setInterval(refreshDetail, 10000);
-        }
-        function hideDetail() { 
-            currentDagId = null; 
-            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
-            document.getElementById('dag-detail').classList.add('hidden'); 
-            document.getElementById('dag-container').classList.remove('hidden'); 
+        // ─── DAG Details ────────────────────────────────────────────
+        async function showDagDetails(id) {
+            showView('details', id);
+            switchDetailTab('graph');
+            refreshDagDetails();
         }
 
-        function formatDuration(ms) {
-            if (!ms) return '-';
-            if (ms < 1000) return ms + 'ms';
-            return (ms / 1000).toFixed(2) + 's';
-        }
-
-        function getStatusBadge(state) {
-            const colors = {
-                'Success': 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
-                'Failed': 'bg-rose-400/10 text-rose-400 border-rose-400/20',
-                'Running': 'bg-blue-400/10 text-blue-400 border-blue-400/20',
-                'Queued': 'bg-white/10 text-white/40 border-white/20'
-            };
-            const icons = { 'Success': '✅', 'Failed': '❌', 'Running': '🔄', 'Queued': '⏳' };
-            const cls = colors[state] || 'bg-white/5 text-white/20 border-white/10';
-            const icon = icons[state] || '•';
-            return `<span class="text-[10px] px-2 py-0.5 rounded border font-bold ${cls}">${icon} ${state.toUpperCase()}</span>`;
-        }
-
-        async function refreshDetail() { 
-            if(!currentDagId) return; 
+        async function refreshDagDetails() {
+            if (!currentDagId) return;
+            var detailView = document.getElementById('view-details');
+            if (!detailView || detailView.style.display === 'none') return;
             try {
-                const data = await api(`/api/dags/${currentDagId}/tasks`); 
-                document.getElementById('detail-title').textContent = data.dag_id;
-                document.getElementById('detail-id-sub').textContent = `Created: ${new Date(data.dag.created_at).toLocaleString()}`;
-                
-                // Tasks
-                document.getElementById('task-list').innerHTML = data.tasks.map(t => `<div class="p-4 bg-white/5 rounded-2xl vortex-border"><div class="flex justify-between items-start mb-2"><div><h4 class="font-bold text-white text-sm">${t.name}</h4><p class="text-[10px] font-mono text-white/30">${t.id}</p></div></div><pre class="text-[10px] text-white/40 bg-black/20 p-2 rounded mt-2 overflow-hidden truncate max-h-12">${t.command}</pre></div>`).join(''); 
-                
-                // Instances
-                document.getElementById('instance-list').innerHTML = data.instances.sort((a,b) => new Date(b.execution_date) - new Date(a.execution_date)).map(ti => {
-                    const preview = ti.stdout ? ti.stdout.split('\n').slice(0, 3).join('\n') : '';
-                    return `
-                    <div class="glass p-5 rounded-2xl vortex-border mb-3">
-                        <div class="flex items-center justify-between mb-4">
-                            <div class="flex items-center gap-3">
-                                ${getStatusBadge(ti.state)}
-                                <span class="text-sm font-bold">${ti.task_id}</span>
-                            </div>
-                            <div class="flex items-center gap-4 text-[11px] text-white/40 font-medium">
-                                <span>${new Date(ti.execution_date).toLocaleString()}</span>
-                                <div class="w-1 h-1 rounded-full bg-white/10"></div>
-                                <span class="font-mono text-vortex-primary">${formatDuration(ti.duration_ms)}</span>
-                                <button onclick="viewLogs('${ti.id}', '${ti.task_id}')" class="px-3 py-1 rounded-lg bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all">View Logs</button>
-                            </div>
-                        </div>
-                        ${preview ? `<pre class="text-[10px] font-mono text-white/40 bg-black/40 p-3 rounded-xl border border-white/5 overflow-hidden line-clamp-3">${preview}</pre>` : ''}
-                    </div>`;
-                }).join('');
+                var data = await api('/api/dags/' + currentDagId + '/tasks');
+                globalData = data;
+                document.getElementById('detail-title').textContent = data.dag_id || currentDagId;
+                var createdAt = data.dag && data.dag.created_at ? new Date(data.dag.created_at).toLocaleString() : 'Unknown';
+                document.getElementById('detail-sub').textContent = 'Created: ' + createdAt;
 
-                // Update Stats
-                const successCount = data.instances.filter(ti => ti.state === 'Success').length;
-                const failedCount = data.instances.filter(ti => ti.state === 'Failed').length;
-                document.getElementById('success-tasks').textContent = successCount;
-                document.getElementById('failed-tasks').textContent = failedCount;
+                var isPaused = data.dag && data.dag.is_paused;
+                document.getElementById('detail-pause-badge').style.display = isPaused ? 'block' : 'none';
+                document.getElementById('btn-pause').textContent = isPaused ? '▶ Unpause' : '⏸ Pause';
 
-            } catch (e) { console.error(e); }
+                renderGraph('dag-svg', data.tasks || [], data.instances || [], data.dependencies || []);
+            } catch (e) { console.error('refreshDagDetails error:', e); }
         }
 
-        async function viewLogs(id, taskId) {
-            document.getElementById('modal-task-id').textContent = taskId;
-            document.getElementById('modal-ti-id').textContent = id;
-            document.getElementById('logs-content').innerHTML = '<div class="flex items-center gap-3 text-white/40 animate-pulse"><span class="w-2 h-2 rounded-full bg-vortex-primary"></span> Loading logs...</div>';
-            document.getElementById('logs-modal').classList.remove('hidden');
-            document.getElementById('logs-modal').classList.add('flex');
-            
+        // ─── Run History ────────────────────────────────────────────
+        async function fetchHistory() {
+            if (!currentDagId) return;
             try {
-                const data = await api(`/api/tasks/${id}/logs`);
-                if (data.stdout || data.stderr) {
-                    let html = '';
-                    if (data.stdout) html += `<div class="mb-6"><h4 class="text-[10px] uppercase tracking-widest text-emerald-400 font-black mb-3">Standard Output</h4><div class="p-4 bg-emerald-400/5 rounded-xl border border-emerald-400/10 text-emerald-100/80 whitespace-pre-wrap">${data.stdout}</div></div>`;
-                    if (data.stderr) html += `<div><h4 class="text-[10px] uppercase tracking-widest text-rose-400 font-black mb-3">Standard Error</h4><div class="p-4 bg-rose-400/5 rounded-xl border border-rose-400/10 text-rose-100/80 whitespace-pre-wrap">${data.stderr}</div></div>`;
-                    document.getElementById('logs-content').innerHTML = html || '<p class="text-white/20 italic">No log output.</p>';
-                } else {
-                    document.getElementById('logs-content').innerHTML = `<div class="p-4 bg-white/5 rounded-xl border border-white/10 text-white/40 whitespace-pre-wrap">${data.logs || 'No output.'}</div>`;
-                }
+                var data = await api('/api/dags/' + currentDagId + '/runs');
+                lastRunsData = data;  // store runs data separately
+                var runs = data.runs || [];
+                var html = '';
+                runs.forEach(function(run) {
+                    var stateClass = run.state === 'Success'
+                        ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
+                        : 'bg-rose-400/10 text-rose-400 border-rose-400/20';
+                    var startedStr = run.execution_date ? new Date(run.execution_date).toLocaleString() : 'N/A';
+                    html += '<div class="glass rounded-2xl vortex-border overflow-hidden">'
+                        + '<div class="p-4 flex items-center justify-between cursor-pointer run-header" onclick="toggleRunAccordion(\'' + run.id + '\')">'
+                        + '<div class="flex items-center gap-4">'
+                        + '<span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + stateClass + '">' + run.state + '</span>'
+                        + '<span class="text-xs font-mono text-white/60">' + run.id + '</span>'
+                        + '</div>'
+                        + '<div class="flex items-center gap-6 text-[10px] text-white/30 font-bold uppercase tracking-widest">'
+                        + '<span>Started: ' + startedStr + '</span>'
+                        + '<span>By: ' + (run.triggered_by || 'system') + '</span>'
+                        + '</div></div>'
+                        + '<div id="accordion-' + run.id + '" class="run-accordion-content hidden p-6 border-t border-white/5 bg-black/20">'
+                        + '<svg id="svg-' + run.id + '" width="100%"></svg>'
+                        + '<div id="logs-' + run.id + '" class="mt-4 space-y-2"></div>'
+                        + '</div></div>';
+                });
+                document.getElementById('runs-list').innerHTML = html || '<p class="text-xs text-white/20 italic p-4">No runs found.</p>';
             } catch (e) {
-                document.getElementById('logs-content').innerHTML = `<div class="text-rose-400 p-4 bg-rose-400/10 rounded-xl border border-rose-400/20">Failed to load logs: ${e.message}</div>`;
+                console.error('fetchHistory error:', e);
+                document.getElementById('runs-list').innerHTML = '<p class="text-xs text-rose-400/60 italic p-4">Failed to load run history.</p>';
             }
         }
 
-        function closeLogs() { document.getElementById('logs-modal').classList.add('hidden'); }
-        function toggleSwarmPanel() { document.getElementById('swarm-details').classList.toggle('hidden'); }
-        
-        async function triggerDag(id) { 
-            try { 
-                await api(`/api/dags/${id}/trigger`, 'POST'); 
-                alert('Triggered!'); 
-                refreshDetail(); 
-            } catch(e) { alert(e.message); } 
+        async function toggleRunAccordion(runId) {
+            var el = document.getElementById('accordion-' + runId);
+            if (!el) return;
+            if (!el.classList.contains('hidden')) {
+                el.classList.add('hidden');
+                return;
+            }
+            el.classList.remove('hidden');
+
+            // Get instances from globalData (set by refreshDagDetails)
+            var data = globalData;
+            if (!data || !data.instances) {
+                document.getElementById('logs-' + runId).innerHTML = '<p class="text-xs text-white/20 italic p-4">No task data available. Go to Visual Graph tab first.</p>';
+                return;
+            }
+
+            // Find the run from lastRunsData
+            var run = null;
+            if (lastRunsData && lastRunsData.runs) {
+                run = lastRunsData.runs.find(function(r) { return r.id === runId; });
+            }
+
+            // Match instances to this run
+            var runInstances = data.instances.filter(function(i) {
+                // Primary: match by run_id
+                if (i.run_id === runId) return true;
+                // Fallback: match by execution_date within a window
+                if (run && run.execution_date) {
+                    var targetDate = new Date(run.execution_date);
+                    var instanceDate = new Date(i.execution_date);
+                    var diff = Math.abs(instanceDate.getTime() - targetDate.getTime());
+                    return diff < 60000;
+                }
+                return false;
+            });
+
+            // Render mini-graph for this run
+            var svgId = 'svg-' + runId;
+            try {
+                d3.select('#' + svgId).selectAll("*").remove();
+                if (runInstances.length > 0 && data.tasks) {
+                    renderGraph(svgId, data.tasks, runInstances, data.dependencies || []);
+                }
+            } catch (e) { console.error('Run graph render error:', e); }
+
+            // Render task instance list with logs buttons
+            var logsEl = document.getElementById('logs-' + runId);
+            if (runInstances.length > 0) {
+                var html = '';
+                runInstances.forEach(function(i) {
+                    var sc = i.state === 'Success'
+                        ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
+                        : 'bg-rose-400/10 text-rose-400 border-rose-400/20';
+                    html += '<div class="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">'
+                        + '<div class="flex items-center gap-3">'
+                        + '<span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + sc + '">' + i.state + '</span>'
+                        + '<span class="text-xs font-bold text-white/60">' + i.task_id + '</span></div>'
+                        + '<button onclick="viewLogs(\'' + i.id + '\', \'' + i.task_id + '\')" class="text-[10px] font-black text-vortex-primary">VIEW LOGS</button>'
+                        + '</div>';
+                });
+                logsEl.innerHTML = html;
+            } else {
+                logsEl.innerHTML = '<p class="text-xs text-white/20 italic p-4">No task instances found for this run.</p>';
+            }
+        }
+
+        // ─── DAG Actions ────────────────────────────────────────────
+        async function triggerCurrentDag() {
+            if (!currentDagId) return;
+            try {
+                await api('/api/dags/' + currentDagId + '/trigger', 'POST');
+                alert('Triggered!');
+                refreshDagDetails();
+            } catch (e) { alert('Trigger failed: ' + e.message); }
+        }
+
+        async function retryDagFailures() {
+            if (!currentDagId) return;
+            try {
+                await api('/api/dags/' + currentDagId + '/retry', 'POST');
+                alert('Retry Triggered!');
+                refreshDagDetails();
+            } catch (e) { alert('Retry failed: ' + e.message); }
         }
 
         async function togglePause() {
-            if(!currentDagId) return;
+            if (!currentDagId) return;
             try {
-                const dag = (await api('/api/dags')).find(d => d.id === currentDagId);
-                const action = dag.is_paused ? 'unpause' : 'pause';
-                await api(`/api/dags/${currentDagId}/${action}`, 'PATCH');
-                refreshDetail();
+                var dags = await api('/api/dags');
+                var d = dags.find(function(x) { return x.id === currentDagId; });
+                if (!d) return;
+                var action = d.is_paused ? 'unpause' : 'pause';
+                await api('/api/dags/' + currentDagId + '/' + action, 'PATCH');
+                refreshDagDetails();
+            } catch (e) { alert('Pause toggle failed: ' + e.message); }
+        }
+
+        // ─── Swarm Status ───────────────────────────────────────────
+        async function fetchSwarmStatus() {
+            try {
+                var status = await api('/api/swarm/status');
+                document.getElementById('stat-workers').textContent = status.active_workers || 0;
+                document.getElementById('stat-queue').textContent = status.queue_depth || 0;
+                var badge = document.getElementById('swarm-status-badge');
+                if (status.enabled) {
+                    badge.textContent = 'ACTIVE';
+                    badge.className = 'text-[10px] px-2 py-0.5 rounded font-bold bg-emerald-400/10 text-emerald-400 border border-emerald-400/20';
+                } else {
+                    badge.textContent = 'OFFLINE';
+                    badge.className = 'text-[10px] px-2 py-0.5 rounded font-bold bg-white/5 text-white/40';
+                }
+            } catch (e) { /* swarm may not be enabled */ }
+        }
+
+        function toggleSwarmPanel() {
+            document.getElementById('swarm-details').classList.toggle('hidden');
+        }
+
+        // ─── Timers ─────────────────────────────────────────────────
+        function startGlobalTimers() {
+            fetchSwarmStatus();
+            setInterval(fetchSwarmStatus, 5000);
+            setInterval(function() {
+                if (currentDagId) refreshDagDetails();
+            }, 5000);
+        }
+
+        // ─── Editor ─────────────────────────────────────────────────
+        async function showEditSource() {
+            if (!currentDagId) return;
+            try {
+                var data = await api('/api/dags/' + currentDagId + '/source');
+                document.getElementById('editor-dag-id').textContent = 'File: ' + (data.file_path || currentDagId + '.py');
+                document.getElementById('editor-content').value = data.source || '';
+                document.getElementById('editor-modal').style.display = 'flex';
+            } catch (e) { alert('Failed to load source: ' + e.message); }
+        }
+
+        async function saveSource() {
+            var source = document.getElementById('editor-content').value;
+            try {
+                await api('/api/dags/' + currentDagId + '/source', 'PATCH', { source: source });
+                alert('Source saved!');
+                closeEditor();
+                refreshDagDetails();
+            } catch (e) { alert('Save failed: ' + e.message); }
+        }
+
+        function closeEditor() { document.getElementById('editor-modal').style.display = 'none'; }
+
+        // ─── Users ──────────────────────────────────────────────────
+        async function fetchUsers() {
+            try {
+                var u = await api('/api/users');
+                var list = Array.isArray(u) ? u : (u.users || []);
+                document.getElementById('users-list').innerHTML = list.map(function(x) {
+                    return '<div class="glass p-4 rounded-xl border border-white/5 flex justify-between"><span>' + x.username + '</span><span class="text-white/40">' + x.role + '</span></div>';
+                }).join('');
+            } catch (e) { console.error('fetchUsers error:', e); }
+        }
+
+        function showAddUserModal() {
+            document.getElementById('add-user-modal').style.display = 'flex';
+            document.getElementById('add-user-error').classList.add('hidden');
+        }
+        function closeAddUserModal() { document.getElementById('add-user-modal').style.display = 'none'; }
+
+        async function doAddUser() {
+            var name = document.getElementById('new-user-name').value.trim();
+            var pass = document.getElementById('new-user-pass').value;
+            var role = document.getElementById('new-user-role').value;
+            var errEl = document.getElementById('add-user-error');
+            errEl.classList.add('hidden');
+            if (!name || !pass) { errEl.textContent = 'Username and password required'; errEl.classList.remove('hidden'); return; }
+            try {
+                await api('/api/users', 'POST', { username: name, password_hash: pass, role: role });
+                closeAddUserModal();
+                fetchUsers();
+            } catch (e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
+        }
+
+        // ─── Secrets ────────────────────────────────────────────────
+        async function fetchSecrets() {
+            try {
+                var s = await api('/api/secrets');
+                var secrets = s.secrets || [];
+                document.getElementById('secrets-list').innerHTML = secrets.map(function(x) {
+                    return '<div class="glass p-4 rounded-xl border border-white/5 font-mono">' + x + '</div>';
+                }).join('');
+            } catch (e) { console.error('fetchSecrets error:', e); }
+        }
+
+        function showAddSecretModal() {
+            document.getElementById('add-secret-modal').style.display = 'flex';
+            document.getElementById('add-secret-error').classList.add('hidden');
+        }
+        function closeAddSecretModal() { document.getElementById('add-secret-modal').style.display = 'none'; }
+
+        async function doAddSecret() {
+            var key = document.getElementById('new-secret-key').value.trim();
+            var val = document.getElementById('new-secret-val').value;
+            var errEl = document.getElementById('add-secret-error');
+            errEl.classList.add('hidden');
+            if (!key || !val) { errEl.textContent = 'Key and value required'; errEl.classList.remove('hidden'); return; }
+            try {
+                await api('/api/secrets', 'POST', { key: key, value: val });
+                closeAddSecretModal();
+                fetchSecrets();
+            } catch (e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
+        }
+
+        // ─── Upload ─────────────────────────────────────────────────
+        var selectedFile = null;
+
+        function showUploadModal() {
+            selectedFile = null;
+            document.getElementById('upload-file').value = '';
+            document.getElementById('upload-filename').classList.add('hidden');
+            document.getElementById('upload-error').classList.add('hidden');
+            document.getElementById('upload-modal').style.display = 'flex';
+        }
+        function closeUploadModal() { document.getElementById('upload-modal').style.display = 'none'; }
+
+        function handleFileSelect(input) {
+            if (input.files && input.files[0]) {
+                selectedFile = input.files[0];
+                var nameEl = document.getElementById('upload-filename');
+                nameEl.textContent = selectedFile.name;
+                nameEl.classList.remove('hidden');
+            }
+        }
+
+        async function doUpload() {
+            var errEl = document.getElementById('upload-error');
+            errEl.classList.add('hidden');
+            if (!selectedFile) { errEl.textContent = 'Select a file first'; errEl.classList.remove('hidden'); return; }
+            try {
+                var auth = getAuth();
+                var formData = new FormData();
+                formData.append('file', selectedFile);
+                var res = await fetch('/api/dags/upload', {
+                    method: 'POST',
+                    headers: { 'Authorization': auth.key },
+                    body: formData
+                });
+                if (!res.ok) {
+                    var err = await res.json();
+                    throw new Error(err.error || 'Upload failed');
+                }
+                closeUploadModal();
                 fetchDags();
-            } catch(e) { console.error(e); }
+                alert('DAG uploaded successfully!');
+            } catch (e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
         }
 
-        function switchTab(tab) {
-            document.getElementById('tab-tasks').className = tab === 'tasks' ? 'pb-3 px-1 text-sm font-bold tab-active transition-all' : 'pb-3 px-1 text-sm font-bold tab-inactive transition-all';
-            document.getElementById('tab-runs').className = tab === 'runs' ? 'pb-3 px-1 text-sm font-bold tab-active transition-all' : 'pb-3 px-1 text-sm font-bold tab-inactive transition-all';
-            document.getElementById('tab-content-tasks').classList.toggle('hidden', tab !== 'tasks');
-            document.getElementById('tab-content-runs').classList.toggle('hidden', tab !== 'runs');
-            if (tab === 'runs') fetchRuns();
+        // ─── Logs Modal ─────────────────────────────────────────────
+        async function viewLogs(id, tid) {
+            document.getElementById('modal-task-id').textContent = tid;
+            document.getElementById('modal-ti-id').textContent = 'Instance: ' + id;
+            document.getElementById('logs-content').textContent = 'Loading...';
+            document.getElementById('logs-modal').style.display = 'flex';
+            try {
+                var d = await api('/api/tasks/' + id + '/logs');
+                document.getElementById('logs-content').textContent = d.stdout || d.logs || 'No output captured.';
+            } catch (e) {
+                document.getElementById('logs-content').textContent = 'Error loading logs: ' + e.message;
+            }
         }
+        function closeLogs() { document.getElementById('logs-modal').style.display = 'none'; }
 
-        async function fetchRuns() {
-            if(!currentDagId) return;
-            const data = await api(`/api/dags/${currentDagId}/runs`);
-            document.getElementById('runs-list').innerHTML = data.runs.map(run => `
-                <div class="glass p-4 rounded-xl vortex-border flex items-center justify-between">
-                    <div class="flex items-center gap-4">
-                        ${getStatusBadge(run.state)}
-                        <div><p class="font-mono text-xs text-white/80">${run.id}</p><p class="text-[10px] text-white/30">${new Date(run.execution_date).toLocaleString()} • Triggered by: ${run.triggered_by}</p></div>
-                    </div>
-                </div>`).join('');
-        }
-
-        function showScheduleModal() { alert('Schedule management coming soon!'); }
-        function showBackfillModal() { alert('Backfill management coming soon!'); }
-
-        document.getElementById('trigger-btn').onclick = () => triggerDag(currentDagId);
-
-        fetchDags();
+        // ─── Boot ───────────────────────────────────────────────────
+        checkAuth();
     </script>
 </body>
 </html>

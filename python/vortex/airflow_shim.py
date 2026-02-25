@@ -25,6 +25,7 @@ class DAG:
         owner=None,
         **kwargs,
     ):
+        from vortex import _DAG_REGISTRY
         self.dag_id = dag_id
         self.description = description
         self.schedule_interval = schedule_interval
@@ -34,15 +35,38 @@ class DAG:
         self.owner = owner
         self.tasks = []
         self._task_dict = {}
+        _DAG_REGISTRY.append(self)
 
     def __enter__(self):
+        from . import context
+        context._CURRENT_DAG = self
         return self
 
     def __exit__(self, *args):
-        pass
+        from . import context
+        context._CURRENT_DAG = None
 
     def __repr__(self):
         return f"<DAG: {self.dag_id}>"
+
+    def to_dict(self):
+        """Export DAG structure to a dictionary for VORTEX parser."""
+        return {
+            "dag_id": self.dag_id,
+            "description": self.description,
+            "schedule_interval": self.schedule_interval,
+            "catchup": self.catchup,
+            "tasks": [t.to_dict() for t in self.tasks],
+            "dependencies": self.get_dependencies(),
+        }
+
+    def get_dependencies(self):
+        """Extract edges from tasks."""
+        deps = []
+        for task in self.tasks:
+            for downstream_id in task._downstream:
+                deps.append((task.task_id, downstream_id))
+        return deps
 
 
 class BaseOperator:
@@ -50,12 +74,13 @@ class BaseOperator:
 
     def __init__(self, task_id, dag=None, **kwargs):
         self.task_id = task_id
-        self.dag = dag
+        from . import context
+        self.dag = dag or context._CURRENT_DAG
         self._upstream = []
         self._downstream = []
-        if dag is not None:
-            dag.tasks.append(self)
-            dag._task_dict[task_id] = self
+        if self.dag is not None:
+            self.dag.tasks.append(self)
+            self.dag._task_dict[task_id] = self
 
     # ── Dependency syntax ──────────────────────────────────────────────────
 
@@ -81,6 +106,24 @@ class BaseOperator:
 
     def __repr__(self):
         return f"<{self.__class__.__name__}: {self.task_id}>"
+
+    def to_dict(self):
+        """Export Task structure to a dictionary for VORTEX parser."""
+        d = {
+            "task_id": self.task_id,
+            "type": self.__class__.__name__,
+            "upstream_task_ids": self._upstream,
+            "downstream_task_ids": self._downstream,
+        }
+        if hasattr(self, "bash_command"):
+            d["bash_command"] = self.bash_command
+        if hasattr(self, "python_callable"):
+            # Handle both function objects and strings
+            if hasattr(self.python_callable, "__name__"):
+                d["python_callable"] = self.python_callable.__name__
+            else:
+                d["python_callable"] = str(self.python_callable)
+        return d
 
 
 class BashOperator(BaseOperator):

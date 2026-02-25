@@ -23,7 +23,7 @@ with DAG(dag_id="example_python_dag") as dag:
 
     t4 = BashOperator(
         task_id="echo_done",
-        bash_command="echo 'DAG finished successfully'"
+        bash_command="'DAG finished successfully'"
     )
 
     t1 >> t2

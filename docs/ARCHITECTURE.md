@@ -2,424 +2,147 @@
 
 ## System Components
 
-VORTEX is composed of four primary components working together in a distributed system:
+VORTEX is a single-binary orchestration engine with four logical components:
 
-### 1. **Controller** (Orchestrator & Health Manager)
+### 1. Controller (Orchestrator)
 
-The controller is the brain of VORTEX:
+The main process that runs the scheduler, API server, and Swarm coordinator:
 
-- **Receives DAG submissions** via REST API
-- **Parses DAGs** and creates task dependency graphs
-- **Enqueues tasks** into a distributed message broker
-- **Runs health check loop** (every 15 seconds)
-- **Manages worker state** (IDLE, ACTIVE, OFFLINE)
-- **Handles task recovery** when workers fail
-- **Serves web dashboard** for monitoring
+- **Parses DAGs** from Python files via PyO3 runtime and regex parser
+- **Schedules tasks** using topological sort with dependency-aware fan-out
+- **Serves REST API** (Axum on port 3000) for DAG management and the web dashboard
+- **Runs gRPC Swarm controller** (Tonic on port 50051) for distributed workers
+- **Health check loop** (every 15 seconds) — detects stale workers, requeues tasks
+- **Recovery on startup** — marks interrupted `Running` tasks as `Failed`
 
-**Implementation**:
-- Written in Rust using Tokio async runtime
-- Single stateless process (can be replicated for HA)
-- Persists all state to SQLite database
+**Implementation:** Rust + Tokio async runtime. All state persisted to SQLite.
 
-### 2. **Workers** (Task Executors)
+### 2. Workers (Task Executors)
 
-Workers are distributed agents that execute tasks:
+Distributed worker processes that connect to the controller via gRPC:
 
-- **Register with controller** upon startup
-- **Poll the task queue** for new work
-- **Send heartbeats** every 10 seconds
-- **Execute tasks** in containers (Docker/OCI)
-- **Report task results** (success/failure/logs)
-- **Clean up resources** after task completion
+- **Register** with controller on startup (hostname, capacity, labels)
+- **Poll** for tasks based on available capacity
+- **Execute tasks** directly via `sh -c` (bash) or `python3` (python) — no Docker required
+- **Send heartbeats** every 15 seconds
+- **Report results** (stdout, stderr, duration, success/failure) back to controller
+- **Secrets injection** — decrypted secrets are passed as environment variables
 
-**Implementation**:
-- Written in Rust using Tokio
-- Uses gRPC for communication with controller
-- Containerized execution via Docker daemon
-- Horizontally scalable (add more workers = more throughput)
+**Implementation:** Same Rust binary, different CLI subcommand (`vortex worker`).
 
-### 3. **Database** (SQLite)
+### 3. Database (SQLite)
 
-Single source of truth for all persistent state:
+Single-file database (`vortex.db`) as the source of truth:
 
-**Tables**:
-- `workers` — Worker registrations, state, heartbeats
-- `task_instances` — Individual task records, state, assignments
-- `dags` — Directed Acyclic Graph definitions
-- `secrets` — Encrypted secrets with nonces
-- `task_results` — Task outputs, logs, error messages
+| Table | Purpose |
+|-------|---------|
+| `dags` | DAG definitions (id, schedule, pause state, timezone, max_active_runs) |
+| `tasks` | Task definitions (command, type, config, retry settings) |
+| `task_instances` | Execution records (state, stdout, stderr, duration, worker_id, run_id) |
+| `dag_runs` | Run records (state, execution_date, triggered_by) |
+| `dag_versions` | Version tracking linking DAGs to filesystem paths |
+| `workers` | Worker registrations (hostname, capacity, heartbeat, state) |
+| `users` | RBAC accounts (username, password_hash, role, api_key) |
+| `secrets` | AES-256-GCM encrypted key-value pairs |
 
-**Characteristics**:
-- Single-file SQLite database (./vortex.db)
-- ACID transactions (guarantees consistency)
-- Optimized indexes for frequent queries
-- Can be backed up or replicated
+### 4. Web Dashboard
 
-### 4. **Dashboard** (Web UI)
+Single-page application embedded in the binary via `rust-embed`:
 
-Real-time monitoring and management interface:
-
-- **Worker status**: Active/offline/registering counts
-- **Task metrics**: Completed, running, queued, failed counts
-- **Recovery status**: Recent failures and auto-recovery events
-- **Log viewer**: Stream logs from running tasks
-- **Secret management**: UI for creating/rotating secrets
-
-**Technology**: React + WebSocket for real-time updates
+- **Technology:** Vanilla JavaScript + Tailwind CSS (CDN) + D3.js + Dagre-D3
+- **Features:** Visual DAG graphs, run history, code editor, secret management, user management
+- **Auth:** Login form → API key stored in `localStorage`
+- **RBAC:** Admin sees all; Operator sees DAGs + triggers; Viewer is read-only
+- **Auto-refresh:** 5-second polling for DAG status and Swarm health
 
 ---
 
-## Data Flow & Execution Pipeline
+## Execution Flow
 
-### Sequence: DAG Submission to Task Completion
+### DAG Trigger → Task Completion
 
 ```
-User                Controller            Database         Workers
-  │                   │                     │                │
-  ├─ Submit DAG ─────→│                     │                │
-  │                   │                     │                │
-  │                   ├─ Parse DAG ─────────│                │
-  │                   │                     │                │
-  │                   ├─ Create Tasks ──────│                │
-  │                   │ (task_1, task_2...)  │                │
-  │                   │                     │                │
-  │                   ├─ Enqueue Tasks ─────│                │
-  │                   │ (to message queue)   │                │
-  │                   │                     │                │
-  │                   │                     │   Poll Queue   │
-  │                   │                     │←────────────────┤ Worker A
-  │                   │                     │                │
-  │                   │                     │ Update Status  │
-  │                   │                     │──────────────→ (RUNNING)
-  │                   │                     │                │
-  │                   │                     │                ├─ Execute Container
-  │                   │                     │                │
-  │                   │                     │  Heartbeat     │
-  │                   │                     │←────────────────┤
-  │                   │                     │                │
-  │                   │                     │  Task Result   │
-  │                   │                     │←────────────────┤
-  │                   │                     │                │
-  │                   │                     │ Update Status  │
-  │                   │                     │──────────────→ (COMPLETED)
-  │                   │                     │                │
-  │←─ DAG Status ─────│                     │                │
-  │  (all tasks done)  │                     │                │
+User (Web UI / API)        Controller             Workers
+       │                      │                      │
+       ├─ POST /trigger ──────│                      │
+       │                      │                      │
+       │                      ├─ Create dag_run      │
+       │                      ├─ Topo-sort tasks     │
+       │                      ├─ Enqueue root tasks  │
+       │                      │   (in-degree = 0)    │
+       │                      │                      │
+       │                      │    poll_task (gRPC)   │
+       │                      │◄─────────────────────┤
+       │                      ├─ Assign tasks ───────│
+       │                      │                      │
+       │                      │                      ├─ sh -c "echo ..."
+       │                      │                      │
+       │                      │  report_result (gRPC) │
+       │                      │◄─────────────────────┤
+       │                      │                      │
+       │                      ├─ Update DB state     │
+       │                      ├─ Check downstream    │
+       │                      ├─ Enqueue next tasks  │
+       │                      │   (in-degree → 0)    │
+       │                      │                      │
+       │                      │         ... repeat ...│
+       │                      │                      │
+       │                      ├─ All done → dag_run  │
+       │                      │   state = Success    │
+       │◄─ Poll refresh ──────│                      │
 ```
 
-### 1. User Submits DAG
+### Dependency Orchestration (Swarm Mode)
 
-User sends DAG definition via `POST /api/dags`:
+When `--swarm` is enabled and workers are connected:
 
-```json
-{
-  "name": "data-pipeline",
-  "tasks": [
-    {"name": "task_1", "image": "python:3.13", "command": ["python", "fetch.py"]},
-    {"name": "task_2", "image": "python:3.13", "command": ["python", "process.py"], "depends_on": ["task_1"]},
-    {"name": "task_3", "image": "python:3.13", "command": ["python", "notify.py"], "depends_on": ["task_2"]}
-  ]
-}
-```
+1. Controller creates a `dag_run` record
+2. Builds in-degree map from DAG dependencies
+3. Enqueues all tasks with in-degree 0
+4. Spawns monitor tasks that poll DB for completion
+5. When a task completes, decrements downstream in-degrees
+6. Tasks reaching in-degree 0 are enqueued
+7. Continues until all tasks finish
+8. Updates `dag_run` state to `Success` or `Failed`
 
-### 2. Controller Parses DAG & Creates Tasks
+### Standalone Mode (No Workers)
 
-The controller:
-1. Validates DAG structure (no cycles, valid references)
-2. Creates `task_instances` in the database (one row per task)
-3. Sets initial state to `Queued`
-4. Stores dependency information
-
-Database state after parsing:
-```sql
-SELECT id, name, state, depends_on FROM task_instances WHERE dag_id = 'dag_123';
-```
-
-Output:
-```
-id        | name    | state  | depends_on
-----------|---------|--------|----------
-task_1    | task_1  | Queued | NULL
-task_2    | task_2  | Queued | task_1
-task_3    | task_3  | Queued | task_2
-```
-
-### 3. Controller Enqueues Tasks
-
-Tasks without dependencies are immediately enqueued. Tasks with dependencies wait:
-
-```rust
-fn enqueue_ready_tasks(dag_id: &str, db: &Database) -> Result<()> {
-    // Find tasks with all dependencies completed
-    let ready_tasks = db.query(
-        "SELECT id FROM task_instances 
-         WHERE dag_id = ? AND state = 'Queued' 
-         AND (depends_on IS NULL 
-              OR depends_on IN (SELECT id FROM task_instances WHERE state = 'Completed'))"
-    )?;
-
-    for task in ready_tasks {
-        queue.enqueue(task)?;
-        db.update_task_state(&task.id, "Enqueued")?;
-    }
-}
-```
-
-### 4. Workers Poll & Receive Tasks
-
-Workers continuously poll the task queue:
-
-```rust
-async fn worker_task_loop(worker_id: &str) -> Result<()> {
-    loop {
-        // Poll controller for next task
-        let task = controller.poll_task(worker_id).await?;
-        
-        if let Some(task) = task {
-            // Mark as RUNNING
-            db.update_task_state(&task.id, "Running")?;
-            db.update_worker_task(&worker_id, &task.id)?;
-            
-            // Execute container
-            let result = execute_container(&task).await;
-            
-            // Report result
-            controller.report_result(&task.id, result).await?;
-        }
-        
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-}
-```
-
-### 5. Worker Executes Task
-
-Worker spawns an isolated process based on the task type:
-
-**BashOperator**:
-```bash
-sh -c "{bash_command}"
-```
-
-**PythonOperator**:
-```bash
-python3 /tmp/vortex_task_{task_id}.py
-```
-
-All secrets are injected as environment variables.
-
-### 6. Worker Reports Result
-
-On completion, worker sends result via gRPC:
-
-```json
-{
-  "task_id": "task_1",
-  "success": true,
-  "stdout": "...",
-  "stderr": "",
-  "duration_ms": 3500,
-  "retry_count": 0
-}
-```
-
-### 7. Controller Updates Database & Retry Logic
-
-Controller stores the result. If the task failed and `retry_count < max_retries`, it resets the state to `Queued` after `retry_delay_secs`. Otherwise, it marks the task as `Success` or `Failed` and proceeds to downstream tasks.
-
-### 8. Repeat for Dependent Tasks
-
-Steps 4-7 repeat for `task_2`, then `task_3`.
-
-### 9. DAG Completion
-
-When all tasks are `Completed`, DAG is marked as `Completed`:
-
-```sql
-UPDATE dags SET state = 'Completed', completed_at = current_timestamp WHERE id = 'dag_123';
-```
+When `--swarm` is not enabled or no workers are connected, the controller uses the built-in `Scheduler` which executes tasks locally using Tokio spawn with the `TaskExecutor`.
 
 ---
 
-## Failure Scenarios & Recovery
+## Failure Scenarios
 
-### Scenario 1: Worker Crashes During Task Execution
-
-```
-Time: 10:00:00 — Worker A starts task_123
-  task_123.state = RUNNING, task_123.worker_id = worker_a
-
-Time: 10:00:15 — Worker A crashes (OOM, segfault, etc.)
-  Worker A stops sending heartbeats
-
-Time: 10:00:75 — Controller health check detects missing heartbeat
-  worker_a.state = OFFLINE, worker_a.last_heartbeat is 60s stale
-  ACTION: task_123.state = Queued, task_123.worker_id = NULL
-
-Time: 10:00:80 — Worker B picks up task_123
-  task_123.state = RUNNING, task_123.worker_id = worker_b
-  Task executes from scratch (no checkpoint)
-
-Time: 10:01:30 — task_123 completes on Worker B
-  task_123.state = COMPLETED
-```
-
-**Result**: Zero task loss, automatic failover, ~75 second recovery latency.
-
-### Scenario 2: Network Partition (Controller ↔ Worker)
+### Worker Crash
 
 ```
-Time: 10:00:00 — Worker A and Controller lose network connectivity
-  Worker A still running, but can't send heartbeats
-  Controller can't reach Worker A
-
-Time: 10:01:00 — Health check detects missing heartbeat (60s timeout + 15s check)
-  worker_a.state = OFFLINE
-  All running tasks reassigned
-
-Time: 10:05:00 — Network heals, Worker A reconnects
-  Controller sees Worker A is reconnecting
-  Existing task assignments already moved to other workers
-  Worker A re-registers (new session)
+T+0s    Worker A starts task_123 (state=Running, worker_id=A)
+T+60s   Worker A stops heartbeating
+T+75s   Health check detects stale heartbeat (60s timeout + 15s check)
+        → worker state = Offline
+        → task_123 state = Queued, worker_id = NULL
+T+77s   Worker B picks up task_123 via poll
+        → Executes from scratch
+T+80s   Task completes successfully
 ```
 
-**Result**: Transparent failover; no duplicate task execution (database state is authoritative).
+**Recovery latency:** ~75 seconds worst case.
 
-### Scenario 3: Controller Crash
+### Controller Crash
 
-```
-Time: 10:00:00 — Controller crashes
-  Workers continue executing (independent)
-  New task enqueuing stops (no one to accept DAGs)
+Workers continue executing current tasks independently. On controller restart:
+- SQLite state is fully recovered
+- `Running` tasks with no heartbeat are marked `Failed`
+- Workers re-register on next heartbeat
 
-Time: 10:00:30 — Operator restarts Controller
-  Controller reads state from database
-  Workers send heartbeats immediately
-  Pending tasks resume being enqueued
-```
-
-**Result**: Workers are resilient; Controller is stateless (can restart quickly).
-
-### Scenario 4: Database Corruption or Loss
+### Task Failure with Retries
 
 ```
-Worst case: Database is lost
-  No persistent state of workers, tasks, or results
-  Cannot recover task results or audit history
-
-Mitigation:
-  - Regular backups (daily snapshots)
-  - Replication (write-ahead logs synced to replica)
-  - Rebuild-from-logs (future: event sourcing)
-```
-
----
-
-## Data Consistency & Atomicity
-
-### ACID Guarantees
-
-VORTEX relies on SQLite's ACID properties:
-
-| Property | Implementation |
-|----------|-----------------|
-| **Atomicity** | Multi-task re-queueing in single transaction (all-or-nothing) |
-| **Consistency** | Foreign keys enforced; DAG structure validated |
-| **Isolation** | SQLite serialization; no dirty reads or race conditions |
-| **Durability** | fsync on commit; data survives process crashes |
-
-### Example: Atomic Recovery Transaction
-
-When a worker goes offline, this transaction runs:
-
-```sql
-BEGIN TRANSACTION;
-
-UPDATE workers 
-SET state = 'OFFLINE', offline_at = current_timestamp 
-WHERE id = 'worker_a' AND state = 'ACTIVE';
-
-UPDATE task_instances 
-SET state = 'Queued', worker_id = NULL, updated_at = current_timestamp 
-WHERE worker_id = 'worker_a' AND state = 'Running';
-
-INSERT INTO recovery_log (worker_id, num_tasks, timestamp) 
-VALUES ('worker_a', 3, current_timestamp);
-
-COMMIT;
-```
-
-Either all statements succeed or none do. No partial updates.
-
----
-
-## Performance Characteristics
-
-### Throughput
-
-| Operation | Throughput | Latency |
-|-----------|-----------|---------|
-| **DAG submission** | 100+ DAGs/min | <100ms |
-| **Task enqueuing** | 10,000+ tasks/min | <10ms per task |
-| **Heartbeat processing** | 1,000+ workers | <50ms per cycle |
-| **Task result reporting** | 1,000+ tasks/min | <100ms |
-
-### Scalability
-
-| Metric | Limit | Notes |
-|--------|-------|-------|
-| **Workers** | 100+ | Heartbeat check is O(n) but indexed; no performance degradation |
-| **Tasks per DAG** | 1,000+ | Dependency resolution is O(m log m) where m = # tasks |
-| **Concurrent DAGs** | 100+ | Controller is stateless; limited only by task queue |
-| **Database size** | 10GB+ | SQLite handles millions of task records; indices optimize queries |
-
-### Bottlenecks & Optimization
-
-1. **Task Enqueuing**: Batch updates for multiple tasks (same transaction)
-2. **Health Checks**: Indexed queries on `state` and `last_heartbeat`
-3. **Task Distribution**: Workers pull from queue (not pushed); balanced load
-4. **Database**: WAL mode + indices for concurrent read/write
-
----
-
-## System Deployment Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       VORTEX Cluster                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌─────────────────────┐                                         │
-│  │   Controller (HA)   │                                         │
-│  │ - REST API          │◄──── Dashboard (web UI)                │
-│  │ - Health Check Loop │                                         │
-│  │ - DAG Orchestration │                                         │
-│  └──────────┬──────────┘                                         │
-│             │                                                     │
-│             │ (Read/Write)                                       │
-│             ▼                                                     │
-│  ┌──────────────────────┐                                        │
-│  │  SQLite Database     │◄──── Backups (daily snapshots)         │
-│  │ - Workers            │                                         │
-│  │ - Tasks              │                                         │
-│  │ - Secrets (encrypted)│                                         │
-│  │ - Results            │                                         │
-│  └──────────┬───────────┘                                        │
-│             │                                                     │
-│    ┌────────┴──────────┬──────────────────┐                     │
-│    │                   │                  │                     │
-│    ▼                   ▼                  ▼                     │
-│  ┌──────────┐      ┌──────────┐      ┌──────────┐              │
-│  │ Worker 1 │      │ Worker 2 │ ...  │ Worker N │              │
-│  │ - gRPC   │      │ - gRPC   │      │ - gRPC   │              │
-│  │ - Docker │      │ - Docker │      │ - Docker │              │
-│  │ - Poll   │      │ - Poll   │      │ - Poll   │              │
-│  └──────────┘      └──────────┘      └──────────┘              │
-│       │                  │                  │                   │
-│       └──────────────────┴──────────────────┘                   │
-│              (execute containers)                               │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
+T+0s    Task fails (exit code != 0)
+T+0s    Controller checks retry_count < max_retries
+T+Ns    After retry_delay_secs, task re-enqueued (state=Queued)
+T+Ns    Worker picks up and re-executes
+        Repeat until success or max_retries exhausted
 ```
 
 ---
@@ -428,19 +151,21 @@ Either all statements succeed or none do. No partial updates.
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| **Controller** | Rust + Tokio | Performance, type safety, async concurrency |
-| **Workers** | Rust + Tokio | Same as controller; lightweight, fast startup |
-| **Database** | SQLite | ACID, no external dependencies, easy deployment |
-| **Message Queue** | In-database task_queue table | Simplicity; can upgrade to RabbitMQ/Kafka later |
-| **Container Runtime** | Docker / containerd | Standard; widely available |
-| **RPC** | gRPC + Protobuf | Type-safe, efficient binary protocol |
-| **Dashboard** | React + WebSocket | Real-time updates, responsive UI |
+| **Runtime** | Rust + Tokio | Async concurrency, memory safety, no GC |
+| **Database** | SQLite (rusqlite) | Zero-config, ACID, single-file |
+| **Web API** | Axum | Lightweight, tower middleware, async |
+| **gRPC** | Tonic + Prost | Type-safe Protobuf, streaming |
+| **Python Bridge** | PyO3 | Native CPython embedding |
+| **Encryption** | AES-256-GCM (aes-gcm) | NIST-approved, authenticated encryption |
+| **Dashboard** | Vanilla JS + Tailwind + D3 + Dagre | No build step, embedded via rust-embed |
+| **Task Execution** | Direct process spawn | `sh -c` for bash, `python3` for python |
 
 ---
 
 ## Related Documentation
 
-- [Pillar 3: Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Encrypted secret management
-- [Pillar 4: Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery and worker failure handling
-- [API Reference](./API_REFERENCE.md) — REST and gRPC endpoint documentation
-- [Deployment Guide](./DEPLOYMENT.md) — Installation, configuration, and monitoring
+- [API Reference](./API_REFERENCE.md) — Complete REST API documentation
+- [Deployment Guide](./DEPLOYMENT.md) — Build, configure, and run
+- [Python Integration](./PHASE_2_PYTHON_INTEGRATION.md) — DAG authoring
+- [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Encrypted secrets
+- [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery
