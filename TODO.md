@@ -62,12 +62,12 @@
 
 **Why:** API keys are currently transmitted in plaintext over HTTP. Unacceptable for production.
 
-### Phase 1 — Remaining Polish
-- [ ] Add password strength validation (min length, complexity)
-- [ ] File rotation via `tracing-appender`
-- [ ] Request-level tracing with correlation IDs
-- [ ] gRPC TLS for controller ↔ worker communication
-- [ ] Document cert generation with `openssl` / Let's Encrypt
+### Phase 1 — Remaining Polish ✅
+- [x] Add password strength validation (min length, complexity)
+- [x] File rotation via `tracing-appender`
+- [x] Request-level tracing with correlation IDs
+- [x] gRPC TLS for controller ↔ worker communication
+- [x] Document cert generation with `openssl` / Let's Encrypt
 
 ---
 

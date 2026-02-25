@@ -91,6 +91,7 @@ impl WebServer {
             .merge(api_routes)
             .route("/api/login", post(login))
             .fallback(static_handler)
+            .layer(middleware::from_fn(request_id_middleware))
             .with_state(state);
 
         if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
@@ -111,6 +112,27 @@ impl WebServer {
             axum::serve(listener, app).await.unwrap();
         }
     }
+}
+
+async fn request_id_middleware(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let request_id = req.headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let span = tracing::info_span!("request", request_id = %request_id, method = %req.method(), path = %req.uri().path());
+    let _enter = span.enter();
+
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        "x-request-id",
+        request_id.parse().unwrap(),
+    );
+    response
 }
 
 async fn auth_middleware(

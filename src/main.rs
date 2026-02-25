@@ -36,15 +36,20 @@ async fn main() -> Result<()> {
 
     let json_output = args.iter().any(|a| a == "--log-json");
 
+    let file_appender = tracing_appender::rolling::daily("logs", "vortex.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
     if json_output {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(fmt::layer().json())
+            .with(fmt::layer().with_writer(non_blocking).json())
             .init();
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(fmt::layer().with_target(false).with_thread_ids(false))
+            .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
             .init();
     }
 
@@ -129,13 +134,33 @@ async fn main() -> Result<()> {
     if swarm_enabled {
         let grpc_state = Arc::clone(&swarm_state);
         let health_state = Arc::clone(&swarm_state);
-        
+        let tls_cert_grpc = args.iter().position(|a| a == "--tls-cert")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.to_string());
+        let tls_key_grpc = args.iter().position(|a| a == "--tls-key")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.to_string());
+
         // Spawn gRPC server
         tokio::spawn(async move {
-            let addr = format!("0.0.0.0:{}", swarm_port).parse().unwrap();
-            let server = swarm::create_grpc_server(grpc_state);
-            info!("🐝 Swarm Controller listening on {}", addr);
-            let _ = tonic::transport::Server::builder().add_service(server).serve(addr).await;
+            if let (Some(cert_path), Some(key_path)) = (&tls_cert_grpc, &tls_key_grpc) {
+                let cert = std::fs::read(cert_path).expect("Failed to read TLS cert");
+                let key = std::fs::read(key_path).expect("Failed to read TLS key");
+                let identity = tonic::transport::Identity::from_pem(cert, key);
+                let tls_config = tonic::transport::ServerTlsConfig::new().identity(identity);
+                let addr = format!("0.0.0.0:{}", swarm_port).parse().unwrap();
+                let server = swarm::create_grpc_server(grpc_state);
+                info!("🐝 Swarm Controller listening on {} (TLS)", addr);
+                let _ = tonic::transport::Server::builder()
+                    .tls_config(tls_config).unwrap()
+                    .add_service(server)
+                    .serve(addr).await;
+            } else {
+                let addr = format!("0.0.0.0:{}", swarm_port).parse().unwrap();
+                let server = swarm::create_grpc_server(grpc_state);
+                info!("🐝 Swarm Controller listening on {}", addr);
+                let _ = tonic::transport::Server::builder().add_service(server).serve(addr).await;
+            }
         });
 
         // Pillar 4: Spawn Health Check Loop

@@ -284,6 +284,12 @@ impl Db {
     // --- RBAC Support ---
 
     pub fn create_user(&self, username: &str, password: &str, role: &str, api_key: &str) -> Result<()> {
+        if password.len() < 8 {
+            return Err(anyhow::anyhow!("Password must be at least 8 characters"));
+        }
+        if password.chars().all(|c| c.is_lowercase()) || password.chars().all(|c| c.is_uppercase()) {
+            return Err(anyhow::anyhow!("Password must contain mixed case or numbers"));
+        }
         let hashed = hash(password, DEFAULT_COST)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(

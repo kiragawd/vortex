@@ -24,6 +24,8 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     info!("   └─ Controller: {}", controller_addr);
 
     // Connect to controller with retry
+    // TODO: Add --tls-ca flag for worker TLS: if provided, use tonic::transport::Channel
+    //       with ClientTlsConfig::new().ca_certificate(...) for mTLS/TLS to the controller.
     let mut client = loop {
         match SwarmControllerClient::connect(controller_addr.to_string()).await {
             Ok(c) => break c,

@@ -73,19 +73,26 @@ nohup ./target/debug/vortex worker --controller http://localhost:50051 --capacit
 
 ### TLS / HTTPS
 
-VORTEX supports serving the Web UI and API over HTTPS. 
+Generate self-signed certificates for development:
 
-**Generate self-signed certificates:**
 ```bash
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+  -subj "/CN=localhost"
 ```
 
-**Run with TLS:**
+Run with TLS (both HTTP and gRPC):
+
 ```bash
 ./target/debug/vortex server --swarm --tls-cert cert.pem --tls-key key.pem
 ```
 
-Note: Without the `--tls-cert` and `--tls-key` flags, the server runs on HTTP as before (backward compatible).
+For production, use certificates from Let's Encrypt or your organization's CA.
+
+Workers connecting to a TLS-enabled controller:
+
+```bash
+./target/debug/vortex worker --controller https://localhost:50051 --capacity 4
+```
 
 ### Environment Variables
 
