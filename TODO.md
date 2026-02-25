@@ -40,32 +40,34 @@
 
 **Why:** Airflow's entire value prop is *automated* scheduling. Without this, VORTEX is trigger-only — nobody will take it seriously.
 
-### 2. Password Hashing (Security Critical)
+### 2. Password Hashing (Security Critical) ✅
 - [x] Replace plaintext `password_hash` storage with bcrypt or argon2
 - [x] Hash password on user creation (`POST /api/users`)
 - [x] Hash + compare on login (`POST /api/login`)
 - [x] Migrate existing plaintext passwords on first startup
-- [ ] Add password strength validation (min length, complexity)
 
 **Why:** Storing passwords in plaintext is a CVE waiting to happen. Non-negotiable for any production system.
 
-### 3. Structured Logging
+### 3. Structured Logging ✅
 - [x] Replace all `println!()` / `eprintln!()` with `tracing` crate
 - [x] Add log levels: DEBUG, INFO, WARN, ERROR
 - [x] JSON output format for log aggregation (ELK, Splunk, Datadog)
-- [ ] File rotation via `tracing-appender`
-- [ ] Request-level tracing with correlation IDs
 - [x] Configurable log level via CLI flag (`--log-level info`)
 
 **Why:** Enterprise ops teams need searchable, structured logs. `println!` doesn't cut it.
 
-### 4. TLS / HTTPS Support
+### 4. TLS / HTTPS Support ✅
 - [x] Accept `--tls-cert` and `--tls-key` CLI flags
 - [x] Serve Axum over HTTPS when certs are provided
-- [ ] gRPC TLS for controller ↔ worker communication
-- [ ] Document cert generation with `openssl` / Let's Encrypt
 
 **Why:** API keys are currently transmitted in plaintext over HTTP. Unacceptable for production.
+
+### Phase 1 — Remaining Polish
+- [ ] Add password strength validation (min length, complexity)
+- [ ] File rotation via `tracing-appender`
+- [ ] Request-level tracing with correlation IDs
+- [ ] gRPC TLS for controller ↔ worker communication
+- [ ] Document cert generation with `openssl` / Let's Encrypt
 
 ---
 
