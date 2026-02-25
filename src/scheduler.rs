@@ -1,3 +1,4 @@
+use tracing::{info, warn, error, debug};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -80,7 +81,7 @@ impl Dag {
 
     pub fn add_dependency(&mut self, upstream: &str, downstream: &str) {
         if upstream == downstream {
-            eprintln!("⚠️ Warning: Self-dependency detected in DAG {}: {}", self.id, upstream);
+            warn!("⚠️ Warning: Self-dependency detected in DAG {}: {}", self.id, upstream);
             return;
         }
         self.dependencies
@@ -127,7 +128,7 @@ impl Scheduler {
 
     pub async fn run_with_trigger(&self, triggered_by: &str) -> Result<()> {
         let start_time = Utc::now();
-        println!("🚀 Starting DAG (VORTEX Parallel Mode): {}", self.dag.id);
+        info!("🚀 Starting DAG (VORTEX Parallel Mode): {}", self.dag.id);
 
         // Create a DAG run
         let dag_run_id = Uuid::new_v4().to_string();
@@ -155,13 +156,13 @@ impl Scheduler {
             if let Some(deg) = in_degree.get_mut(down) {
                 *deg += 1;
             } else {
-                eprintln!("⚠️ Warning: Dependency reference to unknown task: {}", down);
+                warn!("⚠️ Warning: Dependency reference to unknown task: {}", down);
                 continue;
             }
             if let Some(v) = adj.get_mut(up) {
                 v.push(down.clone());
             } else {
-                eprintln!("⚠️ Warning: Dependency reference from unknown task: {}", up);
+                warn!("⚠️ Warning: Dependency reference from unknown task: {}", up);
             }
         }
 
@@ -224,7 +225,7 @@ impl Scheduler {
         self.db.update_dag_run_state(&dag_run_id, final_state)?;
 
         let total_duration = Utc::now() - start_time;
-        println!("✅ DAG {} finished in {}ms [{}] (100x speed target: PASSED)", 
+        info!("✅ DAG {} finished in {}ms [{}] (100x speed target: PASSED)", 
                  self.dag.id, total_duration.num_milliseconds(), final_state);
         Ok(())
     }
@@ -235,9 +236,9 @@ impl Scheduler {
             return Ok(());
         }
 
-        println!("⚠️ Recovery Mode: Found {} interrupted tasks.", interrupted.len());
+        warn!("⚠️ Recovery Mode: Found {} interrupted tasks.", interrupted.len());
         for (ti_id, dag_id, task_id) in interrupted {
-            println!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
+            info!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
             self.db.update_task_state(&ti_id, "Failed")?;
         }
         Ok(())
@@ -251,14 +252,14 @@ impl Scheduler {
 
         // Persist initial state
         if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, "Queued", execution_date, &run_id) {
-            eprintln!("Failed to create task instance in DB: {}", e);
+            error!("Failed to create task instance in DB: {}", e);
         }
 
-        println!("⏳ Executing: {} (ID: {})", task.name, task.id);
+        debug!("⏳ Executing: {} (ID: {})", task.name, task.id);
         
         // Update to Running
         if let Err(e) = db.update_task_state(&ti_id, "Running") {
-            eprintln!("Failed to update task state to Running: {}", e);
+            error!("Failed to update task state to Running: {}", e);
         }
 
         // Prepare environment variables (secrets)
@@ -292,7 +293,7 @@ impl Scheduler {
         let log_path = PathBuf::from(&log_dir).join(&log_file_name);
 
         if let Err(e) = fs::create_dir_all(&log_dir) {
-            eprintln!("Failed to create log directory {}: {}", log_dir, e);
+            error!("Failed to create log directory {}: {}", log_dir, e);
         }
 
         let log_content = format!(
@@ -301,20 +302,20 @@ impl Scheduler {
         );
 
         if let Err(e) = fs::write(&log_path, log_content) {
-            eprintln!("Failed to write logs to {}: {}", log_path.display(), e);
+            error!("Failed to write logs to {}: {}", log_path.display(), e);
         }
 
         // Also update stdout/stderr in DB for the API to find
         let _ = db.update_task_logs(&ti_id, &result.stdout, &result.stderr);
 
         if result.success {
-            println!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
+            info!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
             let _ = db.update_task_state(&ti_id, "Success");
         } else {
             // Check for retries
             if let Ok((retry_count, _)) = db.get_task_instance_retry_info(&ti_id) {
                 if retry_count < task.max_retries {
-                    println!("  └─ RETRY: {} (Attempt {}/{}) after {}s delay", 
+                    warn!("  └─ RETRY: {} (Attempt {}/{}) after {}s delay", 
                         task_id, retry_count + 1, task.max_retries, task.retry_delay_secs);
                     let _ = db.increment_task_retry_count(&ti_id);
                     let _ = db.update_task_state(&ti_id, "Queued");
@@ -335,7 +336,7 @@ impl Scheduler {
                 }
             }
             
-            eprintln!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
+            error!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
             let _ = db.update_task_state(&ti_id, "Failed");
         }
 

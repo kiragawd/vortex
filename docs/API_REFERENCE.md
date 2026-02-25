@@ -34,7 +34,7 @@ The API key is obtained via the login endpoint. The default admin key is `vortex
 
 ```json
 // Request
-{ "username": "admin", "password_hash": "admin" }
+{ "username": "admin", "password": "admin" }
 
 // Response (200)
 { "api_key": "vortex_admin_key", "role": "Admin", "username": "admin" }
@@ -320,7 +320,7 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 ```json
 // Request
-{ "username": "viewer1", "password_hash": "password123", "role": "Viewer" }
+{ "username": "viewer1", "password": "password123", "role": "Viewer" }
 
 // Response (200)
 { "message": "User created", "api_key": "vx_generated_key..." }

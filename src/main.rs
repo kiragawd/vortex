@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 use chrono::Utc;
 use swarm::SwarmState;
 use vault::Vault;
+use tracing::{info, warn, error, debug};
+use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod scheduler;
 mod python_parser;
@@ -23,35 +25,58 @@ mod executor;
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
+    // Initialize structured logging
+    let log_level = args.iter().position(|a| a == "--log-level")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("info");
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("vortex={}", log_level)));
+
+    let json_output = args.iter().any(|a| a == "--log-json");
+
+    if json_output {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().with_target(false).with_thread_ids(false))
+            .init();
+    }
+
     // 🐝 WORKER MODE
     if args.len() > 1 && args[1] == "worker" {
         let controller_addr = args.iter().position(|a| a == "--controller").and_then(|i| args.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| "http://127.0.0.1:50051".to_string());
         let worker_id = args.iter().position(|a| a == "--id").and_then(|i| args.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
         let capacity: i32 = args.iter().position(|a| a == "--capacity").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(4);
         let labels: Vec<String> = args.iter().position(|a| a == "--labels").and_then(|i| args.get(i + 1)).map(|s| s.split(',').map(|l| l.trim().to_string()).collect()).unwrap_or_default();
-        println!("🌪️ VORTEX Swarm Worker v0.6.0");
+        info!("🌪️ VORTEX Swarm Worker v0.6.0");
         return worker::run_worker(&controller_addr, &worker_id, capacity, labels).await;
     }
 
     // 🌪️ CONTROLLER MODE
-    println!("🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational");
+    info!("🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational");
 
     // Pillar 3: Initialize Secret Vault
     let vault = match Vault::new() {
-        Ok(v) => { println!("🔐 Secret Vault initialized (AES-256-GCM)."); Some(Arc::new(v)) },
-        Err(e) => { println!("⚠️ Secret Vault DISABLED: {}. Secrets will not be available.", e); None }
+        Ok(v) => { info!("🔐 Secret Vault initialized (AES-256-GCM)."); Some(Arc::new(v)) },
+        Err(e) => { warn!("⚠️ Secret Vault DISABLED: {}. Secrets will not be available.", e); None }
     };
 
     // Initialize DB
     let db = Arc::new(Db::init("vortex.db")?);
-    println!("🗄️ Database initialized.");
+    info!("🗄️ Database initialized.");
 
     // Recovery Mode
     let interrupted = db.get_interrupted_tasks()?;
     if !interrupted.is_empty() {
-        println!("⚠️ Recovery Mode: Found {} interrupted tasks from previous run.", interrupted.len());
+        warn!("⚠️ Recovery Mode: Found {} interrupted tasks from previous run.", interrupted.len());
         for (ti_id, dag_id, task_id) in interrupted {
-            println!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
+            info!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
             let _ = db.update_task_state(&ti_id, "Failed");
         }
     }
@@ -60,7 +85,7 @@ async fn main() -> Result<()> {
     {
         let mut map = all_dags.lock().unwrap();
         let bench = create_benchmark_dag();
-        println!("🛠️ Registering core DAG: {}", bench.id);
+        info!("🛠️ Registering core DAG: {}", bench.id);
         map.insert(bench.id.clone(), Arc::new(bench));
 
         // Scan dags/
@@ -71,11 +96,11 @@ async fn main() -> Result<()> {
                     let path = entry.path();
                     if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("py") {
                         if let Some(path_str) = path.to_str() {
-                            println!("🐍 Loading DAG file: {}", path_str);
+                            info!("🐍 Loading DAG file: {}", path_str);
                             match python_parser::parse_python_dag(path_str) {
                                 Ok(dags) => {
                                     for dag in dags { 
-                                        println!("✅ Loaded DAG: {}", dag.id);
+                                        info!("✅ Loaded DAG: {}", dag.id);
                                         let dag_id = dag.id.clone();
                                         map.insert(dag_id.clone(), Arc::new(dag));
                                         
@@ -84,7 +109,7 @@ async fn main() -> Result<()> {
                                     }
                                 },
                                 Err(e) => {
-                                    println!("❌ Failed to parse DAG file {}: {}", path_str, e);
+                                    error!("❌ Failed to parse DAG file {}: {}", path_str, e);
                                 }
                             }
                         }
@@ -94,7 +119,7 @@ async fn main() -> Result<()> {
         }
         for dag in map.values() { db.register_dag(dag)?; }
     }
-    println!("✅ Loaded DAGs.");
+    info!("✅ Loaded DAGs.");
 
     // Swarm
     let swarm_enabled = args.iter().any(|a| a == "--swarm");
@@ -109,7 +134,7 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let addr = format!("0.0.0.0:{}", swarm_port).parse().unwrap();
             let server = swarm::create_grpc_server(grpc_state);
-            println!("🐝 Swarm Controller listening on {}", addr);
+            info!("🐝 Swarm Controller listening on {}", addr);
             let _ = tonic::transport::Server::builder().add_service(server).serve(addr).await;
         });
 
@@ -121,6 +146,13 @@ async fn main() -> Result<()> {
 
     let (tx, mut rx) = mpsc::channel::<scheduler::ScheduleRequest>(32);
 
+    let tls_cert = args.iter().position(|a| a == "--tls-cert")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.to_string());
+    let tls_key = args.iter().position(|a| a == "--tls-key")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.to_string());
+
     // Web UI
     let db_web = Arc::clone(&db);
     let tx_web = tx.clone();
@@ -129,7 +161,7 @@ async fn main() -> Result<()> {
     let dags_web = Arc::clone(&all_dags);
     tokio::spawn(async move {
         let server = web::WebServer::new(db_web, tx_web, swarm_web, vault_web, dags_web);
-        server.run(3000).await;
+        server.run(3000, tls_cert, tls_key).await;
     });
 
     // Scheduler Loop
@@ -137,9 +169,9 @@ async fn main() -> Result<()> {
     let dags_sched = Arc::clone(&all_dags);
     let swarm_sched = Arc::clone(&swarm_state);
     tokio::spawn(async move {
-        println!("🌀 Scheduler loop started.");
+        info!("🌀 Scheduler loop started.");
         while let Some(req) = rx.recv().await {
-            println!("🔔 Scheduler received request: {:?}", req);
+            debug!("🔔 Scheduler received request: {:?}", req);
             let dag = {
                 let map = dags_sched.lock().unwrap();
                 map.get(&req.dag_id).cloned()
@@ -147,10 +179,10 @@ async fn main() -> Result<()> {
 
             if let Some(dag) = dag {
                 let worker_count = swarm_sched.active_worker_count().await;
-                println!("🔎 Scheduler: Found DAG {}. Swarm enabled: {}. Active workers: {}", req.dag_id, swarm_sched.enabled, worker_count);
+                debug!("🔎 Scheduler: Found DAG {}. Swarm enabled: {}. Active workers: {}", req.dag_id, swarm_sched.enabled, worker_count);
 
                 if swarm_sched.enabled && worker_count > 0 {
-                    println!("🐝 Scheduler: Dispatching to SWARM mode.");
+                    info!("🐝 Scheduler: Dispatching to SWARM mode.");
                     let dag_run_id = uuid::Uuid::new_v4().to_string();
                     let execution_date = Utc::now();
                     let _ = db_sched.create_dag_run(&dag_run_id, &req.dag_id, execution_date, &req.triggered_by);
@@ -276,14 +308,14 @@ async fn main() -> Result<()> {
                             }
                         }
                         let _ = db_clone.update_dag_run_state(&run_id_clone, if all_success { "Success" } else { "Failed" });
-                        println!("🏁 Swarm Orchestrator: DAG Run {} finished (Success: {})", run_id_clone, all_success);
+                        info!("🏁 Swarm Orchestrator: DAG Run {} finished (Success: {})", run_id_clone, all_success);
                     });
                 } else {
                     let scheduler = Scheduler::new_with_arc(Arc::clone(&dag), Arc::clone(&db_sched));
                     match req.run_type {
                         scheduler::RunType::Full => { let _ = scheduler.run_with_trigger(&req.triggered_by).await; },
                         scheduler::RunType::RetryFromFailure => { 
-                             println!("⚠️ Standalone Retry not implemented yet (Swarm mode recommended)");
+                             warn!("⚠️ Standalone Retry not implemented yet (Swarm mode recommended)");
                              let _ = scheduler.run_with_trigger(&req.triggered_by).await;
                         }
                     }
@@ -292,8 +324,85 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Cron Scheduler Loop
+    let db_cron = Arc::clone(&db);
+    let tx_cron = tx.clone();
+    tokio::spawn(async move {
+        info!("⏰ Cron scheduler loop started (checking every 60s)");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            
+            match db_cron.get_scheduled_dags() {
+                Ok(scheduled_dags) => {
+                    for (dag_id, schedule_expr, last_run, is_paused, _timezone, max_active_runs, _catchup) in scheduled_dags {
+                        if is_paused { continue; }
+                        
+                        if let Ok(active_count) = db_cron.get_active_dag_run_count(&dag_id) {
+                            if active_count >= max_active_runs { continue; }
+                        }
+                        
+                        let schedule_str = normalize_schedule(&schedule_expr);
+                        if schedule_str.is_empty() { continue; }
+                        
+                        let schedule: cron::Schedule = match schedule_str.parse() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("⚠️ Invalid cron expression for DAG {}: {} ({})", dag_id, schedule_expr, e);
+                                continue;
+                            }
+                        };
+                        
+                        let now = chrono::Utc::now();
+                        let should_run = match last_run {
+                            Some(last) => {
+                                schedule.after(&last).next().map_or(false, |next_time| next_time <= now)
+                            }
+                            None => true,
+                        };
+                        
+                        if should_run {
+                            info!("⏰ Cron triggering DAG: {} (schedule: {})", dag_id, schedule_expr);
+                            let _ = db_cron.update_dag_last_run(&dag_id, now);
+                            if let Some(next) = schedule.after(&now).next() {
+                                let _ = db_cron.update_dag_next_run(&dag_id, Some(next));
+                            }
+                            let _ = tx_cron.send(crate::scheduler::ScheduleRequest {
+                                dag_id: dag_id.clone(),
+                                triggered_by: "scheduler".to_string(),
+                                run_type: crate::scheduler::RunType::Full,
+                            }).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ Cron scheduler error: {}", e);
+                }
+            }
+        }
+    });
+
     tokio::signal::ctrl_c().await?;
     Ok(())
+}
+
+fn normalize_schedule(expr: &str) -> String {
+    match expr.trim() {
+        "@yearly" | "@annually" => "0 0 0 1 1 * *".to_string(),
+        "@monthly" => "0 0 0 1 * * *".to_string(),
+        "@weekly" => "0 0 0 * * 0 *".to_string(),
+        "@daily" | "@midnight" => "0 0 0 * * * *".to_string(),
+        "@hourly" => "0 0 * * * * *".to_string(),
+        "@once" => "".to_string(),
+        other => {
+            let parts: Vec<&str> = other.split_whitespace().collect();
+            match parts.len() {
+                5 => format!("0 {} *", other),
+                6 => format!("0 {}", other),
+                7 => other.to_string(),
+                _ => other.to_string(),
+            }
+        }
+    }
 }
 
 fn create_benchmark_dag() -> Dag {

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use bcrypt::{hash, verify, DEFAULT_COST};
 use std::path::Path;
 use std::sync::Mutex;
 use chrono::{DateTime, Utc};
@@ -185,10 +186,29 @@ impl Db {
         )?;
 
         // Seed users if not exists
-        conn.execute(
-            "INSERT OR IGNORE INTO users (username, password_hash, role, api_key) VALUES (?1, ?2, ?3, ?4)",
-            params!["admin", "admin", "Admin", "vortex_admin_key"],
-        )?;
+        // Migrate existing plaintext passwords to bcrypt on startup
+        let needs_migration: bool = conn.query_row(
+            "SELECT COUNT(*) FROM users WHERE username = 'admin' AND length(password_hash) < 30",
+            [], |row| row.get::<_, i32>(0)
+        ).unwrap_or(0) > 0;
+
+        if needs_migration {
+            let hashed = bcrypt::hash("admin", bcrypt::DEFAULT_COST).expect("bcrypt hash failed");
+            conn.execute("UPDATE users SET password_hash = ?1 WHERE username = 'admin'", params![hashed])?;
+        }
+
+        // Seed admin if not exists (with hashed password)
+        let admin_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM users WHERE username = 'admin'", [], |row| row.get::<_, i32>(0)
+        ).unwrap_or(0) > 0;
+
+        if !admin_exists {
+            let hashed = bcrypt::hash("admin", bcrypt::DEFAULT_COST).expect("bcrypt hash failed");
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role, api_key) VALUES (?1, ?2, ?3, ?4)",
+                params!["admin", hashed, "Admin", "vortex_admin_key"],
+            )?;
+        }
 
         // Phase 2.4: DAG Versioning
         conn.execute(
@@ -263,11 +283,12 @@ impl Db {
 
     // --- RBAC Support ---
 
-    pub fn create_user(&self, username: &str, password_hash: &str, role: &str, api_key: &str) -> Result<()> {
+    pub fn create_user(&self, username: &str, password: &str, role: &str, api_key: &str) -> Result<()> {
+        let hashed = hash(password, DEFAULT_COST)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO users (username, password_hash, role, api_key) VALUES (?1, ?2, ?3, ?4)",
-            params![username, password_hash, role, api_key],
+            params![username, hashed, role, api_key],
         )?;
         Ok(())
     }
@@ -295,11 +316,22 @@ impl Db {
         Ok(users)
     }
 
-    pub fn validate_user(&self, username: &str, password_hash: &str) -> Result<Option<(String, String)>> {
+    pub fn validate_user(&self, username: &str, password: &str) -> Result<Option<(String, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT api_key, role FROM users WHERE username = ?1 AND password_hash = ?2")?;
-        let mut rows = stmt.query_map(params![username, password_hash], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        if let Some(row) = rows.next() { Ok(Some(row?)) } else { Ok(None) }
+        let mut stmt = conn.prepare("SELECT password_hash, api_key, role FROM users WHERE username = ?1")?;
+        let mut rows = stmt.query_map(params![username], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        if let Some(row) = rows.next() {
+            let (stored_hash, api_key, role) = row?;
+            if verify(password, &stored_hash).unwrap_or(false) {
+                Ok(Some((api_key, role)))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     // --- Secrets Support ---

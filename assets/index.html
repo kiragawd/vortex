@@ -329,7 +329,7 @@
             errEl.classList.add('hidden');
             if (!user || !pass) return;
             try {
-                const data = await api('/api/login', 'POST', { username: user, password_hash: pass });
+                const data = await api('/api/login', 'POST', { username: user, password: pass });
                 localStorage.setItem('vortex_api_key', data.api_key);
                 localStorage.setItem('vortex_role', data.role);
                 localStorage.setItem('vortex_user', data.username);
@@ -724,7 +724,7 @@
             errEl.classList.add('hidden');
             if (!name || !pass) { errEl.textContent = 'Username and password required'; errEl.classList.remove('hidden'); return; }
             try {
-                await api('/api/users', 'POST', { username: name, password_hash: pass, role: role });
+                await api('/api/users', 'POST', { username: name, password: pass, role: role });
                 closeAddUserModal();
                 fetchUsers();
             } catch (e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }

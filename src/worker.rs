@@ -1,3 +1,4 @@
+use tracing::{info, warn, error};
 use anyhow::Result;
 use std::time::Duration;
 
@@ -15,19 +16,19 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    println!("🐝 VORTEX Worker starting...");
-    println!("   ├─ Worker ID: {}", worker_id);
-    println!("   ├─ Hostname: {}", host);
-    println!("   ├─ Capacity: {} concurrent tasks", capacity);
-    println!("   ├─ Labels: {:?}", labels);
-    println!("   └─ Controller: {}", controller_addr);
+    info!("🐝 VORTEX Worker starting...");
+    info!("   ├─ Worker ID: {}", worker_id);
+    info!("   ├─ Hostname: {}", host);
+    info!("   ├─ Capacity: {} concurrent tasks", capacity);
+    info!("   ├─ Labels: {:?}", labels);
+    info!("   └─ Controller: {}", controller_addr);
 
     // Connect to controller with retry
     let mut client = loop {
         match SwarmControllerClient::connect(controller_addr.to_string()).await {
             Ok(c) => break c,
             Err(e) => {
-                eprintln!("⚠️ Cannot connect to controller: {}. Retrying in 5s...", e);
+                warn!("⚠️ Cannot connect to controller: {}. Retrying in 5s...", e);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -44,7 +45,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     if !reg_response.accepted {
         anyhow::bail!("Worker registration rejected: {}", reg_response.message);
     }
-    println!("✅ Registered with controller: {}", reg_response.message);
+    info!("✅ Registered with controller: {}", reg_response.message);
 
     let active_tasks = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
     let should_exit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -72,7 +73,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 
             if let Ok(resp) = response {
                 if resp.into_inner().should_drain {
-                    println!("⚠️ Controller requested drain. Finishing active tasks...");
+                    warn!("⚠️ Controller requested drain. Finishing active tasks...");
                     hb_exit.store(true, std::sync::atomic::Ordering::Relaxed);
                     break;
                 }
@@ -81,12 +82,12 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     });
 
     // Main poll loop
-    println!("🚀 Worker polling for tasks...");
+    info!("🚀 Worker polling for tasks...");
     loop {
         if should_exit.load(std::sync::atomic::Ordering::Relaxed) 
             && active_tasks.load(std::sync::atomic::Ordering::Relaxed) == 0 
         {
-            println!("👋 Worker draining complete. Exiting.");
+            info!("👋 Worker draining complete. Exiting.");
             break;
         }
 
@@ -104,7 +105,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
         }).await {
             Ok(r) => r.into_inner(),
             Err(e) => {
-                eprintln!("⚠️ Poll error: {}. Retrying...", e);
+                warn!("⚠️ Poll error: {}. Retrying...", e);
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 client = match SwarmControllerClient::connect(controller_addr.to_string()).await {
                     Ok(c) => c,
@@ -143,7 +144,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 }
 
 async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResult {
-    println!("⏳ Executing: {}/{} (type: {}, instance: {})", 
+    info!("⏳ Executing: {}/{} (type: {}, instance: {})", 
         task.dag_id, task.task_id, task.task_type, task.task_instance_id);
     
     let result = match task.task_type.as_str() {
@@ -155,7 +156,7 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
         }
     };
 
-    println!("  └─ {}: {}/{} ({}ms)", 
+    info!("  └─ {}: {}/{} ({}ms)", 
         if result.success { "SUCCESS" } else { "FAILED" },
         task.dag_id, task.task_id, result.duration_ms);
 

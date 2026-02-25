@@ -71,6 +71,22 @@ nohup ./target/debug/vortex worker --controller http://localhost:50051 --capacit
 
 ## Configuration
 
+### TLS / HTTPS
+
+VORTEX supports serving the Web UI and API over HTTPS. 
+
+**Generate self-signed certificates:**
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+```
+
+**Run with TLS:**
+```bash
+./target/debug/vortex server --swarm --tls-cert cert.pem --tls-key key.pem
+```
+
+Note: Without the `--tls-cert` and `--tls-key` flags, the server runs on HTTP as before (backward compatible).
+
 ### Environment Variables
 
 | Variable | Required | Description |
@@ -108,6 +124,8 @@ On first run, VORTEX seeds a default admin user:
 | Username | Password | Role | API Key |
 |----------|----------|------|---------|
 | `admin` | `admin` | Admin | `vortex_admin_key` |
+
+**Passwords are bcrypt-hashed** (cost factor 12) before storage. The default admin password `"admin"` is automatically bcrypt-hashed on first startup. If an existing plaintext password is detected in the database (shorter than 30 characters), it is migrated to bcrypt automatically.
 
 **⚠️ Change the admin password in production!**
 
@@ -199,4 +217,4 @@ cp vortex.db.backup-20260225 vortex.db
 - [API Reference](./API_REFERENCE.md) — REST API endpoints
 - [Python Integration](./PHASE_2_PYTHON_INTEGRATION.md) — DAG authoring
 - [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Secret management
-- [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery
+- [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery on worker failure

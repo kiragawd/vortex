@@ -31,37 +31,37 @@
 > Must ship before any enterprise eval. Without these, VORTEX is a demo.
 
 ### 1. Cron Scheduler Loop (Auto-Trigger DAGs)
-- [ ] Tokio task that wakes every 60 seconds
-- [ ] Evaluate all DAGs with `schedule_interval` (cron expressions)
-- [ ] Compare `last_run` vs cron expression to decide if a run is due
-- [ ] Respect `is_paused`, `max_active_runs`, and `catchup` flags
-- [ ] Update `last_run` and `next_run` columns after each trigger
-- [ ] Support standard cron syntax + Airflow presets (`@daily`, `@hourly`, `@weekly`)
+- [x] Tokio task that wakes every 60 seconds
+- [x] Evaluate all DAGs with `schedule_interval` (cron expressions)
+- [x] Compare `last_run` vs cron expression to decide if a run is due
+- [x] Respect `is_paused`, `max_active_runs`, and `catchup` flags
+- [x] Update `last_run` and `next_run` columns after each trigger
+- [x] Support standard cron syntax + Airflow presets (`@daily`, `@hourly`, `@weekly`)
 
 **Why:** Airflow's entire value prop is *automated* scheduling. Without this, VORTEX is trigger-only — nobody will take it seriously.
 
 ### 2. Password Hashing (Security Critical)
-- [ ] Replace plaintext `password_hash` storage with bcrypt or argon2
-- [ ] Hash password on user creation (`POST /api/users`)
-- [ ] Hash + compare on login (`POST /api/login`)
-- [ ] Migrate existing plaintext passwords on first startup
+- [x] Replace plaintext `password_hash` storage with bcrypt or argon2
+- [x] Hash password on user creation (`POST /api/users`)
+- [x] Hash + compare on login (`POST /api/login`)
+- [x] Migrate existing plaintext passwords on first startup
 - [ ] Add password strength validation (min length, complexity)
 
 **Why:** Storing passwords in plaintext is a CVE waiting to happen. Non-negotiable for any production system.
 
 ### 3. Structured Logging
-- [ ] Replace all `println!()` / `eprintln!()` with `tracing` crate
-- [ ] Add log levels: DEBUG, INFO, WARN, ERROR
-- [ ] JSON output format for log aggregation (ELK, Splunk, Datadog)
+- [x] Replace all `println!()` / `eprintln!()` with `tracing` crate
+- [x] Add log levels: DEBUG, INFO, WARN, ERROR
+- [x] JSON output format for log aggregation (ELK, Splunk, Datadog)
 - [ ] File rotation via `tracing-appender`
 - [ ] Request-level tracing with correlation IDs
-- [ ] Configurable log level via CLI flag (`--log-level info`)
+- [x] Configurable log level via CLI flag (`--log-level info`)
 
 **Why:** Enterprise ops teams need searchable, structured logs. `println!` doesn't cut it.
 
 ### 4. TLS / HTTPS Support
-- [ ] Accept `--tls-cert` and `--tls-key` CLI flags
-- [ ] Serve Axum over HTTPS when certs are provided
+- [x] Accept `--tls-cert` and `--tls-key` CLI flags
+- [x] Serve Axum over HTTPS when certs are provided
 - [ ] gRPC TLS for controller ↔ worker communication
 - [ ] Document cert generation with `openssl` / Let's Encrypt
 

@@ -1,3 +1,4 @@
+use tracing::{info, debug};
 use axum::{
     extract::{Path, State, Multipart},
     http::{Request, StatusCode},
@@ -47,7 +48,7 @@ impl WebServer {
         Self { db, tx, swarm, vault, dags }
     }
 
-    pub async fn run(self, port: u16) {
+    pub async fn run(self, port: u16, tls_cert: Option<String>, tls_key: Option<String>) {
         let state = Arc::new(AppState {
             db: self.db,
             tx: self.tx,
@@ -92,9 +93,23 @@ impl WebServer {
             .fallback(static_handler)
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
-        println!("🌐 Web UI running on http://localhost:{}", port);
-        axum::serve(listener, app).await.unwrap();
+        if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+                .await
+                .expect("Failed to load TLS certificates");
+            info!("🔒 Web UI running on https://localhost:{} (TLS)", port);
+            axum_server::bind_rustls(
+                format!("0.0.0.0:{}", port).parse().unwrap(),
+                config,
+            )
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+        } else {
+            let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+            info!("🌐 Web UI running on http://localhost:{}", port);
+            axum::serve(listener, app).await.unwrap();
+        }
     }
 }
 
@@ -134,7 +149,7 @@ async fn auth_middleware(
                 return Err(StatusCode::FORBIDDEN);
             }
 
-            println!("👤 Authenticated: {} (Role: {})", username, role);
+            debug!("👤 Authenticated: {} (Role: {})", username, role);
             Ok(next.run(req).await)
         }
         _ => Err(StatusCode::UNAUTHORIZED),
@@ -203,7 +218,7 @@ async fn upload_dag(State(state): State<Arc<AppState>>, mut multipart: Multipart
                         dags.insert(dag_meta.dag_id.clone(), Arc::new(dag));
                     }
                     
-                    println!("🚀 DAG Uploaded: {} ({} tasks)", dag_meta.dag_id, dag_meta.tasks.len());
+                    info!("🚀 DAG Uploaded: {} ({} tasks)", dag_meta.dag_id, dag_meta.tasks.len());
                     return Json(dag_meta).into_response();
                 },
                 Err(e) => {
@@ -243,20 +258,20 @@ async fn get_users(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct CreateUserRequest {
     username: String,
-    password_hash: String, // Simplified for now (plain storage or pre-hashed)
+    password: String,
     role: String,
 }
 
 #[derive(Deserialize)]
 struct LoginRequest {
     username: String,
-    password_hash: String,
+    password: String,
 }
 
 async fn login(State(state): State<Arc<AppState>>, Json(body): Json<LoginRequest>) -> Response {
-    match state.db.validate_user(&body.username, &body.password_hash) {
+    match state.db.validate_user(&body.username, &body.password) {
         Ok(Some((api_key, role))) => {
-            println!("🔑 User logged in: {} (Role: {})", body.username, role);
+            info!("🔑 User logged in: {} (Role: {})", body.username, role);
             Json(json!({ "api_key": api_key, "role": role, "username": body.username })).into_response()
         }
         Ok(None) => (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response(),
@@ -266,7 +281,7 @@ async fn login(State(state): State<Arc<AppState>>, Json(body): Json<LoginRequest
 
 async fn create_user(State(state): State<Arc<AppState>>, Json(body): Json<CreateUserRequest>) -> Response {
     let api_key = format!("vx_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-    match state.db.create_user(&body.username, &body.password_hash, &body.role, &api_key) {
+    match state.db.create_user(&body.username, &body.password, &body.role, &api_key) {
         Ok(_) => Json(json!({ "message": "User created", "api_key": api_key })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
@@ -308,7 +323,7 @@ async fn store_secret(State(state): State<Arc<AppState>>, Json(body): Json<Secre
             if let Err(e) = state.db.store_secret(&body.key, &encrypted) {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB Error: {}", e) }))).into_response();
             }
-            println!("🔐 Secret stored: {}", body.key);
+            info!("🔐 Secret stored: {}", body.key);
             Json(json!({ "message": "Secret stored successfully" })).into_response()
         },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Encryption failure: {}", e) }))).into_response(),
@@ -411,7 +426,7 @@ async fn get_dag_source(Path(id): Path<String>, State(state): State<Arc<AppState
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
             }
         },
-        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "DAG source not found"}))).into_response(),
+        _ => (StatusCode::NOT_FOUND, Json(json!({ "error": "DAG source not found" }))).into_response(),
     }
 }
 

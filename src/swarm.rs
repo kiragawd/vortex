@@ -1,3 +1,4 @@
+use tracing::{info, warn};
 use tonic::{Request, Response, Status};
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -59,7 +60,7 @@ impl SwarmState {
 
     pub async fn enqueue_task(&self, task: PendingTask) {
         let mut queue = self.task_queue.write().await;
-        println!("🐝 Swarm: Task queued for remote execution: {}/{}", task.dag_id, task.task_id);
+        info!("🐝 Swarm: Task queued for remote execution: {}/{}", task.dag_id, task.task_id);
         queue.push(task);
     }
 
@@ -107,12 +108,12 @@ impl SwarmState {
             // 1. Detect Offline Workers
             if let Ok(stale_workers) = self.db.mark_stale_workers_offline(60) {
                 for worker_id in stale_workers {
-                    println!("⚠️ Swarm: Worker {} missed heartbeats. Marking OFFLINE.", worker_id);
+                    warn!("⚠️ Swarm: Worker {} missed heartbeats. Marking OFFLINE.", worker_id);
                     
                     // 2. Re-queue tasks assigned to this worker
                     if let Ok(count) = self.db.requeue_worker_tasks(&worker_id) {
                         if count > 0 {
-                            println!("♻️ Swarm: Re-queued {} tasks from offline worker {}.", count, worker_id);
+                            warn!("♻️ Swarm: Re-queued {} tasks from offline worker {}.", count, worker_id);
                             
                             // 3. Move them back to in-memory queue for scheduling
                             let mut queue = self.task_queue.write().await;
@@ -153,7 +154,7 @@ impl SwarmController for SwarmService {
     async fn register_worker(&self, request: Request<WorkerInfo>) -> Result<Response<RegisterResponse>, Status> {
         let info = request.into_inner();
         let mut workers = self.state.workers.write().await;
-        println!("🐝 Swarm: Worker registered: {}", info.worker_id);
+        info!("🐝 Swarm: Worker registered: {}", info.worker_id);
         
         // Pillar 4: Persistent Worker State
         let labels_str = info.labels.join(",");
@@ -188,7 +189,7 @@ impl SwarmController for SwarmService {
         
         let mut tasks = Vec::new();
         for t in queue.drain(..count) {
-            println!("🐝 Swarm: Dispatching {}/{} to worker {}", t.dag_id, t.task_id, poll.worker_id);
+            info!("🐝 Swarm: Dispatching {}/{} to worker {}", t.dag_id, t.task_id, poll.worker_id);
             // Pillar 4: Assign task to worker in DB
             let _ = self.state.db.assign_task_to_worker(&t.task_instance_id, &poll.worker_id);
 
@@ -238,7 +239,7 @@ impl SwarmController for SwarmService {
         if !result.success {
             if let Ok((retry_count, _)) = self.state.db.get_task_instance_retry_info(&result.task_instance_id) {
                 if retry_count < result.max_retries {
-                    println!("♻️ Swarm: Task {} failed. Retrying ({}/{}).", result.task_id, retry_count + 1, result.max_retries);
+                    warn!("♻️ Swarm: Task {} failed. Retrying ({}/{}).", result.task_id, retry_count + 1, result.max_retries);
                     let _ = self.state.db.increment_task_retry_count(&result.task_instance_id);
                     let _ = self.state.db.update_task_state(&result.task_instance_id, "Queued");
                     

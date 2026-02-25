@@ -1,3 +1,4 @@
+use tracing::debug;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyDict, PyTuple};
 use pyo3::exceptions::PyRuntimeError;
@@ -278,11 +279,11 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         // Phase 2.4: Clear registry before loading a new file
         let vortex = py.import("vortex")?;
         let registry: Bound<'_, PyList> = vortex.getattr("_DAG_REGISTRY")?.downcast_into()?;
-        println!("🐍 PyO3: Registry count before clear: {}", registry.len());
+        debug!("🐍 PyO3: Registry count before clear: {}", registry.len());
         registry.call_method0("clear")?;
 
         // Read and execute the DAG file
-        println!("🐍 PyO3: Reading DAG file: {}", file_path);
+        debug!("🐍 PyO3: Reading DAG file: {}", file_path);
         let code = std::fs::read_to_string(file_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to read DAG file: {}", e)))?;
 
@@ -290,13 +291,13 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         let py_code = CString::new(code)
             .map_err(|e| PyRuntimeError::new_err(format!("NulError: {}", e)))?;
         
-        println!("🐍 PyO3: Executing Python code...");
+        debug!("🐍 PyO3: Executing Python code...");
         // Use the same dict for globals and locals to support typical script behavior
         py.run(&py_code, Some(&locals), Some(&locals))?;
 
         let get_dags = vortex.getattr("get_dags")?;
         let dags_data: Bound<'_, PyList> = get_dags.call0()?.downcast_into()?;
-        println!("🐍 PyO3: get_dags() returned {} items", dags_data.len());
+        debug!("🐍 PyO3: get_dags() returned {} items", dags_data.len());
 
         let mut dags = Vec::new();
 
