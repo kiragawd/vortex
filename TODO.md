@@ -85,23 +85,23 @@
 
 **Why:** Real pipelines need data flow between tasks. "Extract" passes file paths to "Transform", "Validate" passes row counts to "Alert", etc.
 
-### 6. Sensor Operators
-- [ ] New task type: `sensor` (polls a condition at intervals)
-- [ ] `FileSensor` — wait for a file to appear at a path
-- [ ] `HttpSensor` — wait for an HTTP endpoint to return 200
-- [ ] `ExternalTaskSensor` — wait for another DAG's task to succeed
-- [ ] `SqlSensor` — wait for a SQL query to return rows
-- [ ] Configurable: `poke_interval`, `timeout`, `mode` (poke vs reschedule)
+### 6. Sensor Operators ✅
+- [x] New task type: `sensor` (polls a condition at intervals)
+- [x] `FileSensor` — wait for a file to appear at a path
+- [x] `HttpSensor` — wait for an HTTP endpoint to return 200
+- [x] `ExternalTaskSensor` — wait for another DAG's task to succeed
+- [x] `SqlSensor` — wait for a SQL query to return rows
+- [x] Configurable: `poke_interval`, `timeout`, `mode` (poke vs reschedule)
 
 **Why:** Extremely common pattern. "Wait for upstream data to land, then process."
 
-### 7. Webhook Notifications / Callbacks
-- [ ] DAG-level callbacks: `on_success`, `on_failure`, `on_sla_miss`
-- [ ] Task-level callbacks: `on_failure`, `on_retry`
-- [ ] Webhook delivery (POST JSON to a URL)
-- [ ] Built-in Slack integration (incoming webhook URL)
-- [ ] Email integration (SMTP config)
-- [ ] Callback config stored in DAG metadata or global config
+### 7. Webhook Notifications / Callbacks ✅
+- [x] DAG-level callbacks: `on_success`, `on_failure`, `on_sla_miss`
+- [x] Task-level callbacks: `on_failure`, `on_retry`
+- [x] Webhook delivery (POST JSON to a URL)
+- [x] Built-in Slack integration (incoming webhook URL)
+- [x] Email integration (SMTP config)
+- [x] Callback config stored in DAG metadata or global config
 
 **Why:** If a DAG fails at 3 AM, somebody needs to know. Zero alerting = no enterprise adoption.
 
