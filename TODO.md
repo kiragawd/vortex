@@ -75,13 +75,13 @@
 
 > Features required for real-world data pipelines (ETL, ML, analytics).
 
-### 5. XCom (Inter-Task Data Passing)
-- [ ] `task_xcom` table: `(dag_id, task_id, run_id, key, value, timestamp)`
-- [ ] `xcom_push(key, value)` — callable from Python tasks via context
-- [ ] `xcom_pull(task_id, key)` — retrieve upstream task output
-- [ ] Inject upstream XCom values as env vars for bash tasks
-- [ ] REST API: `GET /api/dags/:id/runs/:run_id/xcom`
-- [ ] Size limit per XCom value (e.g., 64KB) to prevent abuse
+### 5. XCom (Inter-Task Data Passing) ✅
+- [x] `task_xcom` table: `(dag_id, task_id, run_id, key, value, timestamp)`
+- [x] `xcom_push(key, value)` — callable from Python tasks via context
+- [x] `xcom_pull(task_id, key)` — retrieve upstream task output
+- [x] Inject upstream XCom values as env vars for bash tasks
+- [x] REST API: `GET /api/dags/:id/runs/:run_id/xcom`
+- [x] Size limit per XCom value (e.g., 64KB) to prevent abuse
 
 **Why:** Real pipelines need data flow between tasks. "Extract" passes file paths to "Transform", "Validate" passes row counts to "Alert", etc.
 
@@ -105,13 +105,13 @@
 
 **Why:** If a DAG fails at 3 AM, somebody needs to know. Zero alerting = no enterprise adoption.
 
-### 8. Task Pools / Concurrency Limits
-- [ ] `pools` table: `(name, slots, description)`
-- [ ] Tasks can declare `pool = "database"` to share limited resources
-- [ ] Scheduler respects pool slot limits across all DAGs
-- [ ] REST API: CRUD for pools
-- [ ] UI: Pool management page
-- [ ] Default pool with configurable global limit
+### 8. Task Pools / Concurrency Limits ✅
+- [x] `pools` table: `(name, slots, description)`
+- [x] Tasks can declare `pool = "database"` to share limited resources
+- [x] Scheduler respects pool slot limits across all DAGs
+- [x] REST API: CRUD for pools
+- [x] UI: Pool management page
+- [x] Default pool with configurable global limit
 
 **Why:** Without this, 50 DAGs can all hammer the same database simultaneously. Pools prevent resource exhaustion.
 
