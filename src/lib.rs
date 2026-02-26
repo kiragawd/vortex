@@ -7,3 +7,5 @@ pub mod scheduler;
 pub mod web;
 pub mod python_parser;
 pub mod executor;
+pub mod xcom;
+pub mod pools;

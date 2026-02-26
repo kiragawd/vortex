@@ -345,6 +345,15 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
                 } else {
                     dag.add_task(&task_id, &task_id, "echo 'unknown operator'");
                 };
+
+                // Phase 2: Set pool if specified
+                if let Some(pool_val) = task_dict.get_item("pool")? {
+                    if let Ok(pool_str) = pool_val.extract::<String>() {
+                        if let Some(task) = dag.tasks.get_mut(&task_id) {
+                            task.pool = pool_str;
+                        }
+                    }
+                }
             }
 
             let deps_data: Bound<'_, PyList> =

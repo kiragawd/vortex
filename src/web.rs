@@ -1,10 +1,10 @@
 use tracing::{info, debug};
 use axum::{
-    extract::{Path, State, Multipart},
+    extract::{Path, State, Multipart, Query},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, patch, delete},
+    routing::{get, post, patch, delete, put},
     Json, Router,
 };
 use rust_embed::RustEmbed;
@@ -26,6 +26,8 @@ use std::sync::Mutex;
 struct Assets;
 
 use crate::scheduler::{ScheduleRequest, RunType};
+use crate::xcom::XComStore;
+use crate::pools::PoolManager;
 
 pub struct AppState {
     pub db: Arc<Db>,
@@ -33,6 +35,8 @@ pub struct AppState {
     pub swarm: Arc<SwarmState>,
     pub vault: Option<Arc<Vault>>,
     pub dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
+    pub xcom: Arc<XComStore>,
+    pub pool_manager: Arc<PoolManager>,
 }
 
 pub struct WebServer {
@@ -50,10 +54,12 @@ impl WebServer {
 
     pub async fn run(self, port: u16, tls_cert: Option<String>, tls_key: Option<String>) {
         let state = Arc::new(AppState {
-            db: self.db,
+            db: self.db.clone(),
             tx: self.tx,
             swarm: self.swarm,
             vault: self.vault,
+            xcom: Arc::new(XComStore::new(self.db.clone())),
+            pool_manager: Arc::new(PoolManager::new(self.db.clone())),
             dags: self.dags,
         });
 
@@ -85,6 +91,13 @@ impl WebServer {
             .route("/api/users", get(get_users))
             .route("/api/users", post(create_user))
             .route("/api/users/:username", delete(delete_user))
+            // Phase 2: XCom
+            .route("/api/xcom/push", post(xcom_push_handler))
+            .route("/api/xcom/pull", get(xcom_pull_handler))
+            .route("/api/dags/:id/runs/:run_id/xcom", get(xcom_list_handler))
+            // Phase 2: Task Pools
+            .route("/api/pools", get(list_pools).post(create_pool_handler))
+            .route("/api/pools/:name", get(get_pool_handler).put(update_pool_handler).delete(delete_pool_handler))
             .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
         let app = Router::new()
@@ -229,6 +242,7 @@ async fn upload_dag(State(state): State<Arc<AppState>>, mut multipart: Multipart
                             config: task_meta.config.clone(),
                             max_retries: task_meta.config.get("retries").and_then(|r| r.as_i64()).unwrap_or(0) as i32,
                             retry_delay_secs: task_meta.config.get("retry_delay").and_then(|r| r.as_i64()).unwrap_or(30) as i32,
+                            pool: task_meta.config.get("pool").and_then(|p| p.as_str()).unwrap_or("default").to_string(),
                         });
                     }
                     for (u, d) in &dag_meta.edges {
@@ -541,5 +555,126 @@ async fn static_handler(req: Request<axum::body::Body>) -> impl IntoResponse {
             ([(axum::http::header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+    }
+}
+
+// ─── Phase 2: XCom Handlers ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct XComPushRequest {
+    dag_id: String,
+    task_id: String,
+    run_id: String,
+    key: String,
+    value: String,
+}
+
+async fn xcom_push_handler(State(state): State<Arc<AppState>>, Json(body): Json<XComPushRequest>) -> Response {
+    match state.xcom.xcom_push(&body.dag_id, &body.task_id, &body.run_id, &body.key, body.value) {
+        Ok(_) => Json(json!({"status": "ok"})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct XComPullQuery {
+    dag_id: String,
+    task_id: String,
+    run_id: String,
+    key: String,
+}
+
+async fn xcom_pull_handler(State(state): State<Arc<AppState>>, Query(params): Query<XComPullQuery>) -> Response {
+    match state.xcom.xcom_pull(&params.dag_id, &params.task_id, &params.run_id, &params.key) {
+        Ok(Some(value)) => Json(json!({"value": value})).into_response(),
+        Ok(None) => {
+            let body: serde_json::Value = json!({"value": null});
+            (StatusCode::NOT_FOUND, Json(body)).into_response()
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+async fn xcom_list_handler(State(state): State<Arc<AppState>>, Path((dag_id, run_id)): Path<(String, String)>) -> Response {
+    match state.xcom.xcom_pull_all(&dag_id, &run_id) {
+        Ok(entries) => Json(json!(entries)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+// ─── Phase 2: Task Pool Handlers ────────────────────────────────────────────
+
+async fn list_pools(State(state): State<Arc<AppState>>) -> Response {
+    match state.pool_manager.get_all_pools() {
+        Ok(pools) => Json(json!({"pools": pools})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CreatePoolRequest {
+    name: String,
+    slots: i32,
+    #[serde(default)]
+    description: String,
+}
+
+async fn create_pool_handler(State(state): State<Arc<AppState>>, Json(body): Json<CreatePoolRequest>) -> Response {
+    match state.pool_manager.create_pool(&body.name, body.slots, &body.description) {
+        Ok(()) => Json(json!({"status": "created", "name": body.name})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+async fn get_pool_handler(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+    match state.pool_manager.get_pool(&name) {
+        Ok(Some(pool)) => Json(json!(pool)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "Pool not found"}))).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdatePoolRequest {
+    slots: i32,
+    #[serde(default)]
+    description: String,
+}
+
+async fn update_pool_handler(State(state): State<Arc<AppState>>, Path(name): Path<String>, Json(body): Json<UpdatePoolRequest>) -> Response {
+    match state.pool_manager.update_pool(&name, body.slots, &body.description) {
+        Ok(()) => Json(json!({"status": "updated", "name": name})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+async fn delete_pool_handler(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+    match state.pool_manager.delete_pool(&name) {
+        Ok(()) => Json(json!({"status": "deleted", "name": name})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+        }
     }
 }

@@ -18,6 +18,7 @@ pub struct Task {
     pub config: serde_json::Value,
     pub max_retries: i32,
     pub retry_delay_secs: i32,
+    pub pool: String,           // Pool for concurrency limits (default: "default")
 }
 
 pub struct Dag {
@@ -60,6 +61,7 @@ impl Dag {
                 config: serde_json::json!({}),
                 max_retries: 0,
                 retry_delay_secs: 30,
+                pool: "default".to_string(),
             },
         );
     }
@@ -75,6 +77,7 @@ impl Dag {
                 config: serde_json::json!({}),
                 max_retries: 0,
                 retry_delay_secs: 30,
+                pool: "default".to_string(),
             },
         );
     }
@@ -138,7 +141,7 @@ impl Scheduler {
         // Persist DAG and tasks to DB
         self.db.save_dag(&self.dag.id, self.dag.schedule_interval.as_deref())?;
         for task in self.dag.tasks.values() {
-            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs)?;
+            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs, &task.pool)?;
         }
 
         // Recovery Mode
@@ -262,8 +265,11 @@ impl Scheduler {
             error!("Failed to update task state to Running: {}", e);
         }
 
-        // Prepare environment variables (secrets)
-        let _env_vars = HashMap::new();
+        // Prepare environment variables (secrets + XCom context)
+        let mut _env_vars = HashMap::new();
+        _env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
+        _env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
+        _env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
         // In local mode, we might not have full vault access easily if it's not passed,
         // but we can try to fetch them from DB if needed.
         // For the integration test, we'll assume the executor handles it or we pass them.

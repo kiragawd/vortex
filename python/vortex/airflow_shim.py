@@ -72,8 +72,9 @@ class DAG:
 class BaseOperator:
     """Airflow-compatible base operator with dependency-chain support."""
 
-    def __init__(self, task_id, dag=None, **kwargs):
+    def __init__(self, task_id, dag=None, pool="default", **kwargs):
         self.task_id = task_id
+        self.pool = pool
         from . import context
         self.dag = dag or context._CURRENT_DAG
         self._upstream = []
@@ -114,6 +115,7 @@ class BaseOperator:
             "type": self.__class__.__name__,
             "upstream_task_ids": self._upstream,
             "downstream_task_ids": self._downstream,
+            "pool": self.pool,
         }
         if hasattr(self, "bash_command"):
             d["bash_command"] = self.bash_command

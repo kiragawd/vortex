@@ -16,6 +16,18 @@ pub struct ExecutionResult {
     pub duration_ms: u64,
 }
 
+/// Injects VORTEX context env vars (for XCom, etc.) into the command's environment.
+fn inject_vortex_env(cmd: &mut Command, env_vars: &HashMap<String, String>) {
+    cmd.envs(env_vars.iter());
+    // Always inject VORTEX_BASE_URL and VORTEX_API_KEY for XCom/pool helpers
+    if !env_vars.contains_key("VORTEX_BASE_URL") {
+        cmd.env("VORTEX_BASE_URL", std::env::var("VORTEX_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()));
+    }
+    if !env_vars.contains_key("VORTEX_API_KEY") {
+        cmd.env("VORTEX_API_KEY", std::env::var("VORTEX_API_KEY").unwrap_or_else(|_| "vortex_admin_key".to_string()));
+    }
+}
+
 #[allow(dead_code)]
 pub struct TaskExecutor;
 
@@ -30,9 +42,9 @@ impl TaskExecutor {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(bash_command)
-            .envs(env_vars)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        inject_vortex_env(&mut cmd, &env_vars);
 
         let result = timeout(Duration::from_secs(300), cmd.output()).await;
 
@@ -114,9 +126,9 @@ impl TaskExecutor {
 
         let mut cmd = Command::new("python3");
         cmd.arg(&temp_path)
-            .envs(env_vars)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        inject_vortex_env(&mut cmd, &env_vars);
 
         let result = timeout(Duration::from_secs(300), cmd.output()).await;
         let duration_ms = start.elapsed().as_millis() as u64;

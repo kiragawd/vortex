@@ -20,6 +20,8 @@ mod swarm;
 mod worker;
 mod vault;
 mod executor;
+mod xcom;
+mod pools;
 
 #[tokio::main]
 async fn main() -> Result<()> {

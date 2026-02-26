@@ -148,6 +148,9 @@ impl Db {
         if !task_cols.contains(&"retry_delay_secs".to_string()) {
             conn.execute("ALTER TABLE tasks ADD COLUMN retry_delay_secs INTEGER DEFAULT 30", [])?;
         }
+        if !task_cols.contains(&"pool".to_string()) {
+            conn.execute("ALTER TABLE tasks ADD COLUMN pool TEXT DEFAULT 'default'", [])?;
+        }
 
         // task_instances is now created at the beginning of init
 
@@ -209,6 +212,19 @@ impl Db {
                 params!["admin", hashed, "Admin", "vortex_admin_key"],
             )?;
         }
+
+        // Phase 2.5: XCom table
+        conn.execute(crate::xcom::XCOM_TABLE_SQL, [])?;
+
+        // Phase 2.8: Task Pools tables
+        conn.execute(crate::pools::POOLS_TABLE_SQL, [])?;
+        conn.execute(crate::pools::POOL_SLOTS_TABLE_SQL, [])?;
+
+        // Seed the default pool (idempotent)
+        conn.execute(
+            "INSERT OR IGNORE INTO pools (name, slots, description) VALUES ('default', 128, 'Default pool')",
+            [],
+        )?;
 
         // Phase 2.4: DAG Versioning
         conn.execute(
@@ -402,7 +418,7 @@ impl Db {
         }
 
         for task in dag.tasks.values() {
-            self.save_task(&dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs)?;
+            self.save_task(&dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs, &task.pool)?;
         }
         Ok(())
     }
@@ -456,7 +472,7 @@ impl Db {
 
     pub fn get_dag_tasks(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, command, task_type, config, max_retries, retry_delay_secs FROM tasks WHERE dag_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, name, command, task_type, config, max_retries, retry_delay_secs, pool FROM tasks WHERE dag_id = ?1")?;
         let rows = stmt.query_map(params![dag_id], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?, 
@@ -465,7 +481,8 @@ impl Db {
                 "task_type": row.get::<_, String>(3)?,
                 "config": serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(4)?).unwrap_or(serde_json::json!({})),
                 "max_retries": row.get::<_, i32>(5)?,
-                "retry_delay_secs": row.get::<_, i32>(6)?
+                "retry_delay_secs": row.get::<_, i32>(6)?,
+                "pool": row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "default".to_string())
             }))
         })?;
         let mut tasks = Vec::new();
@@ -581,10 +598,10 @@ impl Db {
         Ok(runs)
     }
 
-    pub fn save_task(&self, dag_id: &str, task_id: &str, name: &str, command: &str, task_type: &str, config: &str, max_retries: i32, retry_delay_secs: i32) -> Result<()> {
+    pub fn save_task(&self, dag_id: &str, task_id: &str, name: &str, command: &str, task_type: &str, config: &str, max_retries: i32, retry_delay_secs: i32, pool: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT OR REPLACE INTO tasks (id, dag_id, name, command, task_type, config, max_retries, retry_delay_secs) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", 
-            params![task_id, dag_id, name, command, task_type, config, max_retries, retry_delay_secs])?;
+        conn.execute("INSERT OR REPLACE INTO tasks (id, dag_id, name, command, task_type, config, max_retries, retry_delay_secs, pool) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", 
+            params![task_id, dag_id, name, command, task_type, config, max_retries, retry_delay_secs, pool])?;
         Ok(())
     }
 
