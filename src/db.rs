@@ -226,6 +226,9 @@ impl Db {
             [],
         )?;
 
+        // Phase 2.7: Webhook Notifications / Callbacks table
+        conn.execute(crate::notifications::CALLBACKS_TABLE_SQL, [])?;
+
         // Phase 2.4: DAG Versioning
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dag_versions (

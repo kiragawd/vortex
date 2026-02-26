@@ -22,6 +22,8 @@ mod vault;
 mod executor;
 mod xcom;
 mod pools;
+mod sensors;
+mod notifications;
 
 #[tokio::main]
 async fn main() -> Result<()> {

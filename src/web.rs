@@ -98,6 +98,8 @@ impl WebServer {
             // Phase 2: Task Pools
             .route("/api/pools", get(list_pools).post(create_pool_handler))
             .route("/api/pools/:name", get(get_pool_handler).put(update_pool_handler).delete(delete_pool_handler))
+            // Phase 2: Webhook Callbacks
+            .route("/api/dags/:id/callbacks", get(get_callbacks_handler).put(set_callbacks_handler).delete(delete_callbacks_handler))
             .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
         let app = Router::new()
@@ -672,6 +674,44 @@ async fn update_pool_handler(State(state): State<Arc<AppState>>, Path(name): Pat
 async fn delete_pool_handler(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     match state.pool_manager.delete_pool(&name) {
         Ok(()) => Json(json!({"status": "deleted", "name": name})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+// ─── Phase 2: Webhook Callback Handlers ─────────────────────────────────────
+
+async fn get_callbacks_handler(State(state): State<Arc<AppState>>, Path(dag_id): Path<String>) -> Response {
+    match crate::notifications::NotificationManager::get_callbacks(&state.db, &dag_id) {
+        Ok(Some(config)) => Json(json!({"dag_id": dag_id, "config": config})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "No callbacks configured"}))).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SetCallbacksRequest {
+    config: crate::notifications::CallbackConfig,
+}
+
+async fn set_callbacks_handler(State(state): State<Arc<AppState>>, Path(dag_id): Path<String>, Json(body): Json<SetCallbacksRequest>) -> Response {
+    match crate::notifications::NotificationManager::save_callbacks(&state.db, &dag_id, &body.config) {
+        Ok(()) => Json(json!({"status": "saved", "dag_id": dag_id})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+async fn delete_callbacks_handler(State(state): State<Arc<AppState>>, Path(dag_id): Path<String>) -> Response {
+    match crate::notifications::NotificationManager::delete_callbacks(&state.db, &dag_id) {
+        Ok(()) => Json(json!({"status": "deleted", "dag_id": dag_id})).into_response(),
         Err(e) => {
             let msg = e.to_string();
             (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()

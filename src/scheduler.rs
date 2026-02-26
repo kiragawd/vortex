@@ -90,6 +90,22 @@ impl Dag {
         self.dependencies
             .push((upstream.to_string(), downstream.to_string()));
     }
+
+    pub fn add_sensor_task(&mut self, id: &str, name: &str, sensor_config: serde_json::Value) {
+        self.tasks.insert(
+            id.to_string(),
+            Task {
+                id: id.to_string(),
+                name: name.to_string(),
+                command: String::new(),
+                task_type: "sensor".to_string(),
+                config: sensor_config,
+                max_retries: 0,
+                retry_delay_secs: 30,
+                pool: "default".to_string(),
+            },
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +301,66 @@ impl Scheduler {
         let result = match task.task_type.as_str() {
             "python" => {
                 crate::executor::TaskExecutor::execute_python(&task.id, &task.command, _env_vars).await
+            },
+            "sensor" => {
+                // Parse sensor config and run sensor loop
+                match serde_json::from_value::<crate::sensors::SensorConfig>(task.config.clone()) {
+                    Ok(sensor_config) => {
+                        let sensor_result = crate::sensors::run_sensor_loop(&sensor_config, &db).await;
+                        match sensor_result {
+                            crate::sensors::SensorResult::ConditionMet => {
+                                crate::executor::ExecutionResult {
+                                    task_id: task.id.clone(),
+                                    success: true,
+                                    exit_code: 0,
+                                    stdout: "Sensor condition met".to_string(),
+                                    stderr: String::new(),
+                                    duration_ms: 0,
+                                }
+                            }
+                            crate::sensors::SensorResult::TimedOut => {
+                                crate::executor::ExecutionResult {
+                                    task_id: task.id.clone(),
+                                    success: false,
+                                    exit_code: -3,
+                                    stdout: String::new(),
+                                    stderr: "Sensor timed out".to_string(),
+                                    duration_ms: 0,
+                                }
+                            }
+                            crate::sensors::SensorResult::Failed(msg) => {
+                                crate::executor::ExecutionResult {
+                                    task_id: task.id.clone(),
+                                    success: false,
+                                    exit_code: -4,
+                                    stdout: String::new(),
+                                    stderr: format!("Sensor failed: {}", msg),
+                                    duration_ms: 0,
+                                }
+                            }
+                            crate::sensors::SensorResult::Waiting => {
+                                crate::executor::ExecutionResult {
+                                    task_id: task.id.clone(),
+                                    success: false,
+                                    exit_code: -5,
+                                    stdout: String::new(),
+                                    stderr: "Sensor still waiting (should not reach here)".to_string(),
+                                    duration_ms: 0,
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::executor::ExecutionResult {
+                            task_id: task.id.clone(),
+                            success: false,
+                            exit_code: -6,
+                            stdout: String::new(),
+                            stderr: format!("Failed to parse sensor config: {}", e),
+                            duration_ms: 0,
+                        }
+                    }
+                }
             },
             _ => {
                 crate::executor::TaskExecutor::execute_bash(&task.id, &task.command, _env_vars).await
