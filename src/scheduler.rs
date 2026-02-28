@@ -4,7 +4,8 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use crate::db::Db;
+use crate::db_trait::DatabaseBackend;
+use crate::metrics::VortexMetrics;
 use uuid::Uuid;
 use std::fs;
 use std::path::PathBuf;
@@ -19,8 +20,11 @@ pub struct Task {
     pub max_retries: i32,
     pub retry_delay_secs: i32,
     pub pool: String,           // Pool for concurrency limits (default: "default")
+    pub task_group: Option<String>,
+    pub execution_timeout: Option<i32>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Dag {
     pub id: String,
     pub tasks: HashMap<String, Task>,
@@ -30,6 +34,7 @@ pub struct Dag {
     pub timezone: String,
     pub max_active_runs: i32,
     pub catchup: bool,
+    pub is_dynamic: bool,
 }
 
 impl Dag {
@@ -43,6 +48,7 @@ impl Dag {
             timezone: "UTC".to_string(),
             max_active_runs: 1,
             catchup: false,
+            is_dynamic: false,
         }
     }
 
@@ -62,6 +68,8 @@ impl Dag {
                 max_retries: 0,
                 retry_delay_secs: 30,
                 pool: "default".to_string(),
+                task_group: None,
+                execution_timeout: None,
             },
         );
     }
@@ -78,6 +86,8 @@ impl Dag {
                 max_retries: 0,
                 retry_delay_secs: 30,
                 pool: "default".to_string(),
+                task_group: None,
+                execution_timeout: None,
             },
         );
     }
@@ -103,6 +113,8 @@ impl Dag {
                 max_retries: 0,
                 retry_delay_secs: 30,
                 pool: "default".to_string(),
+                task_group: None,
+                execution_timeout: None,
             },
         );
     }
@@ -119,45 +131,91 @@ pub struct ScheduleRequest {
     pub dag_id: String,
     pub triggered_by: String,
     pub run_type: RunType,
+    pub execution_date: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub fn normalize_schedule(expr: &str) -> String {
+    match expr.trim() {
+        "@yearly" | "@annually" => "0 0 0 1 1 * *".to_string(),
+        "@monthly" => "0 0 0 1 * * *".to_string(),
+        "@weekly" => "0 0 0 * * 0 *".to_string(),
+        "@daily" | "@midnight" => "0 0 0 * * * *".to_string(),
+        "@hourly" => "0 0 * * * * *".to_string(),
+        "@once" => "".to_string(),
+        other => {
+            let parts: Vec<&str> = other.split_whitespace().collect();
+            match parts.len() {
+                5 => format!("0 {} *", other),
+                6 => format!("0 {}", other),
+                7 => other.to_string(),
+                _ => other.to_string(),
+            }
+        }
+    }
 }
 
 pub struct Scheduler {
     pub dag: Arc<Dag>,
-    pub db: Arc<Db>,
+    pub db: Arc<dyn DatabaseBackend>,
+    pub metrics: Option<Arc<VortexMetrics>>,
 }
 
 impl Scheduler {
-    pub fn new(dag: Dag, db: Arc<Db>) -> Self {
-        Self {
-            dag: Arc::new(dag),
-            db,
-        }
-    }
-
-    pub fn new_with_arc(dag: Arc<Dag>, db: Arc<Db>) -> Self {
+    pub fn new_with_arc(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>) -> Self {
         Self {
             dag,
             db,
+            metrics: None,
         }
     }
 
-    pub async fn run(&self) -> Result<()> {
-        self.run_with_trigger("manual").await
+    pub fn with_metrics(mut self, metrics: Arc<VortexMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
-    pub async fn run_with_trigger(&self, triggered_by: &str) -> Result<()> {
-        let start_time = Utc::now();
+
+
+    pub async fn run_with_trigger(&self, triggered_by: &str, start_time: Option<chrono::DateTime<Utc>>) -> Result<()> {
+        let start_time = start_time.unwrap_or_else(Utc::now);
+
+        // ── Team Quota Enforcement ──────────────────────────────────────────
+        // Determine if the DAG belongs to a team and if that team has hit its limits.
+        if let Ok(Some(dag_meta)) = self.db.get_dag_by_id(&self.dag.id).await {
+            if let Some(team_id) = dag_meta.get("team_id").and_then(|t| t.as_str()) {
+                if let Ok(Some(team_meta)) = self.db.get_team(team_id).await {
+                    let max_dags = team_meta.get("max_dags").and_then(|m| m.as_i64()).unwrap_or(0) as i32;
+                    let max_tasks = team_meta.get("max_concurrent_tasks").and_then(|m| m.as_i64()).unwrap_or(0) as i32;
+
+                    let active_dags = self.db.get_active_dag_runs_for_team(team_id).await.unwrap_or(0);
+                    let active_tasks = self.db.get_active_tasks_for_team(team_id).await.unwrap_or(0);
+
+                    if max_dags > 0 && active_dags >= max_dags {
+                        warn!("⚠️ DAG {} skipped: Team {} has reached its max concurrent DAG runs limit ({}/{})", self.dag.id, team_id, active_dags, max_dags);
+                        return Ok(());
+                    }
+
+                    // A bit rudimentary but prevents big bursts. True per-task
+                    // queue limits should ideally happen inside `execute_task` but this is a good start.
+                    if max_tasks > 0 && active_tasks >= max_tasks {
+                        warn!("⚠️ DAG {} skipped: Team {} has reached its max concurrent tasks limit ({}/{})", self.dag.id, team_id, active_tasks, max_tasks);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         info!("🚀 Starting DAG (VORTEX Parallel Mode): {}", self.dag.id);
 
         // Create a DAG run
         let dag_run_id = Uuid::new_v4().to_string();
-        self.db.create_dag_run(&dag_run_id, &self.dag.id, start_time, triggered_by)?;
-        self.db.update_dag_run_state(&dag_run_id, "Running")?;
+        self.db.create_dag_run(&dag_run_id, &self.dag.id, start_time, triggered_by).await?;
+        self.db.update_dag_run_state(&dag_run_id, "Running").await?;
 
         // Persist DAG and tasks to DB
-        self.db.save_dag(&self.dag.id, self.dag.schedule_interval.as_deref())?;
+        self.db.save_dag(&self.dag.id, self.dag.schedule_interval.as_deref()).await?;
         for task in self.dag.tasks.values() {
-            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs, &task.pool)?;
+            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs, &task.pool, task.task_group.as_deref(), task.execution_timeout).await?;
         }
 
         // Recovery Mode
@@ -189,6 +247,7 @@ impl Scheduler {
         let adj = Arc::new(adj);
         let dag = Arc::clone(&self.dag);
         let db = Arc::clone(&self.db);
+        let metrics = self.metrics.clone();
 
         let (tx, mut rx) = mpsc::channel(100);
         let mut tasks_remaining = dag.tasks.len();
@@ -202,11 +261,12 @@ impl Scheduler {
                     let tx_clone = tx.clone();
                     let dag_clone = Arc::clone(&dag);
                     let db_clone = Arc::clone(&db);
+                    let metrics_clone = metrics.clone();
                     let task_id_clone = task_id.clone();
                     let run_id = dag_run_id.clone();
                     
                     tokio::spawn(async move {
-                        Self::execute_task(dag_clone, db_clone, task_id_clone, tx_clone, run_id).await;
+                        Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
                     });
                 }
             }
@@ -229,11 +289,12 @@ impl Scheduler {
                         let tx_clone = tx.clone();
                         let dag_clone = Arc::clone(&dag);
                         let db_clone = Arc::clone(&db);
+                        let metrics_clone = metrics.clone();
                         let task_id_clone = down.clone();
                         let run_id = dag_run_id.clone();
                         
                         tokio::spawn(async move {
-                            Self::execute_task(dag_clone, db_clone, task_id_clone, tx_clone, run_id).await;
+                            Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
                         });
                     }
                 }
@@ -241,7 +302,11 @@ impl Scheduler {
         }
 
         let final_state = if all_success { "Success" } else { "Failed" };
-        self.db.update_dag_run_state(&dag_run_id, final_state)?;
+        self.db.update_dag_run_state(&dag_run_id, final_state).await?;
+        
+        if let Some(m) = &self.metrics {
+            m.record_dag_run_complete(final_state);
+        }
 
         let total_duration = Utc::now() - start_time;
         info!("✅ DAG {} finished in {}ms [{}] (100x speed target: PASSED)", 
@@ -250,7 +315,7 @@ impl Scheduler {
     }
 
     async fn handle_recovery(&self) -> Result<()> {
-        let interrupted = self.db.get_interrupted_tasks()?;
+        let interrupted = self.db.get_interrupted_tasks().await?;
         if interrupted.is_empty() {
             return Ok(());
         }
@@ -258,49 +323,54 @@ impl Scheduler {
         warn!("⚠️ Recovery Mode: Found {} interrupted tasks.", interrupted.len());
         for (ti_id, dag_id, task_id) in interrupted {
             info!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
-            self.db.update_task_state(&ti_id, "Failed")?;
+            self.db.update_task_state(&ti_id, "Failed").await?;
         }
         Ok(())
     }
 
     #[async_recursion::async_recursion]
-    async fn execute_task(dag: Arc<Dag>, db: Arc<Db>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
+    async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<VortexMetrics>>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
         let task = dag.tasks.get(&task_id).expect("Task not found");
         let ti_id = Uuid::new_v4().to_string();
         let execution_date = Utc::now();
 
         // Persist initial state
-        if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, "Queued", execution_date, &run_id) {
+        if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, "Queued", execution_date, &run_id).await {
             error!("Failed to create task instance in DB: {}", e);
         }
+
+        if let Some(m) = &metrics { m.record_task_queued(); }
 
         debug!("⏳ Executing: {} (ID: {})", task.name, task.id);
         
         // Update to Running
-        if let Err(e) = db.update_task_state(&ti_id, "Running") {
+        if let Err(e) = db.update_task_state(&ti_id, "Running").await {
             error!("Failed to update task state to Running: {}", e);
         }
+        
+        if let Some(m) = &metrics { m.record_task_start(); }
 
         // Prepare environment variables (secrets + XCom context)
         let mut _env_vars = HashMap::new();
         _env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
         _env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
         _env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
-        // In local mode, we might not have full vault access easily if it's not passed,
-        // but we can try to fetch them from DB if needed.
-        // For the integration test, we'll assume the executor handles it or we pass them.
-        /*
-        if let Ok(_secrets) = db.get_all_secrets() {
-             // In a real scenario, we'd need to decrypt them. 
-        }
-        */
+
+        let ds = execution_date.format("%Y-%m-%d").to_string();
+        let ts = execution_date.to_rfc3339();
+        
+        let mut templated_command = task.command.clone();
+        templated_command = templated_command.replace("{{ ds }}", &ds)
+            .replace("{ds}", &ds)
+            .replace("{{ execution_date }}", &ts)
+            .replace("{execution_date}", &ts);
 
         let start = Utc::now();
         
         // Use TaskExecutor for real execution with log capture
         let result = match task.task_type.as_str() {
             "python" => {
-                crate::executor::TaskExecutor::execute_python(&task.id, &task.command, _env_vars).await
+                crate::executor::TaskExecutor::execute_python(&task.id, &templated_command, _env_vars, task.execution_timeout.map(|t| t as u64)).await
             },
             "sensor" => {
                 // Parse sensor config and run sensor loop
@@ -362,8 +432,31 @@ impl Scheduler {
                     }
                 }
             },
-            _ => {
-                crate::executor::TaskExecutor::execute_bash(&task.id, &task.command, _env_vars).await
+            "bash" => {
+                crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, _env_vars, task.execution_timeout.map(|t| t as u64)).await
+            },
+            other => {
+                let registry = crate::executor::PluginRegistry::new();
+                if let Some(plugin) = registry.get(other) {
+                    let ctx = crate::executor::TaskContext {
+                        task_id: task.id.clone(),
+                        command: templated_command.clone(),
+                        config: task.config.clone(),
+                        env_vars: _env_vars,
+                    };
+                    plugin.execute(&ctx).await.unwrap_or_else(|e| {
+                        crate::executor::ExecutionResult {
+                            task_id: task.id.clone(),
+                            success: false,
+                            exit_code: -1,
+                            stdout: String::new(),
+                            stderr: format!("Plugin Execution Error: {}", e),
+                            duration_ms: 0,
+                        }
+                    })
+                } else {
+                    crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, _env_vars, task.execution_timeout.map(|t| t as u64)).await
+                }
             }
         };
 
@@ -388,23 +481,26 @@ impl Scheduler {
         }
 
         // Also update stdout/stderr in DB for the API to find
-        let _ = db.update_task_logs(&ti_id, &result.stdout, &result.stderr);
+        let _ = db.update_task_logs(&ti_id, &result.stdout, &result.stderr).await;
 
         if result.success {
             info!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
-            let _ = db.update_task_state(&ti_id, "Success");
+            let _ = db.update_task_state(&ti_id, "Success").await;
+            if let Some(m) = &metrics { m.record_task_success(duration as f64 / 1000.0); }
         } else {
             // Check for retries
-            if let Ok((retry_count, _)) = db.get_task_instance_retry_info(&ti_id) {
+            if let Ok((retry_count, _)) = db.get_task_instance_retry_info(&ti_id).await {
                 if retry_count < task.max_retries {
                     warn!("  └─ RETRY: {} (Attempt {}/{}) after {}s delay", 
                         task_id, retry_count + 1, task.max_retries, task.retry_delay_secs);
-                    let _ = db.increment_task_retry_count(&ti_id);
-                    let _ = db.update_task_state(&ti_id, "Queued");
+                    let _ = db.increment_task_retry_count(&ti_id).await;
+                    let _ = db.update_task_state(&ti_id, "Queued").await;
+                    if let Some(m) = &metrics { m.record_task_queued(); }
                     
                     // Delay and re-execute
                     let dag_clone = Arc::clone(&dag);
                     let db_clone = Arc::clone(&db);
+                    let metrics_clone = metrics.clone();
                     let task_id_clone = task_id.clone();
                     let tx_clone = tx.clone();
                     let run_id_inner = run_id.clone();
@@ -412,16 +508,42 @@ impl Scheduler {
                     
                     tokio::spawn(async move {
                         tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-                        Self::execute_task(dag_clone, db_clone, task_id_clone, tx_clone, run_id_inner).await;
+                        Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id_inner).await;
                     });
                     return; // Don't report finished yet
                 }
             }
             
             error!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
-            let _ = db.update_task_state(&ti_id, "Failed");
+            let _ = db.update_task_state(&ti_id, "Failed").await;
+            if let Some(m) = &metrics { m.record_task_failure(duration as f64 / 1000.0); }
         }
 
         let _ = tx.send((task_id, result.success)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_schedule() {
+        assert_eq!(normalize_schedule("@daily"), "0 0 0 * * * *");
+        assert_eq!(normalize_schedule("@weekly"), "0 0 0 * * 0 *");
+        assert_eq!(normalize_schedule("*/5 * * * *"), "0 */5 * * * *");
+    }
+
+    #[test]
+    fn test_dag_creation() {
+        let mut dag = Dag::new("test_dag");
+        dag.add_task("t1", "Task 1", "echo hi");
+        dag.add_task("t2", "Task 2", "echo bye");
+        dag.add_dependency("t1", "t2");
+
+        assert_eq!(dag.id, "test_dag");
+        assert_eq!(dag.tasks.len(), 2);
+        assert_eq!(dag.dependencies.len(), 1);
+        assert_eq!(dag.dependencies[0], ("t1".to_string(), "t2".to_string()));
     }
 }

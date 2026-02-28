@@ -72,11 +72,13 @@ class DAG:
 class BaseOperator:
     """Airflow-compatible base operator with dependency-chain support."""
 
-    def __init__(self, task_id, dag=None, pool="default", **kwargs):
+    def __init__(self, task_id, dag=None, pool="default", execution_timeout=None, **kwargs):
         self.task_id = task_id
         self.pool = pool
+        self.execution_timeout = execution_timeout
         from . import context
         self.dag = dag or context._CURRENT_DAG
+        self.task_group = context._CURRENT_TASK_GROUP
         self._upstream = []
         self._downstream = []
         if self.dag is not None:
@@ -117,6 +119,13 @@ class BaseOperator:
             "downstream_task_ids": self._downstream,
             "pool": self.pool,
         }
+        if self.task_group:
+            d["task_group"] = self.task_group.group_id
+        if self.execution_timeout:
+            if hasattr(self.execution_timeout, "total_seconds"):
+                d["execution_timeout"] = int(self.execution_timeout.total_seconds())
+            else:
+                d["execution_timeout"] = int(self.execution_timeout)
         if hasattr(self, "bash_command"):
             d["bash_command"] = self.bash_command
         if hasattr(self, "python_callable"):

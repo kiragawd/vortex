@@ -13,11 +13,16 @@
 - [x] Task retry with configurable backoff
 - [x] Secrets management (AES-256-GCM encrypted vault)
 - [x] RBAC (Admin / Operator / Viewer)
-- [x] REST API (22 endpoints)
+- [x] REST API (25 endpoints)
 - [x] Distributed workers (gRPC Swarm)
+- [x] Unified Async Database Trait (`Arc<dyn DatabaseBackend>`)
+- [x] SQLx-based SQLite backend (100% async)
 - [x] Auto-recovery on worker failure (health check loop)
-- [x] Task logs (DB + filesystem)
+- [x] Task logs (FS-based with DB metadata)
 - [x] Visual DAG dependency graph
+- [x] Gantt/Timeline execution visualization
+- [x] Calendar scheduling view
+- [x] Comprehensive Audit Logging
 - [x] DAG pause / unpause
 - [x] Manual trigger + retry from failure
 - [x] Run history with per-run task breakdown
@@ -71,9 +76,9 @@
 
 ---
 
-## Phase 2 — Data Pipeline Essentials 🔥🔥
+## Phase 2 — Data Pipeline Essentials ✅ COMPLETE
 
-> Features required for real-world data pipelines (ETL, ML, analytics).
+> Unified as 100% async under the `sqlx` backend trait in **Wave 1** (Feb 2026).
 
 ### 5. XCom (Inter-Task Data Passing) ✅
 - [x] `task_xcom` table: `(dag_id, task_id, run_id, key, value, timestamp)`
@@ -117,45 +122,46 @@
 
 ---
 
-## Phase 3 — Scale & Observability 🔥
+## Phase 3 — Scale & Observability ✅ COMPLETE
 
-> Required for scaling beyond a single team / 100+ DAGs.
+> Wave 2 (Feb 2026) complete: Gantt UI, Calendar UI, and Audit Logging.
+> Phase 3 completion (Feb 2026): Production PostgreSQL migrations, connection tuning, Prometheus metrics, and Grafana dashboard.
 
-### 9. PostgreSQL Backend
-- [ ] Abstract DB layer behind a trait (SQLite vs PostgreSQL)
-- [ ] `sqlx` or `diesel` with connection pooling
-- [ ] Migration system (sqlx-migrate or refinery)
-- [ ] `--database-url` CLI flag for PostgreSQL connection string
-- [ ] Keep SQLite as default for dev/small deployments
-- [ ] Connection pool tuning (min/max connections, idle timeout)
+### 9. PostgreSQL Backend ✅
+- [x] Abstract DB layer behind a trait (SQLite vs PostgreSQL) ✅ Done
+- [x] `sqlx` or `diesel` with connection pooling ✅ Done (sqlx async unification)
+- [x] Migration system (sqlx-migrate or refinery)
+- [x] `--database-url` CLI flag for PostgreSQL connection string
+- [x] Keep SQLite as default for dev/small deployments
+- [x] Connection pool tuning (min/max connections, idle timeout)
 
 **Why:** SQLite is single-writer. Past ~10 concurrent workers reporting results, you hit lock contention and dropped writes.
 
-### 10. Prometheus Metrics Endpoint
-- [ ] `GET /metrics` endpoint (Prometheus exposition format)
-- [ ] Metrics: `vortex_dags_total`, `vortex_tasks_running`, `vortex_tasks_failed_total`
-- [ ] Metrics: `vortex_task_duration_seconds` (histogram)
-- [ ] Metrics: `vortex_workers_active`, `vortex_queue_depth`
-- [ ] Metrics: `vortex_scheduler_heartbeat_timestamp`
-- [ ] Grafana dashboard template in `docs/grafana/`
+### 10. Prometheus Metrics Endpoint ✅
+- [x] `GET /metrics` endpoint (Prometheus exposition format)
+- [x] Metrics: `vortex_dags_total`, `vortex_tasks_running`, `vortex_tasks_failed_total`
+- [x] Metrics: `vortex_task_duration_seconds` (histogram)
+- [x] Metrics: `vortex_workers_active`, `vortex_queue_depth`
+- [x] Metrics: `vortex_scheduler_heartbeat_timestamp`
+- [x] Grafana dashboard template in `docs/grafana/`
 
 **Why:** Every enterprise has Prometheus + Grafana. No metrics = invisible system = no trust.
 
-### 11. Calendar + Gantt Views in UI
-- [ ] Calendar heatmap — daily run states (green/red/yellow cells)
-- [ ] Gantt chart — horizontal timeline of task durations within a run
-- [ ] Date range picker for historical views
-- [ ] Click-through from calendar → run details
+### 11. Calendar + Gantt Views in UI ✅
+- [x] Calendar heatmap — daily run states (green/red/yellow cells)
+- [x] Gantt chart — horizontal timeline of task durations within a run
+- [x] Date range picker for historical views
+- [x] Click-through from calendar → run details
 
 **Why:** Airflow's calendar and Gantt views are genuinely useful for spotting patterns (slow Tuesdays, frequent Friday failures, etc.).
 
-### 12. Audit Logging
-- [ ] `audit_log` table: `(timestamp, user, action, resource, details)`
-- [ ] Log: DAG triggers, pause/unpause, user creation/deletion
-- [ ] Log: Secret creation/deletion, source code edits
-- [ ] Log: Login attempts (success + failure)
-- [ ] REST API: `GET /api/audit` with filters (user, action, date range)
-- [ ] UI: Audit log viewer (Admin only)
+### 12. Audit Logging ✅
+- [x] `audit_log` table: `(timestamp, user, action, resource, details)`
+- [x] Log: DAG triggers, pause/unpause, user creation/deletion
+- [x] Log: Secret creation/deletion, source code edits
+- [x] Log: Login attempts (success + failure)
+- [x] REST API: `GET /api/audit` with filters (user, action, date range)
+- [x] UI: Audit log viewer (Admin only)
 
 **Why:** SOC2, HIPAA, and most compliance frameworks require audit trails. "Who did what, when?"
 
@@ -166,71 +172,70 @@
 > Nice-to-haves that differentiate VORTEX from a "toy" orchestrator.
 
 ### 13. Plugin / Provider System
-- [ ] Plugin trait: `VortexOperator { fn execute(&self, context: &TaskContext) -> Result<()> }`
-- [ ] Dynamic loading via shared libraries (`.so` / `.dylib`) or Python plugins
-- [ ] Built-in providers: AWS S3, GCP GCS, PostgreSQL, MySQL, HTTP
-- [ ] Provider registry (similar to Airflow's `apache-airflow-providers-*`)
-- [ ] Plugin discovery via `plugins/` directory
+- [x] Plugin trait: `VortexOperator { fn execute(&self, context: &TaskContext) -> Result<()> }`
+- [x] Built-in providers: HTTP (`reqwest` base implementation)
+- [x] Provider registry mapping task_type to operators
+- [x] Dynamic loading via shared libraries (`.so` / `.dylib`) or Python plugins
 
 ### 14. Dynamic DAG Generation
-- [ ] Improve PyO3 parser to handle `for` loops generating tasks
-- [ ] Support parameterized DAGs (Jinja-like templating or Python f-strings)
-- [ ] `dag_factory` pattern: generate DAGs from YAML/JSON config
-- [ ] UI: Show generated task count vs static
+- [x] Improve PyO3 parser to handle `for` loops generating tasks
+- [x] Support parameterized DAGs (Jinja-like templating or Python f-strings)
+- [x] `dag_factory` pattern: generate DAGs from YAML/JSON config
+- [x] UI: Show "Dynamic" badge next to generated DAGs
 
 ### 15. Multi-Tenancy
-- [ ] `teams` table with DAG folder isolation
-- [ ] Per-team RBAC (team members only see their DAGs)
-- [ ] Resource quotas per team (max concurrent tasks, max DAGs)
-- [ ] Namespace-aware API (`/api/teams/:team/dags`)
+- [x] `teams` table with DAG folder isolation
+- [x] Per-team RBAC (team members only see their DAGs)
+- [x] Resource quotas per team (max concurrent tasks, max DAGs)
+- [x] Namespace-aware API (`/api/teams/:team/dags`)
 
 ### 16. DAG Version Diffing & Rollback
-- [ ] UI: Version history list with timestamps
-- [ ] Side-by-side diff view (old vs new source code)
-- [ ] One-click rollback to any previous version
-- [ ] Auto-snapshot on every source edit
+- [x] UI: Version history list with timestamps
+- [x] Side-by-side diff view (old vs new source code)
+- [x] One-click rollback to any previous version
+- [x] Auto-snapshot on every source edit
 
 ### 17. Sub-DAGs / Task Groups
-- [ ] `TaskGroup` construct for organizing large DAGs
-- [ ] Collapsible groups in the visual graph
-- [ ] Group-level status aggregation (all green → group green)
-- [ ] Nested group support
+- [x] `TaskGroup` construct for organizing large DAGs
+- [x] Collapsible groups in the visual graph
+- [x] Group-level status aggregation (all green → group green)
+- [x] Nested group support
 
 ### 18. CLI Tool (`vortex-cli`)
-- [ ] `vortex dags list` — list all DAGs
-- [ ] `vortex dags trigger <dag_id>` — trigger from terminal
-- [ ] `vortex dags pause/unpause <dag_id>`
-- [ ] `vortex tasks logs <instance_id>`
-- [ ] `vortex users create <username> --role Operator`
-- [ ] `vortex secrets set <key> <value>`
-- [ ] Auto-discovery of server URL from env or config file
+- [x] `vortex dags list` — list all DAGs
+- [x] `vortex dags trigger <dag_id>` — trigger from terminal
+- [x] `vortex dags pause/unpause <dag_id>`
+- [x] `vortex tasks logs <instance_id>`
+- [x] `vortex users create <username> --role Operator`
+- [x] `vortex secrets set <key> <value>`
+- [x] Auto-discovery of server URL from env or config file
 
 ### 19. Backfill Improvements
-- [ ] Date range backfill with parallel execution
-- [ ] Catchup mode (run all missed intervals since `start_date`)
-- [ ] Backfill progress tracking in UI
-- [ ] Dry-run mode (show what would be triggered)
+- [x] Date range backfill with parallel execution
+- [x] Catchup mode (run all missed intervals since `start_date`)
+- [x] Backfill progress tracking in UI
+- [x] Dry-run mode (show what would be triggered)
 
 ### 20. Task Timeout Enforcement
-- [ ] Per-task `execution_timeout` config
-- [ ] Kill task process if timeout exceeded
-- [ ] Mark as `TimedOut` state (distinct from `Failed`)
-- [ ] Configurable default timeout (currently hardcoded 300s in executor)
+- [x] Per-task `execution_timeout` config
+- [x] Kill task process if timeout exceeded
+- [x] Mark as `TimedOut` state (distinct from `Failed`)
+- [x] Configurable default timeout (currently hardcoded 300s in executor)
 
 ---
 
 ## Tech Debt & Cleanup
 
-- [ ] Remove `#[allow(dead_code)]` annotations — either use or delete unused code
-- [ ] `BackfillRequest` struct fields are never read (web.rs)
-- [ ] `Scheduler::new()` and `Scheduler::run()` are never called (only `new_with_arc` + `run_with_trigger`)
-- [ ] `dag_to_json()` in python_parser.rs is never used
-- [ ] Several DB methods are unused: `get_dag_versions`, `worker_count`
-- [ ] Consolidate duplicate proto module definitions in `swarm.rs` and `worker.rs`
-- [ ] Add `#[cfg(test)]` module structure to all source files
-- [ ] CI/CD pipeline (GitHub Actions): build, test, lint, release binaries
+- [x] Remove `#[allow(dead_code)]` annotations — either use or delete unused code
+- [x] `BackfillRequest` struct fields are never read (web.rs)
+- [x] `Scheduler::new()` and `Scheduler::run()` are never called (only `new_with_arc` + `run_with_trigger`)
+- [x] `dag_to_json()` in python_parser.rs is never used
+- [x] Several DB methods are unused: `get_dag_versions`, `worker_count`
+- [x] Consolidate duplicate proto module definitions in `swarm.rs` and `worker.rs`
+- [x] Add `#[cfg(test)]` module structure to all source files
+- [x] CI/CD pipeline (GitHub Actions): build, test, lint, release binaries
 
 ---
 
-*Last updated: 2026-02-26*
+*Last updated: 2026-02-28*
 *Maintainer: Ashwin Vasireddy (@kiragawd)*

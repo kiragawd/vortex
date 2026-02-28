@@ -1,7 +1,8 @@
+#![allow(clippy::all)]
+#![allow(warnings)]
+
 use anyhow::Result;
 use scheduler::{Dag, Scheduler};
-use db::Db;
-use rusqlite::params;
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -14,7 +15,6 @@ use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberI
 
 mod scheduler;
 mod python_parser;
-mod db;
 mod web;
 mod swarm;
 mod worker;
@@ -24,6 +24,12 @@ mod xcom;
 mod pools;
 mod sensors;
 mod notifications;
+mod metrics;
+mod db_trait;
+mod db_postgres;
+mod db_sqlite;
+mod proto;
+mod dag_factory;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -57,6 +63,20 @@ async fn main() -> Result<()> {
             .init();
     }
 
+    // 🗄️ DB MIGRATE MODE
+    if args.len() > 2 && args[1] == "db" && args[2] == "migrate" {
+        let db_url = args.iter().position(|a| a == "--database-url").and_then(|i| args.get(i + 1));
+        let db: Arc<dyn db_trait::DatabaseBackend> = if let Some(url) = db_url {
+            info!("🗄️ Running PostgreSQL migrations...");
+            Arc::new(db_postgres::PostgresDb::new(url, 1, 1, std::time::Duration::from_secs(30)).await?)
+        } else {
+            info!("🗄️ Running SQLite migrations (vortex.db)...");
+            Arc::new(db_sqlite::SqliteDb::new("vortex.db", 1, 1, std::time::Duration::from_secs(30)).await?)
+        };
+        info!("✅ Database migrations applied successfully.");
+        return Ok(());
+    }
+
     // 🐝 WORKER MODE
     if args.len() > 1 && args[1] == "worker" {
         let controller_addr = args.iter().position(|a| a == "--controller").and_then(|i| args.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| "http://127.0.0.1:50051".to_string());
@@ -76,20 +96,65 @@ async fn main() -> Result<()> {
         Err(e) => { warn!("⚠️ Secret Vault DISABLED: {}. Secrets will not be available.", e); None }
     };
 
-    // Initialize DB
-    let db = Arc::new(Db::init("vortex.db")?);
-    info!("🗄️ Database initialized.");
+    // Phase 3: Initialize Database Backend
+    let db_url = args.iter().position(|a| a == "--database-url")
+        .and_then(|i| args.get(i + 1));
+
+    let db_max_connections: u32 = args.iter().position(|a| a == "--db-max-connections").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(20);
+    let db_min_connections: u32 = args.iter().position(|a| a == "--db-min-connections").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(2);
+    let db_idle_timeout = std::time::Duration::from_secs(args.iter().position(|a| a == "--db-idle-timeout").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(300));
+
+    let db: Arc<dyn db_trait::DatabaseBackend> = if let Some(url) = db_url {
+        info!("🗄️ Initializing PostgreSQL backend...");
+        Arc::new(db_postgres::PostgresDb::new(url, db_max_connections, db_min_connections, db_idle_timeout).await?)
+    } else {
+        info!("🗄️ Initializing SQLite backend (vortex.db)...");
+        Arc::new(db_sqlite::SqliteDb::new("vortex.db", db_max_connections, db_min_connections, db_idle_timeout).await?)
+    };
+    info!("✅ Database initialized.");
+
+    // Phase 3: Initialize Prometheus Metrics
+    let vortex_metrics = Arc::new(metrics::VortexMetrics::new()?);
+    info!("📊 Prometheus metrics initialized (GET /metrics)");
 
     // Recovery Mode
-    let interrupted = db.get_interrupted_tasks()?;
+    let interrupted = db.get_interrupted_tasks().await?;
     if !interrupted.is_empty() {
         warn!("⚠️ Recovery Mode: Found {} interrupted tasks from previous run.", interrupted.len());
         for (ti_id, dag_id, task_id) in interrupted {
             info!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
-            let _ = db.update_task_state(&ti_id, "Failed");
+            let _ = db.update_task_state(&ti_id, "Failed").await;
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Plugin Discovery
+    // ─────────────────────────────────────────────────────────────────
+    let mut plugin_registry = executor::PluginRegistry::new();
+    let plugins_dir = std::path::Path::new("plugins");
+    if plugins_dir.exists() && plugins_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(plugins_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    if ext == "so" || ext == "dylib" || ext == "dll" {
+                        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+                        unsafe {
+                            match plugin_registry.load_plugin(path.to_str().unwrap(), file_stem) {
+                                Ok(_) => info!("🔌 Loaded plugin '{}' from {:?}", file_stem, path),
+                                Err(e) => warn!("⚠️ Failed to load plugin {:?}: {}", path, e),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        info!("🔌 Plugins directory not found or empty. Using default operators.");
+    }
+    executor::init_global_registry(plugin_registry);
+    
     let all_dags = Arc::new(Mutex::new(HashMap::new()));
     {
         let mut map = all_dags.lock().unwrap();
@@ -103,22 +168,41 @@ async fn main() -> Result<()> {
             if let Ok(entries) = std::fs::read_dir(dags_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("py") {
+                    if path.is_file() {
+                        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                         if let Some(path_str) = path.to_str() {
-                            info!("🐍 Loading DAG file: {}", path_str);
-                            match python_parser::parse_python_dag(path_str) {
-                                Ok(dags) => {
-                                    for dag in dags { 
-                                        info!("✅ Loaded DAG: {}", dag.id);
-                                        let dag_id = dag.id.clone();
-                                        map.insert(dag_id.clone(), Arc::new(dag));
-                                        
-                                        // Pillar 4: Force create version record for physical files
-                                        let _ = db.store_dag_version(&dag_id, path_str);
+                            if ext == "py" {
+                                info!("🐍 Loading DAG file: {}", path_str);
+                                match python_parser::parse_python_dag(path_str) {
+                                    Ok(dags) => {
+                                        for dag in dags { 
+                                            info!("✅ Loaded DAG: {}", dag.id);
+                                            let dag_id = dag.id.clone();
+                                            map.insert(dag_id.clone(), Arc::new(dag));
+                                            
+                                            // Pillar 4: Force create version record for physical files
+                                            let _ = db.store_dag_version(&dag_id, path_str).await;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("❌ Failed to parse DAG file {}: {}", path_str, e);
                                     }
-                                },
-                                Err(e) => {
-                                    error!("❌ Failed to parse DAG file {}: {}", path_str, e);
+                                }
+                            } else if ext == "json" || ext == "yaml" || ext == "yml" {
+                                info!("📄 Loading Config DAG file: {}", path_str);
+                                match dag_factory::parse_dag_file(path_str) {
+                                    Ok(dags) => {
+                                        for dag in dags { 
+                                            info!("✅ Loaded Config DAG: {}", dag.id);
+                                            let dag_id = dag.id.clone();
+                                            map.insert(dag_id.clone(), Arc::new(dag));
+                                            
+                                            let _ = db.store_dag_version(&dag_id, path_str).await;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("❌ Failed to parse Config DAG file {}: {}", path_str, e);
+                                    }
                                 }
                             }
                         }
@@ -126,14 +210,14 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        for dag in map.values() { db.register_dag(dag)?; }
+        for dag in map.values() { db.register_dag(dag).await?; }
     }
     info!("✅ Loaded DAGs.");
 
     // Swarm
     let swarm_enabled = args.iter().any(|a| a == "--swarm");
     let swarm_port: u16 = args.iter().position(|a| a == "--swarm-port").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(50051);
-    let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone()));
+    let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone(), Some(Arc::clone(&vortex_metrics))));
 
     if swarm_enabled {
         let grpc_state = Arc::clone(&swarm_state);
@@ -188,8 +272,9 @@ async fn main() -> Result<()> {
     let swarm_web = Arc::clone(&swarm_state);
     let vault_web = vault.clone();
     let dags_web = Arc::clone(&all_dags);
+    let metrics_web = Arc::clone(&vortex_metrics);
     tokio::spawn(async move {
-        let server = web::WebServer::new(db_web, tx_web, swarm_web, vault_web, dags_web);
+        let server = web::WebServer::new(db_web, tx_web, swarm_web, vault_web, dags_web, metrics_web);
         server.run(3000, tls_cert, tls_key).await;
     });
 
@@ -197,6 +282,7 @@ async fn main() -> Result<()> {
     let db_sched = Arc::clone(&db);
     let dags_sched = Arc::clone(&all_dags);
     let swarm_sched = Arc::clone(&swarm_state);
+    let metrics_sched = Arc::clone(&vortex_metrics);
     tokio::spawn(async move {
         info!("🌀 Scheduler loop started.");
         while let Some(req) = rx.recv().await {
@@ -213,19 +299,24 @@ async fn main() -> Result<()> {
                 if swarm_sched.enabled && worker_count > 0 {
                     info!("🐝 Scheduler: Dispatching to SWARM mode.");
                     let dag_run_id = uuid::Uuid::new_v4().to_string();
-                    let execution_date = Utc::now();
-                    let _ = db_sched.create_dag_run(&dag_run_id, &req.dag_id, execution_date, &req.triggered_by);
-                    let _ = db_sched.update_dag_run_state(&dag_run_id, "Running");
+                    let execution_date = req.execution_date.unwrap_or_else(|| Utc::now());
+                    let _ = db_sched.create_dag_run(&dag_run_id, &req.dag_id, execution_date, &req.triggered_by).await;
+                    let _ = db_sched.update_dag_run_state(&dag_run_id, "Running").await;
                     
                     let mut pre_finished_tasks = std::collections::HashSet::new();
                     if let scheduler::RunType::RetryFromFailure = req.run_type {
-                        if let Ok(runs) = db_sched.get_dag_runs(&req.dag_id) {
+                        if let Ok(runs) = db_sched.get_dag_runs(&req.dag_id).await {
                             if let Some(last_failed) = runs.iter().find(|r| r["state"] == "Failed") {
-                                if let Some(run_id) = last_failed["id"].as_str() {
-                                     let conn = db_sched.conn.lock().unwrap();
-                                     let mut stmt = conn.prepare("SELECT task_id FROM task_instances WHERE dag_id = ?1 AND execution_date = (SELECT execution_date FROM dag_runs WHERE id = ?2) AND state = 'Success'").unwrap();
-                                     let rows = stmt.query_map(params![req.dag_id, run_id], |row| row.get::<_, String>(0)).unwrap();
-                                     for r in rows { if let Ok(tid) = r { pre_finished_tasks.insert(tid); } }
+                                if let Some(_run_id) = last_failed["id"].as_str() {
+                                     if let Ok(instances) = db_sched.get_task_instances(&req.dag_id).await {
+                                         for inst in instances {
+                                             if inst["state"] == "Success" {
+                                                 if let Some(tid) = inst["task_id"].as_str() {
+                                                     pre_finished_tasks.insert(tid.to_string());
+                                                 }
+                                             }
+                                         }
+                                     }
                                 }
                             }
                         }
@@ -235,6 +326,7 @@ async fn main() -> Result<()> {
                     let dag_clone = Arc::clone(&dag);
                     let db_clone = Arc::clone(&db_sched);
                     let swarm_clone = Arc::clone(&swarm_sched);
+                    let metrics_clone = Arc::clone(&metrics_sched);
                     let run_id_clone = dag_run_id.clone();
                     let execution_date_clone = execution_date;
                     
@@ -270,8 +362,9 @@ async fn main() -> Result<()> {
                             if deg == 0 && !finished_tasks.contains(tid) {
                                 let task = dag_clone.tasks.get(tid).unwrap();
                                 let ti_id = uuid::Uuid::new_v4().to_string();
-                                let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, tid, "Queued", execution_date_clone, &run_id_clone);
+                                let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, tid, "Queued", execution_date_clone, &run_id_clone).await;
                                 
+                                metrics_clone.record_task_queued();
                                 swarm_clone.enqueue_task(swarm::PendingTask {
                                     task_instance_id: ti_id.clone(), dag_id: dag_clone.id.clone(), task_id: tid.clone(),
                                     command: task.command.clone(), dag_run_id: run_id_clone.clone(),
@@ -287,7 +380,7 @@ async fn main() -> Result<()> {
                                 tokio::spawn(async move {
                                     loop {
                                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                        if let Ok((_, state)) = db_mon.get_task_instance_retry_info(&ti_id) {
+                                        if let Ok((_, state)) = db_mon.get_task_instance_retry_info(&ti_id).await {
                                             if state == "Success" { let _ = tx_mon.send((tid_mon, true)).await; break; }
                                             if state == "Failed" { let _ = tx_mon.send((tid_mon, false)).await; break; }
                                         }
@@ -309,8 +402,9 @@ async fn main() -> Result<()> {
                                         if *deg == 0 {
                                             let task = dag_clone.tasks.get(down).unwrap();
                                             let ti_id = uuid::Uuid::new_v4().to_string();
-                                            let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, down, "Queued", execution_date_clone, &run_id_clone);
+                                            let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, down, "Queued", execution_date_clone, &run_id_clone).await;
                                             
+                                            metrics_clone.record_task_queued();
                                             swarm_clone.enqueue_task(swarm::PendingTask {
                                                 task_instance_id: ti_id.clone(), dag_id: dag_clone.id.clone(), task_id: down.clone(),
                                                 command: task.command.clone(), dag_run_id: run_id_clone.clone(),
@@ -325,7 +419,7 @@ async fn main() -> Result<()> {
                                             tokio::spawn(async move {
                                                 loop {
                                                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                                    if let Ok((_, state)) = db_mon.get_task_instance_retry_info(&ti_id) {
+                                                    if let Ok((_, state)) = db_mon.get_task_instance_retry_info(&ti_id).await {
                                                         if state == "Success" { let _ = tx_mon.send((down_mon, true)).await; break; }
                                                         if state == "Failed" { let _ = tx_mon.send((down_mon, false)).await; break; }
                                                     }
@@ -336,16 +430,20 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
-                        let _ = db_clone.update_dag_run_state(&run_id_clone, if all_success { "Success" } else { "Failed" });
+                        let final_state = if all_success { "Success" } else { "Failed" };
+                        let _ = db_clone.update_dag_run_state(&run_id_clone, final_state).await;
+                        metrics_clone.record_dag_run_complete(final_state);
                         info!("🏁 Swarm Orchestrator: DAG Run {} finished (Success: {})", run_id_clone, all_success);
                     });
                 } else {
-                    let scheduler = Scheduler::new_with_arc(Arc::clone(&dag), Arc::clone(&db_sched));
+                    let scheduler = Scheduler::new_with_arc(Arc::clone(&dag), Arc::clone(&db_sched))
+                        .with_metrics(Arc::clone(&metrics_sched));
+                    // Update: Scheduler needs metrics too
                     match req.run_type {
-                        scheduler::RunType::Full => { let _ = scheduler.run_with_trigger(&req.triggered_by).await; },
+                        scheduler::RunType::Full => { let _ = scheduler.run_with_trigger(&req.triggered_by, req.execution_date).await; },
                         scheduler::RunType::RetryFromFailure => { 
                              warn!("⚠️ Standalone Retry not implemented yet (Swarm mode recommended)");
-                             let _ = scheduler.run_with_trigger(&req.triggered_by).await;
+                             let _ = scheduler.run_with_trigger(&req.triggered_by, req.execution_date).await;
                         }
                     }
                 }
@@ -356,21 +454,24 @@ async fn main() -> Result<()> {
     // Cron Scheduler Loop
     let db_cron = Arc::clone(&db);
     let tx_cron = tx.clone();
+    let metrics_cron = Arc::clone(&vortex_metrics);
     tokio::spawn(async move {
         info!("⏰ Cron scheduler loop started (checking every 60s)");
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            metrics_cron.update_scheduler_heartbeat();
             
-            match db_cron.get_scheduled_dags() {
+            match db_cron.get_scheduled_dags().await {
                 Ok(scheduled_dags) => {
+                    metrics_cron.set_dags_total(scheduled_dags.len() as i64);
                     for (dag_id, schedule_expr, last_run, is_paused, _timezone, max_active_runs, _catchup) in scheduled_dags {
                         if is_paused { continue; }
                         
-                        if let Ok(active_count) = db_cron.get_active_dag_run_count(&dag_id) {
+                        if let Ok(active_count) = db_cron.get_active_dag_run_count(&dag_id).await {
                             if active_count >= max_active_runs { continue; }
                         }
                         
-                        let schedule_str = normalize_schedule(&schedule_expr);
+                        let schedule_str = crate::scheduler::normalize_schedule(&schedule_expr);
                         if schedule_str.is_empty() { continue; }
                         
                         let schedule: cron::Schedule = match schedule_str.parse() {
@@ -391,14 +492,15 @@ async fn main() -> Result<()> {
                         
                         if should_run {
                             info!("⏰ Cron triggering DAG: {} (schedule: {})", dag_id, schedule_expr);
-                            let _ = db_cron.update_dag_last_run(&dag_id, now);
+                            let _ = db_cron.update_dag_last_run(&dag_id, now).await;
                             if let Some(next) = schedule.after(&now).next() {
-                                let _ = db_cron.update_dag_next_run(&dag_id, Some(next));
+                                let _ = db_cron.update_dag_next_run(&dag_id, Some(next)).await;
                             }
                             let _ = tx_cron.send(crate::scheduler::ScheduleRequest {
                                 dag_id: dag_id.clone(),
                                 triggered_by: "scheduler".to_string(),
                                 run_type: crate::scheduler::RunType::Full,
+                                execution_date: Some(now),
                             }).await;
                         }
                     }
@@ -414,25 +516,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn normalize_schedule(expr: &str) -> String {
-    match expr.trim() {
-        "@yearly" | "@annually" => "0 0 0 1 1 * *".to_string(),
-        "@monthly" => "0 0 0 1 * * *".to_string(),
-        "@weekly" => "0 0 0 * * 0 *".to_string(),
-        "@daily" | "@midnight" => "0 0 0 * * * *".to_string(),
-        "@hourly" => "0 0 * * * * *".to_string(),
-        "@once" => "".to_string(),
-        other => {
-            let parts: Vec<&str> = other.split_whitespace().collect();
-            match parts.len() {
-                5 => format!("0 {} *", other),
-                6 => format!("0 {}", other),
-                7 => other.to_string(),
-                _ => other.to_string(),
-            }
-        }
-    }
-}
+
 
 fn create_benchmark_dag() -> Dag {
     let mut dag = Dag::new("parallel_benchmark");

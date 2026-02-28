@@ -20,9 +20,9 @@ The API key is obtained via the login endpoint. The default admin key is `vortex
 
 | Role | Permissions |
 |------|------------|
-| **Admin** | Full access to all endpoints |
-| **Operator** | DAG management (trigger, pause, edit, upload). Cannot manage users or secrets. |
-| **Viewer** | Read-only access to DAGs, tasks, runs, and swarm status. |
+| `Admin` | Full access to all endpoints, including users, secrets, and audit logs |
+| `Operator` | DAG management (trigger, pause, edit, upload). Cannot manage users, secrets, or audit logs. |
+| `Viewer` | Read-only access to DAGs, tasks, runs, and swarm status. |
 
 ---
 
@@ -211,6 +211,35 @@ Writes updated source to disk, re-parses with PyO3, and updates the in-memory DA
 
 ---
 
+## DAG Versioning
+
+### Get DAG Versions
+
+**`GET /api/dags/:id/versions`**
+
+```json
+// Response (200)
+{
+  "versions": [
+    { "version": 2, "file_path": "/path/to/dag_v2.py", "created_at": "2026-02-28T18:00:00Z" },
+    { "version": 1, "file_path": "/path/to/dag_v1.py", "created_at": "2026-02-27T10:00:00Z" }
+  ]
+}
+```
+
+### Rollback DAG Version
+
+**`POST /api/dags/:id/versions/:version/rollback`**
+
+Overwrites the current DAG file with the source code of the requested version, triggering a re-parse and creating a new version audit entry.
+
+```json
+// Response (200)
+{ "message": "Rollback successful" }
+```
+
+---
+
 ## Task Logs
 
 ### Get Task Instance Logs
@@ -301,7 +330,39 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 ---
 
-## User Management
+## User & Team Management
+
+### List Teams
+
+**`GET /api/teams`** — Admin only
+
+```json
+[
+  { "id": "uuid-1", "name": "Data Engineering", "max_concurrent_tasks": 100, "max_dags": 10 },
+  { "id": "uuid-2", "name": "Analytics", "max_concurrent_tasks": 20, "max_dags": 5 }
+]
+```
+
+### Create Team
+
+**`POST /api/teams`** — Admin only
+
+```json
+// Request
+{ "name": "Data Engineering", "description": "Core data team", "max_concurrent_tasks": 100, "max_dags": 10 }
+
+// Response (200)
+{ "message": "Team created", "team_id": "uuid-1" }
+```
+
+### Assign User to Team
+
+**`POST /api/teams/:id/users/:username`** — Admin only
+
+```json
+// Response (200)
+{ "message": "User assigned to team" }
+```
 
 ### List Users
 
@@ -332,6 +393,102 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 ```json
 { "message": "User deleted" }
+```
+
+---
+
+## Audit Log
+
+### Get Audit Logs
+
+**`GET /api/audit`** — Admin only. Returns paginated audit logs.
+
+**Query Parameters:**
+- `limit` (default: 50, max: 500)
+- `offset` (default: 0)
+- `actor` (optional filter)
+- `action` (optional filter)
+
+```json
+// Response (200)
+{
+  "logs": [
+    {
+      "id": 42,
+      "timestamp": "2026-02-28T17:35:00Z",
+      "actor": "admin",
+      "action": "dag.trigger",
+      "target_type": "dag",
+      "target_id": "example_dag",
+      "metadata": { "run_type": "Full" }
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
+## Analysis & Visualization
+
+### Get Gantt Timeline
+
+**`GET /api/analysis/gantt?dag_id=example_dag`**
+
+Returns task execution timing data for a specific DAG.
+
+```json
+// Response (200)
+{
+  "dag_id": "example_dag",
+  "tasks": [
+    {
+      "task_id": "t1",
+      "instances": [
+        { "run_id": "uuid", "state": "Success", "start_time": "...", "end_time": "...", "duration_ms": 42 }
+      ]
+    }
+  ]
+}
+```
+
+### Get Schedule Calendar
+
+**`GET /api/analysis/calendar?days=30`**
+
+Returns scheduled runs (based on cron) and completed runs for the requested period.
+
+```json
+// Response (200)
+{
+  "events": [
+    { "dag_id": "example_dag", "scheduled_time": "2026-03-01T12:00:00Z", "type": "scheduled" },
+    { "dag_id": "example_dag", "scheduled_time": "2026-02-28T12:00:00Z", "type": "completed", "state": "Success" }
+  ]
+}
+```
+
+---
+
+## Observability
+
+### Prometheus Metrics
+
+**`GET /metrics`**
+
+Exposes internal engine metrics in Prometheus text exposition format. Includes metrics for DAG runs, tasks, queue depth, swarms, and scheduler health.
+No authentication is required for this endpoint so Prometheus servers can easily scrape it.
+
+```text
+// Response (200)
+# HELP vortex_dags_total Total number of registered DAGs
+# TYPE vortex_dags_total gauge
+vortex_dags_total 3
+# HELP vortex_scheduler_heartbeat_timestamp Unix epoch (seconds) of the last scheduler tick
+# TYPE vortex_scheduler_heartbeat_timestamp gauge
+vortex_scheduler_heartbeat_timestamp 1709249581
+...
 ```
 
 ---

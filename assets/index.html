@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" class="dark">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +8,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre-d3/0.6.4/dagre-d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/7.0.0/diff.min.js"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -25,58 +27,169 @@
         }
     </script>
     <style>
-        body { background-color: #0a0a0c; color: #e1e1e6; font-family: 'Inter', sans-serif; overflow-x: hidden; }
-        .vortex-gradient { background: linear-gradient(135deg, #00f2ff 0%, #7000ff 100%); }
-        .vortex-border { border: 1px solid rgba(0, 242, 255, 0.1); }
-        .glass { background: rgba(22, 22, 30, 0.8); backdrop-filter: blur(12px); }
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #0a0a0c; }
-        ::-webkit-scrollbar-thumb { background: #1f1f23; border-radius: 10px; }
-        ::-webkit-scrollbar-thumb:hover { background: #2f2f35; }
-        .tab-active { border-bottom: 2px solid #00f2ff; color: #00f2ff; }
-        .tab-inactive { border-bottom: 2px solid transparent; color: rgba(255,255,255,0.4); }
+        body {
+            background-color: #0a0a0c;
+            color: #e1e1e6;
+            font-family: 'Inter', sans-serif;
+            overflow-x: hidden;
+        }
 
-        #login-overlay { position: fixed; inset: 0; background: #0a0a0c; z-index: 9999; display: none; align-items: center; justify-content: center; padding: 20px; }
-        .view-container { display: none; }
+        .vortex-gradient {
+            background: linear-gradient(135deg, #00f2ff 0%, #7000ff 100%);
+        }
+
+        .vortex-border {
+            border: 1px solid rgba(0, 242, 255, 0.1);
+        }
+
+        .glass {
+            background: rgba(22, 22, 30, 0.8);
+            backdrop-filter: blur(12px);
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0a0a0c;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #1f1f23;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #2f2f35;
+        }
+
+        .tab-active {
+            border-bottom: 2px solid #00f2ff;
+            color: #00f2ff;
+        }
+
+        .tab-inactive {
+            border-bottom: 2px solid transparent;
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        #login-overlay {
+            position: fixed;
+            inset: 0;
+            background: #0a0a0c;
+            z-index: 9999;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .view-container {
+            display: none;
+        }
 
         /* Graph Styles */
-        .node rect { stroke: #333; fill: #1a1a24; stroke-width: 2px; }
-        .node.Success rect { stroke: #10b981; fill: rgba(16, 185, 129, 0.2); }
-        .node.Failed rect { stroke: #f43f5e; fill: rgba(244, 63, 94, 0.2); }
-        .node.Running rect { stroke: #00f2ff; fill: rgba(0, 242, 255, 0.2); stroke-dasharray: 5; animation: dash 2s linear infinite; }
-        .edgePath path { stroke: #00f2ff; stroke-width: 3px; fill: none; opacity: 0.8; }
-        .node text { fill: #fff; font-size: 14px; font-family: 'Inter', sans-serif; font-weight: 900; text-shadow: 0 0 10px rgba(0,0,0,0.5); }
-        @keyframes dash { to { stroke-dashoffset: -20; } }
+        .node rect {
+            stroke: #333;
+            fill: #1a1a24;
+            stroke-width: 2px;
+        }
 
-        #arrowhead { fill: #00f2ff; opacity: 0.6; }
+        .node.Success rect {
+            stroke: #10b981;
+            fill: rgba(16, 185, 129, 0.2);
+        }
 
-        .run-header:hover { background: rgba(255,255,255,0.03); }
-        .run-accordion-content { transition: max-height 0.3s ease-out; overflow: hidden; }
+        .node.Failed rect {
+            stroke: #f43f5e;
+            fill: rgba(244, 63, 94, 0.2);
+        }
+
+        .node.Running rect {
+            stroke: #00f2ff;
+            fill: rgba(0, 242, 255, 0.2);
+            stroke-dasharray: 5;
+            animation: dash 2s linear infinite;
+        }
+
+        .edgePath path {
+            stroke: #00f2ff;
+            stroke-width: 3px;
+            fill: none;
+            opacity: 0.8;
+        }
+
+        .node text {
+            fill: #fff;
+            font-size: 14px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 900;
+            text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+
+        @keyframes dash {
+            to {
+                stroke-dashoffset: -20;
+            }
+        }
+
+        #arrowhead {
+            fill: #00f2ff;
+            opacity: 0.6;
+        }
+
+        .run-header:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .run-accordion-content {
+            transition: max-height 0.3s ease-out;
+            overflow: hidden;
+        }
 
         /* Upload modal */
-        .drop-zone { border: 2px dashed rgba(0, 242, 255, 0.3); transition: all 0.2s; }
-        .drop-zone:hover, .drop-zone.drag-over { border-color: #00f2ff; background: rgba(0, 242, 255, 0.05); }
+        .drop-zone {
+            border: 2px dashed rgba(0, 242, 255, 0.3);
+            transition: all 0.2s;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.drag-over {
+            border-color: #00f2ff;
+            background: rgba(0, 242, 255, 0.05);
+        }
     </style>
 </head>
+
 <body class="min-h-screen">
     <!-- Login Screen -->
     <div id="login-overlay">
         <div class="glass w-full max-w-md p-10 rounded-3xl vortex-border shadow-2xl">
             <div class="flex items-center gap-3 justify-center mb-8">
-                <div class="w-10 h-10 vortex-gradient rounded-xl flex items-center justify-center font-bold text-black text-xl">V</div>
+                <div
+                    class="w-10 h-10 vortex-gradient rounded-xl flex items-center justify-center font-bold text-black text-xl">
+                    V</div>
                 <h1 class="text-3xl font-black tracking-tighter text-white">VORTEX</h1>
             </div>
             <div class="space-y-6">
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Username</label>
-                    <input id="login-user" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-vortex-primary/50 outline-none transition-all" placeholder="Enter username">
+                    <input id="login-user" type="text"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-vortex-primary/50 outline-none transition-all"
+                        placeholder="Enter username">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Password</label>
-                    <input id="login-pass" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-vortex-primary/50 outline-none transition-all" placeholder="••••••••" onkeydown="if(event.key==='Enter') handleLogin()">
+                    <input id="login-pass" type="password"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-vortex-primary/50 outline-none transition-all"
+                        placeholder="••••••••" onkeydown="if(event.key==='Enter') handleLogin()">
                 </div>
-                <div id="login-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
-                <button onclick="handleLogin()" id="login-btn" class="w-full py-4 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-vortex-primary/10">AUTHENTICATE</button>
+                <div id="login-error"
+                    class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20">
+                </div>
+                <button onclick="handleLogin()" id="login-btn"
+                    class="w-full py-4 rounded-xl vortex-gradient text-black font-black hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-vortex-primary/10">AUTHENTICATE</button>
             </div>
         </div>
     </div>
@@ -86,20 +199,36 @@
         <nav class="border-b border-white/5 glass sticky top-0 z-50">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
                 <div class="flex items-center gap-2 cursor-pointer" onclick="showView('registry')">
-                    <div class="w-8 h-8 vortex-gradient rounded-lg flex items-center justify-center font-bold text-black">V</div>
+                    <div
+                        class="w-8 h-8 vortex-gradient rounded-lg flex items-center justify-center font-bold text-black">
+                        V</div>
                     <span class="text-xl font-black tracking-tighter text-white">VORTEX</span>
                 </div>
                 <div class="flex items-center gap-6">
-                    <button id="nav-upload" onclick="showUploadModal()" class="px-4 py-1.5 rounded-lg bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold text-sm hover:bg-vortex-primary/20 transition-all">📤 Upload</button>
-                    <button id="nav-users" onclick="showView('users')" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">👥 Users</button>
-                    <button id="nav-secrets" onclick="showView('secrets')" class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">🔐 Secrets</button>
+                    <button id="nav-upload" onclick="showUploadModal()"
+                        class="px-4 py-1.5 rounded-lg bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 font-bold text-sm hover:bg-vortex-primary/20 transition-all">📤
+                        Upload</button>
+                    <button id="nav-users" onclick="showView('users')"
+                        class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">👥
+                        Users</button>
+                    <button id="nav-secrets" onclick="showView('secrets')"
+                        class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">🔐
+                        Secrets</button>
+                    <button id="nav-audit" onclick="showView('audit')"
+                        class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">📋
+                        Audit</button>
+                    <button id="nav-calendar" onclick="showView('calendar')"
+                        class="text-sm font-bold text-white/60 hover:text-vortex-primary transition-colors">📅
+                        Calendar</button>
                     <div class="h-4 w-px bg-white/10 mx-2"></div>
                     <div class="flex items-center gap-3">
                         <div class="text-right">
                             <p id="nav-username" class="text-xs font-black text-white leading-none">Admin</p>
-                            <p id="nav-role" class="text-[9px] font-bold text-white/30 uppercase tracking-tighter">Administrator</p>
+                            <p id="nav-role" class="text-[9px] font-bold text-white/30 uppercase tracking-tighter">
+                                Administrator</p>
                         </div>
-                        <button onclick="logout()" class="px-3 py-1.5 rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-all text-[10px] font-black">LOGOUT</button>
+                        <button onclick="logout()"
+                            class="px-3 py-1.5 rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-all text-[10px] font-black">LOGOUT</button>
                     </div>
                 </div>
             </div>
@@ -108,21 +237,45 @@
         <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             <!-- Global Stats -->
             <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
-                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Total DAGs</p><h3 class="text-2xl font-bold" id="stat-total">-</h3></div>
-                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Active</p><h3 class="text-2xl font-bold text-emerald-400" id="stat-active">0</h3></div>
-                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Paused</p><h3 class="text-2xl font-bold text-amber-400" id="stat-paused">0</h3></div>
-                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Worker Nodes</p><h3 class="text-2xl font-bold text-vortex-primary" id="stat-workers">0</h3></div>
-                <div class="glass p-5 rounded-2xl vortex-border"><p class="text-xs text-white/40 mb-1">Queue Depth</p><h3 class="text-2xl font-bold text-rose-400" id="stat-queue">0</h3></div>
+                <div class="glass p-5 rounded-2xl vortex-border">
+                    <p class="text-xs text-white/40 mb-1">Total DAGs</p>
+                    <h3 class="text-2xl font-bold" id="stat-total">-</h3>
+                </div>
+                <div class="glass p-5 rounded-2xl vortex-border">
+                    <p class="text-xs text-white/40 mb-1">Active</p>
+                    <h3 class="text-2xl font-bold text-emerald-400" id="stat-active">0</h3>
+                </div>
+                <div class="glass p-5 rounded-2xl vortex-border">
+                    <p class="text-xs text-white/40 mb-1">Paused</p>
+                    <h3 class="text-2xl font-bold text-amber-400" id="stat-paused">0</h3>
+                </div>
+                <div class="glass p-5 rounded-2xl vortex-border">
+                    <p class="text-xs text-white/40 mb-1">Worker Nodes</p>
+                    <h3 class="text-2xl font-bold text-vortex-primary" id="stat-workers">0</h3>
+                </div>
+                <div class="glass p-5 rounded-2xl vortex-border">
+                    <p class="text-xs text-white/40 mb-1">Queue Depth</p>
+                    <h3 class="text-2xl font-bold text-rose-400" id="stat-queue">0</h3>
+                </div>
             </div>
 
             <!-- View: DAG Registry -->
             <div id="view-registry" class="view-container">
                 <div id="swarm-panel" class="glass rounded-2xl vortex-border mb-8 overflow-hidden">
-                    <div class="p-4 border-b border-white/5 flex items-center justify-between cursor-pointer" onclick="toggleSwarmPanel()">
-                        <div class="flex items-center gap-3"><span class="text-lg">🐝</span><h3 class="font-bold">VORTEX Swarm</h3><span id="swarm-status-badge" class="text-[10px] px-2 py-0.5 rounded font-bold">LOADING...</span></div>
-                        <svg id="swarm-chevron" class="w-5 h-5 text-white/30 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <div class="p-4 border-b border-white/5 flex items-center justify-between cursor-pointer"
+                        onclick="toggleSwarmPanel()">
+                        <div class="flex items-center gap-3"><span class="text-lg">🐝</span>
+                            <h3 class="font-bold">VORTEX Swarm</h3><span id="swarm-status-badge"
+                                class="text-[10px] px-2 py-0.5 rounded font-bold">LOADING...</span>
+                        </div>
+                        <svg id="swarm-chevron" class="w-5 h-5 text-white/30 transition-transform" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
                     </div>
-                    <div id="swarm-details" class="hidden p-4"><div id="swarm-workers-list" class="space-y-2"></div></div>
+                    <div id="swarm-details" class="hidden p-4">
+                        <div id="swarm-workers-list" class="space-y-2"></div>
+                    </div>
                 </div>
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold">DAG Registry</h2>
@@ -135,28 +288,64 @@
             <div id="view-details" class="view-container">
                 <div class="flex items-center justify-between mb-6">
                     <div class="flex items-center gap-4">
-                        <button onclick="showView('registry')" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-                        <div><div class="flex items-center gap-3"><h2 class="text-2xl font-bold" id="detail-title">-</h2><span id="detail-pause-badge" class="hidden text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 font-bold border border-amber-400/20">⏸ PAUSED</span></div><p class="text-sm text-white/40" id="detail-sub"></p></div>
+                        <button onclick="showView('registry')"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5"
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" />
+                            </svg></button>
+                        <div>
+                            <div class="flex items-center gap-3">
+                                <h2 class="text-2xl font-bold" id="detail-title">-</h2><span id="detail-pause-badge"
+                                    class="hidden text-[10px] px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 font-bold border border-amber-400/20">⏸
+                                    PAUSED</span>
+                            </div>
+                            <p class="text-sm text-white/40" id="detail-sub"></p>
+                        </div>
                     </div>
                     <div id="detail-actions" class="flex items-center gap-3">
-                        <button id="btn-edit" onclick="showEditSource()" class="px-4 py-2.5 rounded-xl bg-white/5 text-white/70 border border-white/10 font-bold text-sm">📝 Edit Code</button>
-                        <button id="btn-retry" onclick="retryDagFailures()" class="px-4 py-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-sm">♻️ Retry Failures</button>
-                        <button id="btn-pause" onclick="togglePause()" class="px-4 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold text-sm">⏸ Pause</button>
-                        <button id="btn-trigger" onclick="triggerCurrentDag()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black shadow-lg shadow-vortex-primary/20 hover:scale-105 transition-all">TRIGGER RUN</button>
+                        <button id="btn-edit" onclick="showEditSource()"
+                            class="px-4 py-2.5 rounded-xl bg-white/5 text-white/70 border border-white/10 font-bold text-sm">📝
+                            Edit Code</button>
+                        <button id="btn-retry" onclick="retryDagFailures()"
+                            class="px-4 py-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-sm">♻️
+                            Retry Failures</button>
+                        <button id="btn-pause" onclick="togglePause()"
+                            class="px-4 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold text-sm">⏸
+                            Pause</button>
+                        <button id="btn-backfill" onclick="openBackfillModal()"
+                            class="px-6 py-2.5 rounded-xl bg-orange-500/20 text-orange-400 border border-orange-500/20 font-black hover:bg-orange-500/40 transition-all">BACKFILL</button>
+                        <button id="btn-trigger" onclick="triggerCurrentDag()"
+                            class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black shadow-lg shadow-vortex-primary/20 hover:scale-105 transition-all">TRIGGER
+                            RUN</button>
                     </div>
                 </div>
 
                 <div class="flex gap-6 mb-6 border-b border-white/5">
-                    <button onclick="switchDetailTab('graph')" id="tab-graph" class="pb-3 px-1 text-sm font-bold tab-active transition-all">Visual Graph</button>
-                    <button onclick="switchDetailTab('history')" id="tab-history" class="pb-3 px-1 text-sm font-bold tab-inactive transition-all">Run History</button>
+                    <button onclick="switchDetailTab('graph')" id="tab-graph"
+                        class="pb-3 px-1 text-sm font-bold tab-active transition-all">Visual Graph</button>
+                    <button onclick="switchDetailTab('history')" id="tab-history"
+                        class="pb-3 px-1 text-sm font-bold tab-inactive transition-all">Run History</button>
+                    <button onclick="switchDetailTab('timeline')" id="tab-timeline"
+                        class="pb-3 px-1 text-sm font-bold tab-inactive transition-all">📊 Timeline</button>
                 </div>
 
-                <div id="detail-tab-graph" class="glass p-8 rounded-3xl vortex-border min-h-[500px] flex items-center justify-center overflow-auto">
+                <div id="detail-tab-graph"
+                    class="glass p-8 rounded-3xl vortex-border min-h-[500px] flex items-center justify-center overflow-auto">
                     <svg id="dag-svg" width="100%" height="600"></svg>
                 </div>
 
                 <div id="detail-tab-history" class="hidden space-y-4">
                     <div id="runs-list" class="space-y-2"></div>
+                </div>
+
+                <!-- Gantt / Timeline Tab -->
+                <div id="detail-tab-timeline" class="hidden">
+                    <div class="glass p-6 rounded-3xl vortex-border min-h-[400px]">
+                        <div id="gantt-container" style="overflow-x:auto;"></div>
+                        <p id="gantt-empty" class="text-xs text-white/20 italic p-4 hidden">No task execution data with
+                            timing available yet.</p>
+                    </div>
                 </div>
             </div>
 
@@ -164,10 +353,16 @@
             <div id="view-users" class="view-container">
                 <div class="flex items-center justify-between mb-6">
                     <div class="flex items-center gap-4">
-                        <button onclick="showView('registry')" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <button onclick="showView('registry')"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5"
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" />
+                            </svg></button>
                         <h2 class="text-2xl font-bold">👥 Access Control</h2>
                     </div>
-                    <button onclick="showAddUserModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black">ADD USER</button>
+                    <button onclick="showAddUserModal()"
+                        class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black">ADD USER</button>
                 </div>
                 <div id="users-list" class="grid grid-cols-1 gap-4"></div>
             </div>
@@ -176,12 +371,116 @@
             <div id="view-secrets" class="view-container">
                 <div class="flex items-center justify-between mb-6">
                     <div class="flex items-center gap-4">
-                        <button onclick="showView('registry')" class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <button onclick="showView('registry')"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5"
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" />
+                            </svg></button>
                         <h2 class="text-2xl font-bold">🔐 Secret Vault</h2>
                     </div>
-                    <button onclick="showAddSecretModal()" class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black">ADD SECRET</button>
+                    <button onclick="showAddSecretModal()"
+                        class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black">ADD SECRET</button>
                 </div>
                 <div id="secrets-list" class="grid grid-cols-1 gap-4"></div>
+            </div>
+
+            <!-- View: Audit Log -->
+            <div id="view-audit" class="view-container">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center gap-4">
+                        <button onclick="showView('registry')"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5"
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" />
+                            </svg></button>
+                        <h2 class="text-2xl font-bold">📋 Audit Log</h2>
+                    </div>
+                    <button onclick="refreshAuditLog()"
+                        class="text-sm text-vortex-primary hover:underline">Refresh</button>
+                </div>
+                <!-- Filters -->
+                <div class="flex gap-4 mb-6">
+                    <input id="audit-filter-actor" type="text" placeholder="Filter by actor..."
+                        class="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white text-sm outline-none w-48">
+                    <select id="audit-filter-action"
+                        class="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white text-sm outline-none">
+                        <option value="">All actions</option>
+                        <option value="auth.login">auth.login</option>
+                        <option value="dag.trigger">dag.trigger</option>
+                        <option value="dag.pause">dag.pause</option>
+                        <option value="dag.unpause">dag.unpause</option>
+                        <option value="dag.upload">dag.upload</option>
+                        <option value="dag.source_update">dag.source_update</option>
+                        <option value="user.create">user.create</option>
+                        <option value="user.delete">user.delete</option>
+                        <option value="secret.store">secret.store</option>
+                        <option value="secret.delete">secret.delete</option>
+                    </select>
+                    <button onclick="refreshAuditLog()"
+                        class="px-4 py-2 rounded-xl bg-vortex-primary/10 text-vortex-primary border border-vortex-primary/20 text-sm font-bold">Apply</button>
+                </div>
+                <div class="glass rounded-2xl vortex-border overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-white/5 text-white/40 text-[10px] uppercase tracking-widest">
+                                <th class="text-left p-4">Timestamp</th>
+                                <th class="text-left p-4">Actor</th>
+                                <th class="text-left p-4">Action</th>
+                                <th class="text-left p-4">Target</th>
+                                <th class="text-left p-4">Metadata</th>
+                            </tr>
+                        </thead>
+                        <tbody id="audit-table-body">
+                            <tr>
+                                <td colspan="5" class="text-center text-white/20 text-xs p-8">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4 flex justify-center">
+                    <button id="audit-load-more" onclick="loadMoreAudit()"
+                        class="hidden px-6 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 text-sm font-bold hover:bg-white/10 transition-all">Load
+                        More</button>
+                </div>
+            </div>
+
+            <!-- View: Calendar -->
+            <div id="view-calendar" class="view-container">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center gap-4">
+                        <button onclick="showView('registry')"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"><svg class="w-5 h-5"
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M15 19l-7-7 7-7" stroke-width="2" stroke-linecap="round"
+                                    stroke-linejoin="round" />
+                            </svg></button>
+                        <h2 class="text-2xl font-bold">📅 Schedule Calendar</h2>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <button onclick="prevCalMonth()"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-white/60">◀</button>
+                        <span id="cal-month-label" class="text-sm font-bold text-white/70 w-40 text-center"></span>
+                        <button onclick="nextCalMonth()"
+                            class="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-white/60">▶</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-7 gap-1 mb-2">
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Sun</div>
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Mon</div>
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Tue</div>
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Wed</div>
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Thu</div>
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Fri</div>
+                    <div class="text-center text-[10px] text-white/30 font-bold uppercase p-2">Sat</div>
+                </div>
+                <div id="calendar-grid" class="grid grid-cols-7 gap-1"></div>
+                <!-- Day detail panel -->
+                <div id="cal-day-detail" class="hidden mt-6 glass p-6 rounded-2xl vortex-border">
+                    <h3 id="cal-day-title" class="font-bold mb-4"></h3>
+                    <div id="cal-day-events" class="space-y-2"></div>
+                </div>
             </div>
         </main>
     </div>
@@ -190,8 +489,15 @@
     <div id="logs-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
         <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
-                <div><h3 class="text-lg font-bold" id="modal-task-id">Logs</h3><p class="text-xs text-white/40" id="modal-ti-id"></p></div>
-                <button onclick="closeLogs()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <div>
+                    <h3 class="text-lg font-bold" id="modal-task-id">Logs</h3>
+                    <p class="text-xs text-white/40" id="modal-ti-id"></p>
+                </div>
+                <button onclick="closeLogs()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg
+                        class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg></button>
             </div>
             <div class="flex-1 overflow-auto bg-black/60 p-8 font-mono text-sm" id="logs-content"></div>
         </div>
@@ -200,13 +506,23 @@
     <div id="editor-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
         <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
-                <div><h3 class="text-lg font-bold">Edit DAG Source Code</h3><p class="text-xs text-white/40" id="editor-dag-id"></p></div>
+                <div>
+                    <h3 class="text-lg font-bold">Edit DAG Source Code</h3>
+                    <p class="text-xs text-white/40" id="editor-dag-id"></p>
+                </div>
                 <div class="flex gap-4">
-                    <button onclick="saveSource()" class="px-6 py-2 rounded-xl vortex-gradient text-black font-black">SAVE &amp; RE-PARSE</button>
-                    <button onclick="closeEditor()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button onclick="saveSource()"
+                        class="px-6 py-2 rounded-xl vortex-gradient text-black font-black">SAVE &amp; RE-PARSE</button>
+                    <button onclick="closeEditor()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg
+                            class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" />
+                        </svg></button>
                 </div>
             </div>
-            <div class="flex-1 overflow-hidden p-8"><textarea id="editor-content" class="w-full h-full bg-black/40 text-emerald-400 font-mono text-sm p-6 rounded-xl border border-white/5 outline-none resize-none"></textarea></div>
+            <div class="flex-1 overflow-hidden p-8"><textarea id="editor-content"
+                    class="w-full h-full bg-black/40 text-emerald-400 font-mono text-sm p-6 rounded-xl border border-white/5 outline-none resize-none"></textarea>
+            </div>
         </div>
     </div>
 
@@ -215,16 +531,25 @@
         <div class="glass w-full max-w-lg rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
                 <h3 class="text-lg font-bold">📤 Upload DAG File</h3>
-                <button onclick="closeUploadModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button onclick="closeUploadModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg
+                        class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg></button>
             </div>
             <div class="p-8 space-y-4">
-                <div class="drop-zone rounded-2xl p-10 text-center cursor-pointer" onclick="document.getElementById('upload-file').click()">
-                    <p class="text-white/40 text-sm">Click to select a <span class="text-vortex-primary font-bold">.py</span> DAG file</p>
+                <div class="drop-zone rounded-2xl p-10 text-center cursor-pointer"
+                    onclick="document.getElementById('upload-file').click()">
+                    <p class="text-white/40 text-sm">Click to select a <span
+                            class="text-vortex-primary font-bold">.py</span> DAG file</p>
                     <input type="file" id="upload-file" accept=".py" class="hidden" onchange="handleFileSelect(this)">
                     <p id="upload-filename" class="text-vortex-primary font-bold text-sm mt-2 hidden"></p>
                 </div>
-                <div id="upload-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
-                <button onclick="doUpload()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">UPLOAD &amp; PARSE</button>
+                <div id="upload-error"
+                    class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20">
+                </div>
+                <button onclick="doUpload()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">UPLOAD
+                    &amp; PARSE</button>
             </div>
         </div>
     </div>
@@ -234,27 +559,39 @@
         <div class="glass w-full max-w-md rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
                 <h3 class="text-lg font-bold">👥 Add User</h3>
-                <button onclick="closeAddUserModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button onclick="closeAddUserModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg
+                        class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg></button>
             </div>
             <div class="p-8 space-y-4">
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Username</label>
-                    <input id="new-user-name" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none" placeholder="username">
+                    <input id="new-user-name" type="text"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none"
+                        placeholder="username">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Password</label>
-                    <input id="new-user-pass" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none" placeholder="password">
+                    <input id="new-user-pass" type="password"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none"
+                        placeholder="password">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Role</label>
-                    <select id="new-user-role" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none">
+                    <select id="new-user-role"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none">
                         <option value="Admin">Admin</option>
                         <option value="Operator" selected>Operator</option>
                         <option value="Viewer">Viewer</option>
                     </select>
                 </div>
-                <div id="add-user-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
-                <button onclick="doAddUser()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">CREATE USER</button>
+                <div id="add-user-error"
+                    class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20">
+                </div>
+                <button onclick="doAddUser()"
+                    class="w-full py-3 rounded-xl vortex-gradient text-black font-black">CREATE USER</button>
             </div>
         </div>
     </div>
@@ -264,19 +601,90 @@
         <div class="glass w-full max-w-md rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
                 <h3 class="text-lg font-bold">🔐 Add Secret</h3>
-                <button onclick="closeAddSecretModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button onclick="closeAddSecretModal()"
+                    class="p-3 rounded-full hover:bg-white/10 transition-colors"><svg class="w-6 h-6" fill="none"
+                        stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg></button>
             </div>
             <div class="p-8 space-y-4">
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Key</label>
-                    <input id="new-secret-key" type="text" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none font-mono" placeholder="MY_SECRET_KEY">
+                    <input id="new-secret-key" type="text"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none font-mono"
+                        placeholder="MY_SECRET_KEY">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Value</label>
-                    <input id="new-secret-val" type="password" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none font-mono" placeholder="••••••••">
+                    <input id="new-secret-val" type="password"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none font-mono"
+                        placeholder="••••••••">
                 </div>
-                <div id="add-secret-error" class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20"></div>
-                <button onclick="doAddSecret()" class="w-full py-3 rounded-xl vortex-gradient text-black font-black">SAVE SECRET</button>
+                <div id="add-secret-error"
+                    class="hidden text-rose-400 text-xs font-bold bg-rose-400/10 p-3 rounded-lg border border-rose-400/20">
+                </div>
+                <button onclick="doAddSecret()"
+                    class="w-full py-3 rounded-xl vortex-gradient text-black font-black">SAVE SECRET</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backfill Modal -->
+    <div id="backfill-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full max-w-md rounded-3xl vortex-border flex flex-col overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <h3 class="text-lg font-bold">⏪ Trigger Backfill</h3>
+                <button onclick="closeBackfillModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                </button>
+            </div>
+            <div class="p-8 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Start
+                        Date</label>
+                    <input id="backfill-start" type="datetime-local"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">End Date</label>
+                    <input id="backfill-end" type="datetime-local"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none">
+                </div>
+                <div id="backfill-progress-container" class="hidden space-y-2 mt-4">
+                    <div class="flex justify-between text-xs font-bold text-white/60">
+                        <span>Progress</span>
+                        <span id="backfill-progress-text">0%</span>
+                    </div>
+                    <div class="w-full bg-white/5 rounded-full h-2 overflow-hidden">
+                        <div id="backfill-progress-bar" class="bg-orange-500 h-2 transition-all" style="width: 0%">
+                        </div>
+                    </div>
+                </div>
+                <button id="btn-submit-backfill" onclick="submitBackfill()"
+                    class="w-full py-3 rounded-xl bg-orange-500 text-black font-black hover:bg-orange-400 mt-6 md:mt-2 transition-all">START
+                    BACKFILL</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Version Diff Modal -->
+    <div id="version-diff-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full max-w-4xl rounded-3xl vortex-border flex flex-col overflow-hidden max-h-screen">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <h3 id="version-diff-title" class="text-lg font-bold">📜 Diff View</h3>
+                <button onclick="closeVersionDiffModal()" class="p-3 rounded-full hover:bg-white/10 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-auto p-6 bg-[#0a0a0c]">
+                <pre id="diff-content" class="text-xs font-mono text-white/80 whitespace-pre-wrap"></pre>
             </div>
         </div>
     </div>
@@ -285,6 +693,10 @@
         let currentDagId = null;
         let globalData = null;
         let lastRunsData = null;  // separate store for run history data
+        let auditOffset = 0;
+        let calendarEvents = [];
+        let calViewYear = new Date().getFullYear();
+        let calViewMonth = new Date().getMonth(); // 0-indexed
 
         // ─── Auth helpers ───────────────────────────────────────────
         function getAuth() {
@@ -310,7 +722,7 @@
             if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
             if (!res.ok) {
                 let errMsg = 'API Error';
-                try { const err = await res.json(); errMsg = err.error || errMsg; } catch(_) {}
+                try { const err = await res.json(); errMsg = err.error || errMsg; } catch (_) { }
                 throw new Error(errMsg);
             }
             return res.json();
@@ -362,14 +774,19 @@
             }
             if (viewName === 'users') fetchUsers();
             if (viewName === 'secrets') fetchSecrets();
+            if (viewName === 'audit') { auditOffset = 0; refreshAuditLog(); }
+            if (viewName === 'calendar') { fetchCalendar(); }
         }
 
         function switchDetailTab(tab) {
             document.getElementById('tab-graph').className = 'pb-3 px-1 text-sm font-bold transition-all ' + (tab === 'graph' ? 'tab-active' : 'tab-inactive');
             document.getElementById('tab-history').className = 'pb-3 px-1 text-sm font-bold transition-all ' + (tab === 'history' ? 'tab-active' : 'tab-inactive');
+            document.getElementById('tab-timeline').className = 'pb-3 px-1 text-sm font-bold transition-all ' + (tab === 'timeline' ? 'tab-active' : 'tab-inactive');
             document.getElementById('detail-tab-graph').style.display = tab === 'graph' ? 'flex' : 'none';
             document.getElementById('detail-tab-history').style.display = tab === 'history' ? 'block' : 'none';
+            document.getElementById('detail-tab-timeline').style.display = tab === 'timeline' ? 'block' : 'none';
             if (tab === 'history') fetchHistory();
+            if (tab === 'timeline') fetchGantt();
         }
 
         // ─── Init / Auth Check ──────────────────────────────────────
@@ -386,12 +803,12 @@
 
             // RBAC: hide controls based on role
             if (auth.role === 'Viewer') {
-                ['nav-upload', 'nav-users', 'nav-secrets', 'btn-trigger', 'btn-pause', 'btn-edit', 'btn-retry'].forEach(function(id) {
+                ['nav-upload', 'nav-users', 'nav-secrets', 'nav-audit', 'btn-trigger', 'btn-backfill', 'btn-pause', 'btn-edit', 'btn-retry'].forEach(function (id) {
                     var el = document.getElementById(id);
                     if (el) el.style.display = 'none';
                 });
             } else if (auth.role === 'Operator') {
-                ['nav-users', 'nav-secrets'].forEach(function(id) {
+                ['nav-users', 'nav-secrets', 'nav-audit'].forEach(function (id) {
                     var el = document.getElementById(id);
                     if (el) el.style.display = 'none';
                 });
@@ -412,14 +829,15 @@
             try {
                 const dags = await api('/api/dags');
                 document.getElementById('stat-total').textContent = dags.length;
-                document.getElementById('stat-active').textContent = dags.filter(function(d) { return !d.is_paused; }).length;
-                document.getElementById('stat-paused').textContent = dags.filter(function(d) { return d.is_paused; }).length;
+                document.getElementById('stat-active').textContent = dags.filter(function (d) { return !d.is_paused; }).length;
+                document.getElementById('stat-paused').textContent = dags.filter(function (d) { return d.is_paused; }).length;
                 var html = '';
-                dags.forEach(function(dag) {
+                dags.forEach(function (dag) {
+                    var dynamicBadge = dag.is_dynamic ? '<span class="text-[10px] ml-3 px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 font-bold uppercase tracking-wider">Dynamic</span>' : '';
                     html += '<div class="glass p-6 rounded-2xl vortex-border flex items-center justify-between hover:border-vortex-primary/50 transition-all cursor-pointer" onclick="showDagDetails(\'' + dag.id + '\')">'
                         + '<div class="flex items-center gap-5">'
                         + '<div class="w-12 h-12 rounded-xl bg-vortex-primary/10 flex items-center justify-center">' + (dag.is_paused ? '⏸' : '⚡') + '</div>'
-                        + '<div><h4 class="font-bold text-white">' + dag.id + '</h4>'
+                        + '<div><div class="flex items-center"><h4 class="font-bold text-white">' + dag.id + '</h4>' + dynamicBadge + '</div>'
                         + '<p class="text-xs text-white/40">' + (dag.schedule_interval || 'No Schedule') + '</p></div></div>'
                         + '<svg class="w-5 h-5 text-white/10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>';
                 });
@@ -430,16 +848,53 @@
         // ─── Graph Renderer ─────────────────────────────────────────
         function renderGraph(svgId, tasks, instances, edges) {
             try {
-                var g = new dagreD3.graphlib.Graph().setGraph({
+                var g = new dagreD3.graphlib.Graph({ compound: true }).setGraph({
                     rankdir: 'LR',
                     nodesep: 50,
                     ranksep: 100,
                     marginx: 40,
                     marginy: 40
-                }).setDefaultEdgeLabel(function() { return {}; });
+                }).setDefaultEdgeLabel(function () { return {}; });
 
-                tasks.forEach(function(t) {
-                    var ti = instances ? instances.find(function(i) { return i.task_id === t.id; }) : null;
+                var groups = new Set();
+                tasks.forEach(function (t) {
+                    if (t.task_group) groups.add(t.task_group);
+                });
+
+                groups.forEach(function (gId) {
+                    var children = tasks.filter(function (t) { return t.task_group === gId; });
+                    var childStates = children.map(function (t) {
+                        var ti = instances ? instances.find(function (i) { return i.task_id === t.id; }) : null;
+                        return ti ? ti.state : 'Pending';
+                    });
+
+                    var groupState = 'Pending';
+                    if (childStates.length > 0) {
+                        if (childStates.some(function (s) { return s === 'Failed'; })) groupState = 'Failed';
+                        else if (childStates.some(function (s) { return s === 'Running'; })) groupState = 'Running';
+                        else if (childStates.every(function (s) { return s === 'Success'; })) groupState = 'Success';
+                        else if (childStates.some(function (s) { return s === 'Queued'; })) groupState = 'Queued';
+                    }
+
+                    var strokeColor = 'rgba(255, 255, 255, 0.2)';
+                    var fillColor = 'rgba(255, 255, 255, 0.02)';
+                    var labelColor = 'rgba(255, 255, 255, 0.5)';
+
+                    if (groupState === 'Success') { strokeColor = 'rgba(16, 185, 129, 0.5)'; fillColor = 'rgba(16, 185, 129, 0.05)'; labelColor = 'rgba(16, 185, 129, 0.8)'; }
+                    else if (groupState === 'Failed') { strokeColor = 'rgba(244, 63, 94, 0.5)'; fillColor = 'rgba(244, 63, 94, 0.05)'; labelColor = 'rgba(244, 63, 94, 0.8)'; }
+                    else if (groupState === 'Running') { strokeColor = 'rgba(0, 242, 255, 0.5)'; fillColor = 'rgba(0, 242, 255, 0.05)'; labelColor = 'rgba(0, 242, 255, 0.8)'; }
+                    else if (groupState === 'Queued') { strokeColor = 'rgba(245, 158, 11, 0.5)'; fillColor = 'rgba(245, 158, 11, 0.05)'; labelColor = 'rgba(245, 158, 11, 0.8)'; }
+
+                    g.setNode(gId, {
+                        label: gId,
+                        clusterLabelPos: 'top',
+                        style: 'fill: ' + fillColor + '; stroke: ' + strokeColor + '; stroke-dasharray: 4, 4; rx: 15; ry: 15;',
+                        labelStyle: 'font-weight: 900; fill: ' + labelColor + '; font-size: 12px; font-family: Inter; text-transform: uppercase; letter-spacing: 1px;'
+                    });
+                });
+
+                tasks.forEach(function (t) {
+                    var ti = instances ? instances.find(function (i) { return i.task_id === t.id; }) : null;
                     var state = ti ? ti.state : 'Pending';
                     g.setNode(t.id, {
                         label: t.name || t.id,
@@ -449,10 +904,13 @@
                         ry: 10,
                         padding: 15
                     });
+                    if (t.task_group) {
+                        g.setParent(t.id, t.task_group);
+                    }
                 });
 
                 if (edges && edges.length > 0) {
-                    edges.forEach(function(e) {
+                    edges.forEach(function (e) {
                         var up = Array.isArray(e) ? e[0] : e.upstream;
                         var down = Array.isArray(e) ? e[1] : e.downstream;
                         if (up && down) {
@@ -502,7 +960,8 @@
             try {
                 var data = await api('/api/dags/' + currentDagId + '/tasks');
                 globalData = data;
-                document.getElementById('detail-title').textContent = data.dag_id || currentDagId;
+                var dynamicBadge = (data.dag && data.dag.is_dynamic) ? ' <span class="text-[12px] ml-4 px-2 py-0.5 align-middle rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 font-bold uppercase tracking-wider">Dynamic</span>' : '';
+                document.getElementById('detail-title').innerHTML = (data.dag_id || currentDagId) + dynamicBadge;
                 var createdAt = data.dag && data.dag.created_at ? new Date(data.dag.created_at).toLocaleString() : 'Unknown';
                 document.getElementById('detail-sub').textContent = 'Created: ' + createdAt;
 
@@ -522,7 +981,7 @@
                 lastRunsData = data;  // store runs data separately
                 var runs = data.runs || [];
                 var html = '';
-                runs.forEach(function(run) {
+                runs.forEach(function (run) {
                     var stateClass = run.state === 'Success'
                         ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
                         : 'bg-rose-400/10 text-rose-400 border-rose-400/20';
@@ -568,11 +1027,11 @@
             // Find the run from lastRunsData
             var run = null;
             if (lastRunsData && lastRunsData.runs) {
-                run = lastRunsData.runs.find(function(r) { return r.id === runId; });
+                run = lastRunsData.runs.find(function (r) { return r.id === runId; });
             }
 
             // Match instances to this run
-            var runInstances = data.instances.filter(function(i) {
+            var runInstances = data.instances.filter(function (i) {
                 // Primary: match by run_id
                 if (i.run_id === runId) return true;
                 // Fallback: match by execution_date within a window
@@ -598,7 +1057,7 @@
             var logsEl = document.getElementById('logs-' + runId);
             if (runInstances.length > 0) {
                 var html = '';
-                runInstances.forEach(function(i) {
+                runInstances.forEach(function (i) {
                     var sc = i.state === 'Success'
                         ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
                         : 'bg-rose-400/10 text-rose-400 border-rose-400/20';
@@ -625,6 +1084,78 @@
             } catch (e) { alert('Trigger failed: ' + e.message); }
         }
 
+        function openBackfillModal() {
+            if (!currentDagId) return;
+            document.getElementById('backfill-modal').style.display = 'flex';
+            document.getElementById('backfill-progress-container').classList.add('hidden');
+            document.getElementById('backfill-progress-bar').style.width = '0%';
+            document.getElementById('backfill-progress-text').textContent = '0%';
+
+            const btn = document.getElementById('btn-submit-backfill');
+            btn.style.display = 'block';
+            btn.textContent = 'START BACKFILL';
+            btn.classList.remove('bg-emerald-500', 'hover:bg-emerald-400');
+            btn.classList.add('bg-orange-500', 'hover:bg-orange-400');
+            btn.onclick = submitBackfill;
+
+            const now = new Date();
+            const yesterday = new Date(now);
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            const fmt = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+            document.getElementById('backfill-start').value = fmt(yesterday);
+            document.getElementById('backfill-end').value = fmt(now);
+        }
+
+        function closeBackfillModal() {
+            document.getElementById('backfill-modal').style.display = 'none';
+        }
+
+        async function submitBackfill() {
+            const start = document.getElementById('backfill-start').value;
+            const end = document.getElementById('backfill-end').value;
+            if (!start || !end) { alert("Select start and end dates"); return; }
+
+            try {
+                const startIso = new Date(start).toISOString();
+                const endIso = new Date(end).toISOString();
+
+                await api('/api/dags/' + currentDagId + '/backfill', 'POST', { start_date: startIso, end_date: endIso });
+
+                document.getElementById('btn-submit-backfill').style.display = 'none';
+                document.getElementById('backfill-progress-container').classList.remove('hidden');
+
+                pollBackfillProgress();
+            } catch (e) { alert('Backfill Failed: ' + e.message); }
+        }
+
+        async function pollBackfillProgress() {
+            if (!currentDagId || document.getElementById('backfill-modal').style.display === 'none') return;
+            try {
+                const res = await api('/api/dags/' + currentDagId + '/backfill/progress');
+                const progress = res.progress || 0.0;
+                const pct = Math.min(100, Math.round(progress * 100));
+
+                document.getElementById('backfill-progress-bar').style.width = pct + '%';
+                document.getElementById('backfill-progress-text').textContent = pct + '%';
+
+                if (progress < 1.0) {
+                    setTimeout(pollBackfillProgress, 500);
+                } else {
+                    const btn = document.getElementById('btn-submit-backfill');
+                    btn.textContent = 'DONE';
+                    btn.style.display = 'block';
+                    btn.classList.remove('bg-orange-500', 'hover:bg-orange-400');
+                    btn.classList.add('bg-emerald-500', 'hover:bg-emerald-400');
+                    btn.onclick = closeBackfillModal;
+                    setTimeout(refreshDagDetails, 500);
+                }
+            } catch (e) {
+                console.error('Progress poll error:', e);
+                setTimeout(pollBackfillProgress, 2000);
+            }
+        }
+
         async function retryDagFailures() {
             if (!currentDagId) return;
             try {
@@ -638,7 +1169,7 @@
             if (!currentDagId) return;
             try {
                 var dags = await api('/api/dags');
-                var d = dags.find(function(x) { return x.id === currentDagId; });
+                var d = dags.find(function (x) { return x.id === currentDagId; });
                 if (!d) return;
                 var action = d.is_paused ? 'unpause' : 'pause';
                 await api('/api/dags/' + currentDagId + '/' + action, 'PATCH');
@@ -671,7 +1202,7 @@
         function startGlobalTimers() {
             fetchSwarmStatus();
             setInterval(fetchSwarmStatus, 5000);
-            setInterval(function() {
+            setInterval(function () {
                 if (currentDagId) refreshDagDetails();
             }, 5000);
         }
@@ -704,7 +1235,7 @@
             try {
                 var u = await api('/api/users');
                 var list = Array.isArray(u) ? u : (u.users || []);
-                document.getElementById('users-list').innerHTML = list.map(function(x) {
+                document.getElementById('users-list').innerHTML = list.map(function (x) {
                     return '<div class="glass p-4 rounded-xl border border-white/5 flex justify-between"><span>' + x.username + '</span><span class="text-white/40">' + x.role + '</span></div>';
                 }).join('');
             } catch (e) { console.error('fetchUsers error:', e); }
@@ -735,7 +1266,7 @@
             try {
                 var s = await api('/api/secrets');
                 var secrets = s.secrets || [];
-                document.getElementById('secrets-list').innerHTML = secrets.map(function(x) {
+                document.getElementById('secrets-list').innerHTML = secrets.map(function (x) {
                     return '<div class="glass p-4 rounded-xl border border-white/5 font-mono">' + x + '</div>';
                 }).join('');
             } catch (e) { console.error('fetchSecrets error:', e); }
@@ -804,6 +1335,104 @@
             } catch (e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
         }
 
+        // ─── Version History Modal ──────────────────────────────────────
+        async function showViewVersionModal() {
+            if (!currentDagId) return;
+            document.getElementById('version-modal').style.display = 'flex';
+            document.getElementById('version-modal-title').textContent = 'Versions: ' + currentDagId;
+            var listEl = document.getElementById('version-list');
+            listEl.innerHTML = '<p class="text-white/40 italic">Loading versions...</p>';
+            try {
+                var data = await api('/api/dags/' + currentDagId + '/versions');
+                var versions = data.versions || [];
+                if (versions.length === 0) {
+                    listEl.innerHTML = '<p class="text-white/40 italic">No historical versions available.</p>';
+                    return;
+                }
+                var html = '';
+                versions.forEach(function (v, idx) {
+                    var ts = v.created_at ? new Date(v.created_at).toLocaleString() : 'Unknown';
+                    var isLatest = idx === 0;
+                    var btnHTML = isLatest ? '<span class="text-xs bg-emerald-400/20 text-emerald-400 px-3 py-1 rounded-full border border-emerald-400/20 font-bold">Active</span>'
+                        : '<button onclick="viewVersionDiff(' + v.version + ')" class="mr-2 px-3 py-1.5 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/20 hover:bg-blue-500/40 transition-colors text-xs font-bold">Diff</button>' +
+                        '<button onclick="rollbackVersion(' + v.version + ')" class="px-3 py-1.5 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-500/20 hover:bg-purple-500/40 transition-colors text-xs font-bold">Rollback</button>';
+
+                    html += '<div class="glass p-5 rounded-2xl border border-white/5 flex items-center justify-between hover:border-white/20 transition-all">'
+                        + '<div><div class="flex items-center gap-3"><span class="text-lg font-black text-white">v' + v.version + '</span>'
+                        + '<span class="text-xs text-white/40 font-mono">' + ts + '</span></div>'
+                        + '<p class="text-[10px] text-white/30 font-mono mt-2 truncate w-64 md:w-96" title="' + v.file_path + '">' + v.file_path + '</p></div>'
+                        + '<div>' + btnHTML + '</div></div>';
+                });
+                listEl.innerHTML = html;
+            } catch (e) {
+                listEl.innerHTML = '<p class="text-rose-400 text-sm">Error: ' + e.message + '</p>';
+            }
+        }
+        function closeVersionModal() { document.getElementById('version-modal').style.display = 'none'; }
+
+        async function rollbackVersion(versionNumber) {
+            if (!confirm('Are you sure you want to rollback to v' + versionNumber + '? This will overwrite the current DAG code.')) return;
+            try {
+                var res = await fetch('/api/dags/' + currentDagId + '/versions/' + versionNumber + '/rollback', {
+                    method: 'POST',
+                    headers: { 'Authorization': getAuth().key }
+                });
+                if (!res.ok) {
+                    var err = await res.json();
+                    throw new Error(err.error || 'Rollback failed');
+                }
+                alert('Successfully rolled back to v' + versionNumber);
+                closeVersionModal();
+            } catch (e) {
+                alert('Rollback Error: ' + e.message);
+            }
+        }
+
+        function closeVersionDiffModal() {
+            document.getElementById('version-diff-modal').style.display = 'none';
+        }
+
+        async function viewVersionDiff(versionNumber) {
+            try {
+                document.getElementById('version-diff-modal').style.display = 'flex';
+                document.getElementById('version-diff-title').textContent = 'Loading Diff...';
+                document.getElementById('diff-content').innerHTML = '<span class="text-white/40 italic">Fetching source codes...</span>';
+
+                // Fetch current source
+                const currRes = await api('/api/dags/' + currentDagId + '/source');
+                const currSource = currRes.source || '';
+
+                // Fetch historical version source
+                const histRes = await api('/api/dags/' + currentDagId + '/versions/' + versionNumber + '/source');
+                const histSource = histRes.source || '';
+
+                document.getElementById('version-diff-title').textContent = 'Diff: v' + versionNumber + ' vs Current';
+
+                // Calculate diff
+                const diff = Diff.diffLines(currSource, histSource);
+
+                let diffHtml = '';
+                diff.forEach(part => {
+                    const color = part.added ? 'text-emerald-400 bg-emerald-400/10' :
+                        part.removed ? 'text-rose-400 bg-rose-400/10' : 'text-white/60';
+                    const prefix = part.added ? '+ ' : part.removed ? '- ' : '  ';
+
+                    // Escape HTML
+                    const lines = part.value.split('\n');
+                    for (let i = 0; i < lines.length; i++) {
+                        if (i === lines.length - 1 && lines[i] === '') continue; // Skip trailing empty split
+                        const escaped = lines[i].replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                        diffHtml += '<div class="' + color + ' px-2">' + prefix + escaped + '</div>';
+                    }
+                });
+
+                document.getElementById('diff-content').innerHTML = diffHtml || '<span class="text-white/40">No changes detected.</span>';
+
+            } catch (e) {
+                document.getElementById('diff-content').innerHTML = '<span class="text-rose-400">Error generating diff: ' + e.message + '</span>';
+            }
+        }
+
         // ─── Logs Modal ─────────────────────────────────────────────
         async function viewLogs(id, tid) {
             document.getElementById('modal-task-id').textContent = tid;
@@ -819,8 +1448,273 @@
         }
         function closeLogs() { document.getElementById('logs-modal').style.display = 'none'; }
 
+        // ─── Audit Log ──────────────────────────────────────────────
+        async function refreshAuditLog() {
+            auditOffset = 0;
+            document.getElementById('audit-table-body').innerHTML = '<tr><td colspan="5" class="text-center text-white/20 text-xs p-8">Loading...</td></tr>';
+            document.getElementById('audit-load-more').classList.add('hidden');
+            await loadAuditPage(false);
+        }
+
+        async function loadMoreAudit() {
+            await loadAuditPage(true);
+        }
+
+        async function loadAuditPage(append) {
+            var actor = document.getElementById('audit-filter-actor').value.trim();
+            var action = document.getElementById('audit-filter-action').value;
+            var url = '/api/audit?limit=50&offset=' + auditOffset;
+            if (actor) url += '&actor=' + encodeURIComponent(actor);
+            if (action) url += '&action=' + encodeURIComponent(action);
+            try {
+                var data = await api(url);
+                var logs = data.logs || [];
+                var tbody = document.getElementById('audit-table-body');
+                if (!append) tbody.innerHTML = '';
+                if (logs.length === 0 && !append) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-white/20 text-xs p-8">No audit events found.</td></tr>';
+                    document.getElementById('audit-load-more').classList.add('hidden');
+                    return;
+                }
+                logs.forEach(function (log) {
+                    var ts = log.timestamp ? new Date(log.timestamp).toLocaleString() : '-';
+                    var meta = typeof log.metadata === 'object' ? JSON.stringify(log.metadata) : (log.metadata || '{}');
+                    var actionBadge = 'bg-vortex-primary/10 text-vortex-primary border-vortex-primary/20';
+                    if (log.action && log.action.startsWith('auth')) actionBadge = 'bg-amber-400/10 text-amber-400 border-amber-400/20';
+                    if (log.action && log.action.startsWith('secret')) actionBadge = 'bg-rose-400/10 text-rose-400 border-rose-400/20';
+                    if (log.action && log.action.startsWith('user')) actionBadge = 'bg-purple-400/10 text-purple-400 border-purple-400/20';
+                    var tr = '<tr class="border-b border-white/5 hover:bg-white/3 transition-colors">'
+                        + '<td class="p-4 text-xs text-white/50 font-mono whitespace-nowrap">' + ts + '</td>'
+                        + '<td class="p-4 text-xs font-bold text-white">' + (log.actor || '-') + '</td>'
+                        + '<td class="p-4"><span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + actionBadge + '">' + (log.action || '-') + '</span></td>'
+                        + '<td class="p-4 text-xs text-white/60 font-mono">' + (log.target_type || '') + ':' + (log.target_id || '') + '</td>'
+                        + '<td class="p-4 text-[10px] text-white/30 font-mono max-w-xs truncate" title="' + meta.replace(/"/g, '&quot;') + '">' + meta + '</td>'
+                        + '</tr>';
+                    tbody.insertAdjacentHTML('beforeend', tr);
+                });
+                auditOffset += logs.length;
+                document.getElementById('audit-load-more').classList.toggle('hidden', logs.length < 50);
+            } catch (e) {
+                document.getElementById('audit-table-body').innerHTML = '<tr><td colspan="5" class="text-center text-rose-400 text-xs p-8">Error: ' + e.message + '</td></tr>';
+            }
+        }
+
+        // ─── Gantt / Timeline ───────────────────────────────────────
+        async function fetchGantt() {
+            if (!currentDagId) return;
+            var container = document.getElementById('gantt-container');
+            var empty = document.getElementById('gantt-empty');
+            container.innerHTML = '';
+            empty.classList.add('hidden');
+            try {
+                var data = await api('/api/analysis/gantt?dag_id=' + encodeURIComponent(currentDagId));
+                var tasks = data.tasks || [];
+                if (tasks.length === 0) { empty.classList.remove('hidden'); return; }
+
+                // Find global time range
+                var minTime = Infinity, maxTime = -Infinity;
+                tasks.forEach(function (t) {
+                    (t.instances || []).forEach(function (inst) {
+                        if (inst.start_time) {
+                            var st = new Date(inst.start_time).getTime();
+                            var et = inst.end_time ? new Date(inst.end_time).getTime() : st + 1000;
+                            if (st < minTime) minTime = st;
+                            if (et > maxTime) maxTime = et;
+                        }
+                    });
+                });
+
+                if (!isFinite(minTime)) { empty.classList.remove('hidden'); return; }
+
+                var margin = { top: 30, right: 20, bottom: 40, left: 140 };
+                var width = Math.max(600, container.offsetWidth || 700) - margin.left - margin.right;
+                var rowH = 36;
+                var height = tasks.length * rowH;
+
+                var svg = d3.select('#gantt-container').append('svg')
+                    .attr('width', width + margin.left + margin.right)
+                    .attr('height', height + margin.top + margin.bottom);
+
+                var g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+                var xScale = d3.scaleTime()
+                    .domain([new Date(minTime), new Date(maxTime + (maxTime - minTime) * 0.05 + 1000)])
+                    .range([0, width]);
+
+                var stateColor = { 'Success': '#10b981', 'Failed': '#f43f5e', 'Running': '#00f2ff', 'Queued': '#f59e0b' };
+
+                // X axis
+                g.append('g').attr('transform', 'translate(0,' + height + ')')
+                    .call(d3.axisBottom(xScale).ticks(6).tickFormat(d3.timeFormat('%H:%M:%S')))
+                    .selectAll('text').style('fill', 'rgba(255,255,255,0.4)').style('font-size', '10px');
+                g.selectAll('.domain,.tick line').style('stroke', 'rgba(255,255,255,0.1)');
+
+                // Grid lines
+                g.selectAll('.grid-line').data(xScale.ticks(6)).enter()
+                    .append('line')
+                    .attr('x1', function (d) { return xScale(d); }).attr('x2', function (d) { return xScale(d); })
+                    .attr('y1', 0).attr('y2', height)
+                    .style('stroke', 'rgba(255,255,255,0.05)').style('stroke-dasharray', '4,4');
+
+                // Tooltip
+                var tooltip = d3.select('#gantt-container').append('div')
+                    .style('position', 'absolute').style('background', 'rgba(22,22,30,0.97)')
+                    .style('border', '1px solid rgba(0,242,255,0.2)').style('border-radius', '8px')
+                    .style('padding', '8px 12px').style('font-size', '11px').style('color', '#e1e1e6')
+                    .style('pointer-events', 'none').style('opacity', 0).style('max-width', '260px');
+
+                tasks.forEach(function (task, idx) {
+                    var y = idx * rowH;
+                    // Task label
+                    g.append('text').text(task.task_id || '-')
+                        .attr('x', -8).attr('y', y + rowH / 2 + 4)
+                        .style('fill', 'rgba(255,255,255,0.7)').style('font-size', '11px')
+                        .style('text-anchor', 'end').style('font-family', 'monospace');
+
+                    // Row background
+                    g.append('rect').attr('x', 0).attr('y', y + 2).attr('width', width).attr('height', rowH - 4)
+                        .style('fill', idx % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent');
+
+                    (task.instances || []).forEach(function (inst) {
+                        if (!inst.start_time) return;
+                        var st = new Date(inst.start_time).getTime();
+                        var et = inst.end_time ? new Date(inst.end_time).getTime() : st + 500;
+                        var barX = xScale(new Date(st));
+                        var barW = Math.max(4, xScale(new Date(et)) - barX);
+                        var color = stateColor[inst.state] || '#7000ff';
+
+                        g.append('rect')
+                            .attr('x', barX).attr('y', y + 6)
+                            .attr('width', barW).attr('height', rowH - 12)
+                            .attr('rx', 4)
+                            .style('fill', color).style('opacity', 0.85)
+                            .on('mouseover', function (event) {
+                                var dur = inst.duration_ms ? (inst.duration_ms / 1000).toFixed(2) + 's' : '—';
+                                tooltip.style('opacity', 1)
+                                    .html('<b>' + task.task_id + '</b><br>State: ' + inst.state + '<br>Duration: ' + dur + '<br>Run: ' + (inst.run_id || '—'));
+                            })
+                            .on('mousemove', function (event) {
+                                var rect = document.getElementById('gantt-container').getBoundingClientRect();
+                                tooltip.style('left', (event.clientX - rect.left + 12) + 'px')
+                                    .style('top', (event.clientY - rect.top - 20) + 'px');
+                            })
+                            .on('mouseout', function () { tooltip.style('opacity', 0); });
+                    });
+                });
+            } catch (e) {
+                container.innerHTML = '<p class="text-rose-400 text-xs p-4">Error: ' + e.message + '</p>';
+            }
+        }
+
+        // ─── Calendar ───────────────────────────────────────────────
+        async function fetchCalendar() {
+            calendarEvents = [];
+            try {
+                var data = await api('/api/analysis/calendar?days=60');
+                calendarEvents = data.events || [];
+            } catch (e) { console.error('calendar fetch error:', e); }
+            renderCalendar();
+        }
+
+        function prevCalMonth() {
+            calViewMonth--;
+            if (calViewMonth < 0) { calViewMonth = 11; calViewYear--; }
+            renderCalendar();
+        }
+
+        function nextCalMonth() {
+            calViewMonth++;
+            if (calViewMonth > 11) { calViewMonth = 0; calViewYear++; }
+            renderCalendar();
+        }
+
+        function renderCalendar() {
+            var months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+            document.getElementById('cal-month-label').textContent = months[calViewMonth] + ' ' + calViewYear;
+
+            var grid = document.getElementById('calendar-grid');
+            grid.innerHTML = '';
+
+            var firstDay = new Date(calViewYear, calViewMonth, 1).getDay();
+            var daysInMonth = new Date(calViewYear, calViewMonth + 1, 0).getDate();
+            var today = new Date();
+
+            // Index events by date string YYYY-MM-DD
+            var eventsByDay = {};
+            calendarEvents.forEach(function (ev) {
+                var d = ev.scheduled_time ? ev.scheduled_time.substring(0, 10) : null;
+                if (!d) return;
+                var dt = new Date(d);
+                if (dt.getFullYear() === calViewYear && dt.getMonth() === calViewMonth) {
+                    if (!eventsByDay[d]) eventsByDay[d] = [];
+                    eventsByDay[d].push(ev);
+                }
+            });
+
+            // Empty cells before first day
+            for (var i = 0; i < firstDay; i++) {
+                grid.insertAdjacentHTML('beforeend', '<div class="h-24 rounded-xl bg-white/2 opacity-20"></div>');
+            }
+
+            for (var day = 1; day <= daysInMonth; day++) {
+                var dateStr = calViewYear + '-' + String(calViewMonth + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+                var dayEvents = eventsByDay[dateStr] || [];
+                var isToday = today.getFullYear() === calViewYear && today.getMonth() === calViewMonth && today.getDate() === day;
+                var borderClass = isToday ? 'border-vortex-primary/50' : 'border-white/5';
+
+                // Count event types
+                var scheduled = dayEvents.filter(function (e) { return e.type === 'scheduled'; }).length;
+                var success = dayEvents.filter(function (e) { return e.state === 'Success'; }).length;
+                var failed = dayEvents.filter(function (e) { return e.state === 'Failed'; }).length;
+
+                var dots = '';
+                if (scheduled > 0) dots += '<span class="inline-block w-2 h-2 rounded-full bg-vortex-primary mr-0.5" title="' + scheduled + ' scheduled"></span>';
+                if (success > 0) dots += '<span class="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-0.5" title="' + success + ' success"></span>';
+                if (failed > 0) dots += '<span class="inline-block w-2 h-2 rounded-full bg-rose-400 mr-0.5" title="' + failed + ' failed"></span>';
+
+                var cell = '<div class="h-24 glass rounded-xl border ' + borderClass + ' p-2 cursor-pointer hover:border-vortex-primary/30 transition-all" onclick="showCalDayDetail(\'' + dateStr + '\')">'
+                    + '<div class="text-xs font-bold ' + (isToday ? 'text-vortex-primary' : 'text-white/60') + '">' + day + '</div>'
+                    + '<div class="flex flex-wrap gap-0.5 mt-1">' + dots + '</div>'
+                    + (dayEvents.length > 0 ? '<div class="text-[9px] text-white/30 mt-1">' + dayEvents.length + ' event' + (dayEvents.length !== 1 ? 's' : '') + '</div>' : '')
+                    + '</div>';
+                grid.insertAdjacentHTML('beforeend', cell);
+            }
+
+            document.getElementById('cal-day-detail').classList.add('hidden');
+        }
+
+        function showCalDayDetail(dateStr) {
+            var dayEvents = calendarEvents.filter(function (ev) {
+                return ev.scheduled_time && ev.scheduled_time.startsWith(dateStr);
+            });
+            var detailEl = document.getElementById('cal-day-detail');
+            document.getElementById('cal-day-title').textContent = 'Events on ' + dateStr;
+            var html = '';
+            if (dayEvents.length === 0) {
+                html = '<p class="text-xs text-white/20 italic">No events.</p>';
+            } else {
+                dayEvents.forEach(function (ev) {
+                    var time = ev.scheduled_time ? new Date(ev.scheduled_time).toLocaleTimeString() : '-';
+                    var stateClass = ev.type === 'scheduled' ? 'bg-vortex-primary/10 text-vortex-primary border-vortex-primary/20'
+                        : ev.state === 'Success' ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
+                            : 'bg-rose-400/10 text-rose-400 border-rose-400/20';
+                    var label = ev.type === 'scheduled' ? 'SCHEDULED' : (ev.state || ev.type).toUpperCase();
+                    html += '<div class="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">'
+                        + '<div class="flex items-center gap-3">'
+                        + '<span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + stateClass + '">' + label + '</span>'
+                        + '<span class="text-xs font-bold text-white/70">' + (ev.dag_id || '-') + '</span>'
+                        + '</div>'
+                        + '<span class="text-[10px] text-white/30 font-mono">' + time + '</span>'
+                        + '</div>';
+                });
+            }
+            document.getElementById('cal-day-events').innerHTML = html;
+            detailEl.classList.remove('hidden');
+        }
+
         // ─── Boot ───────────────────────────────────────────────────
         checkAuth();
     </script>
 </body>
+
 </html>

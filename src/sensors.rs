@@ -1,11 +1,11 @@
-use anyhow::Result;
+
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::db::Db;
+use crate::db_trait::DatabaseBackend;
 
 // ─── Config & Result Types ────────────────────────────────────────────────────
 
@@ -207,45 +207,35 @@ pub async fn check_http_sensor(url: &str, expected_status: u16) -> bool {
 
 /// Returns `true` when a task in another DAG has state "Success" in `task_instances`.
 pub async fn check_external_task_sensor(
-    db: &Arc<Db>,
+    db: &Arc<dyn DatabaseBackend>,
     dag_id: &str,
     task_id: &str,
 ) -> bool {
-    // Query the task_instances table for the latest instance of the target task.
-    let conn = match db.conn.lock() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "🔗 ExternalTaskSensor: could not lock DB connection: {}",
-                e
-            );
-            return false;
-        }
-    };
+    // Query task_instances for the latest instance of the target task using the trait.
+    match db.get_task_instances(dag_id).await {
+        Ok(instances) => {
+            // Find the most recent instance for the given task_id
+            let latest = instances.iter()
+                .filter(|ti| ti["task_id"].as_str() == Some(task_id))
+                .last();
 
-    let result: rusqlite::Result<String> = conn.query_row(
-        "SELECT state FROM task_instances \
-         WHERE dag_id = ?1 AND task_id = ?2 \
-         ORDER BY execution_date DESC \
-         LIMIT 1",
-        rusqlite::params![dag_id, task_id],
-        |row| row.get(0),
-    );
-
-    match result {
-        Ok(state) => {
-            debug!(
-                "🔗 ExternalTaskSensor: {}/{} → state='{}'",
-                dag_id, task_id, state
-            );
-            state == "Success"
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            debug!(
-                "🔗 ExternalTaskSensor: no rows found for {}/{}",
-                dag_id, task_id
-            );
-            false
+            match latest {
+                Some(ti) => {
+                    let state = ti["state"].as_str().unwrap_or("");
+                    debug!(
+                        "🔗 ExternalTaskSensor: {}/{} → state='{}'",
+                        dag_id, task_id, state
+                    );
+                    state == "Success"
+                }
+                None => {
+                    debug!(
+                        "🔗 ExternalTaskSensor: no rows found for {}/{}",
+                        dag_id, task_id
+                    );
+                    false
+                }
+            }
         }
         Err(e) => {
             warn!(
@@ -303,7 +293,7 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
 /// # Arguments
 /// * `config` — sensor configuration including type, intervals, and sensor-specific params
 /// * `db`     — shared database handle (required for `external_task` sensor)
-pub async fn run_sensor_loop(config: &SensorConfig, db: &Arc<Db>) -> SensorResult {
+pub async fn run_sensor_loop(config: &SensorConfig, db: &Arc<dyn DatabaseBackend>) -> SensorResult {
     let poke_interval = Duration::from_secs(config.poke_interval_secs.max(1) as u64);
     let timeout_duration = Duration::from_secs(config.timeout_secs.max(1) as u64);
     let deadline = Instant::now() + timeout_duration;

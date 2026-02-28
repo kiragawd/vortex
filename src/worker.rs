@@ -1,12 +1,10 @@
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 use anyhow::Result;
 use std::time::Duration;
 
 use crate::executor::TaskExecutor;
 
-pub mod proto {
-    tonic::include_proto!("vortex.swarm");
-}
+use crate::proto;
 
 use proto::swarm_controller_client::SwarmControllerClient;
 use proto::*;
@@ -151,10 +149,33 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
     
     let result = match task.task_type.as_str() {
         "python" => {
-            TaskExecutor::execute_python(&task.task_id, &task.command, task.secrets.clone()).await
+            TaskExecutor::execute_python(&task.task_id, &task.command, task.secrets.clone(), None).await
         },
-        _ => {
-            TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone()).await
+        "bash" => {
+            TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), None).await
+        },
+        other_type => {
+            if let Some(plugin) = crate::executor::get_plugin(other_type) {
+                let ctx = crate::executor::TaskContext {
+                    task_id: task.task_id.clone(),
+                    command: task.command.clone(),
+                    config: serde_json::from_str(&task.config_json).unwrap_or(serde_json::json!({})),
+                    env_vars: task.secrets.clone(),
+                };
+                match plugin.execute(&ctx).await {
+                    Ok(res) => res,
+                    Err(e) => crate::executor::ExecutionResult {
+                        task_id: task.task_id.clone(),
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: format!("Plugin error: {}", e),
+                        duration_ms: 0,
+                    }
+                }
+            } else {
+                TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), None).await
+            }
         }
     };
 

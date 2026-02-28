@@ -4,9 +4,161 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 use std::time::Instant;
 use tempfile::NamedTempFile;
+use std::sync::Arc;
+use anyhow::{anyhow, Result};
+use libloading::Library;
+
+use std::sync::RwLock;
+
+pub static PLUGIN_REGISTRY: RwLock<Option<PluginRegistry>> = RwLock::new(None);
+
+pub fn init_global_registry(registry: PluginRegistry) {
+    if let Ok(mut lock) = PLUGIN_REGISTRY.write() {
+        *lock = Some(registry);
+    }
+}
+
+pub fn get_plugin(name: &str) -> Option<Arc<dyn VortexOperator>> {
+    if let Ok(lock) = PLUGIN_REGISTRY.read() {
+        if let Some(reg) = lock.as_ref() {
+            return reg.get(name);
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+pub struct TaskContext {
+    pub task_id: String,
+    pub command: String,
+    pub config: serde_json::Value,
+    pub env_vars: HashMap<String, String>,
+}
+
+#[async_trait::async_trait]
+pub trait VortexOperator: Send + Sync {
+    async fn execute(&self, context: &TaskContext) -> Result<ExecutionResult>;
+}
+
+pub struct PluginRegistry {
+    plugins: HashMap<String, Arc<dyn VortexOperator>>,
+    _libraries: Vec<Library>, // Keeps loaded shared libraries in memory
+}
+
+impl PluginRegistry {
+    pub fn new() -> Self {
+        let mut registry = Self {
+            plugins: HashMap::new(),
+            _libraries: Vec::new(),
+        };
+        registry.register("http", HttpOperator);
+        registry
+    }
+
+    pub fn register<S: Into<String>, O: VortexOperator + 'static>(&mut self, name: S, operator: O) {
+        self.plugins.insert(name.into(), Arc::new(operator));
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn VortexOperator>> {
+        self.plugins.get(name).cloned()
+    }
+
+    /// Dynamically loads a plugin from a shared library.
+    /// The library must export a `_vortex_plugin_create` C-ABI function.
+    pub unsafe fn load_plugin<S: Into<String>>(&mut self, path: &str, name: S) -> Result<()> {
+        let lib = Library::new(path)?;
+        let creator: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn VortexOperator> = lib.get(b"_vortex_plugin_create\0")?;
+        
+        let ptr = creator();
+        if ptr.is_null() {
+            return Err(anyhow!("Plugin returned a null pointer during initialization"));
+        }
+        
+        let boxed_plugin = Box::from_raw(ptr);
+        self.plugins.insert(name.into(), Arc::from(boxed_plugin));
+        self._libraries.push(lib);
+        
+        Ok(())
+    }
+}
+
+/// A macro for plugins to declare their export function easily.
+#[macro_export]
+macro_rules! declare_plugin {
+    ($plugin_type:ty, $constructor:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn _vortex_plugin_create() -> *mut dyn $crate::executor::VortexOperator {
+            let constructor: fn() -> $plugin_type = $constructor;
+            let object = constructor();
+            let boxed: Box<dyn $crate::executor::VortexOperator> = Box::new(object);
+            Box::into_raw(boxed)
+        }
+    };
+}
+
+pub struct HttpOperator;
+
+#[async_trait::async_trait]
+impl VortexOperator for HttpOperator {
+    async fn execute(&self, context: &TaskContext) -> Result<ExecutionResult> {
+        let start = Instant::now();
+        let client = reqwest::Client::new();
+        
+        let url = context.config.get("endpoint").and_then(|v| v.as_str()).unwrap_or(&context.command);
+        let method = context.config.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
+        
+        let mut req = match method.to_uppercase().as_str() {
+            "POST" => client.post(url),
+            "PUT" => client.put(url),
+            "DELETE" => client.delete(url),
+            "PATCH" => client.patch(url),
+            _ => client.get(url),
+        };
+        
+        if let Some(headers) = context.config.get("headers").and_then(|v| v.as_object()) {
+            for (k, v) in headers {
+                if let Some(vs) = v.as_str() {
+                    req = req.header(k, vs);
+                }
+            }
+        }
+        
+        if let Some(body) = context.config.get("data") {
+            req = req.json(body);
+        }
+
+        match req.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let success = status.is_success();
+                let text = resp.text().await.unwrap_or_default();
+                let exit_code = if success { 0 } else { status.as_u16() as i32 };
+                
+                Ok(ExecutionResult {
+                    task_id: context.task_id.clone(),
+                    success,
+                    exit_code,
+                    stdout: text,
+                    stderr: if success { String::new() } else { format!("HTTP Error: {}", status) },
+                    duration_ms: start.elapsed().as_millis() as u64,
+                })
+            }
+            Err(e) => {
+                Ok(ExecutionResult {
+                    task_id: context.task_id.clone(),
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("Request failed: {}", e),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+
 pub struct ExecutionResult {
     pub task_id: String,
     pub success: bool,
@@ -28,7 +180,7 @@ fn inject_vortex_env(cmd: &mut Command, env_vars: &HashMap<String, String>) {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct TaskExecutor;
 
 impl TaskExecutor {
@@ -36,6 +188,7 @@ impl TaskExecutor {
         task_id: &str,
         bash_command: &str,
         env_vars: HashMap<String, String>,
+        timeout_secs: Option<u64>,
     ) -> ExecutionResult {
         let start = Instant::now();
         
@@ -46,7 +199,8 @@ impl TaskExecutor {
             .stderr(Stdio::piped());
         inject_vortex_env(&mut cmd, &env_vars);
 
-        let result = timeout(Duration::from_secs(300), cmd.output()).await;
+        let timeout_duration = timeout_secs.unwrap_or(300);
+        let result = timeout(Duration::from_secs(timeout_duration), cmd.output()).await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -76,7 +230,7 @@ impl TaskExecutor {
                 success: false,
                 exit_code: -2,
                 stdout: String::new(),
-                stderr: "Task timed out after 300 seconds".to_string(),
+                stderr: format!("Task timed out after {} seconds", timeout_duration),
                 duration_ms,
             },
         }
@@ -86,6 +240,7 @@ impl TaskExecutor {
         task_id: &str,
         python_code: &str,
         env_vars: HashMap<String, String>,
+        timeout_secs: Option<u64>,
     ) -> ExecutionResult {
         let start = Instant::now();
 
@@ -130,7 +285,8 @@ impl TaskExecutor {
             .stderr(Stdio::piped());
         inject_vortex_env(&mut cmd, &env_vars);
 
-        let result = timeout(Duration::from_secs(300), cmd.output()).await;
+        let timeout_duration = timeout_secs.unwrap_or(300);
+        let result = timeout(Duration::from_secs(timeout_duration), cmd.output()).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         match result {
@@ -159,7 +315,7 @@ impl TaskExecutor {
                 success: false,
                 exit_code: -2,
                 stdout: String::new(),
-                stderr: "Task timed out after 300 seconds".to_string(),
+                stderr: format!("Task timed out after {} seconds", timeout_duration),
                 duration_ms,
             },
         }

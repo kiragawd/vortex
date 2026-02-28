@@ -1,1 +1,2 @@
 _CURRENT_DAG = None
+_CURRENT_TASK_GROUP = None

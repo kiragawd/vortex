@@ -15,7 +15,7 @@ The main process that runs the scheduler, API server, and Swarm coordinator:
 - **Health check loop** (every 15 seconds) — detects stale workers, requeues tasks
 - **Recovery on startup** — marks interrupted `Running` tasks as `Failed`
 
-**Implementation:** Rust + Tokio async runtime. All state persisted to SQLite.
+**Implementation:** Rust + Tokio async runtime. All state persisted to a unified `DatabaseBackend` (PostgreSQL or SQLite).
 
 ### 2. Workers (Task Executors)
 
@@ -23,36 +23,38 @@ Distributed worker processes that connect to the controller via gRPC:
 
 - **Register** with controller on startup (hostname, capacity, labels)
 - **Poll** for tasks based on available capacity
-- **Execute tasks** directly via `sh -c` (bash) or `python3` (python) — no Docker required
+- **Execute tasks** directly via `sh -c` (bash), `python3` (python), or custom **Plugins** (HTTP, S3, etc.)
 - **Send heartbeats** every 15 seconds
 - **Report results** (stdout, stderr, duration, success/failure) back to controller
 - **Secrets injection** — decrypted secrets are passed as environment variables
 
 **Implementation:** Same Rust binary, different CLI subcommand (`vortex worker`).
 
-### 3. Database (SQLite)
+### 3. Database (Relational)
 
-Single-file database (`vortex.db`) as the source of truth:
+VORTEX uses a unified trait abstraction (`Arc<dyn DatabaseBackend>`) supporting both PostgreSQL (Production) and SQLite (Development).
 
 | Table | Purpose |
 |-------|---------|
-| `dags` | DAG definitions (id, schedule, pause state, timezone, max_active_runs) |
-| `tasks` | Task definitions (command, type, config, retry settings) |
-| `task_instances` | Execution records (state, stdout, stderr, duration, worker_id, run_id) |
-| `dag_runs` | Run records (state, execution_date, triggered_by) |
-| `dag_versions` | Version tracking linking DAGs to filesystem paths |
+| `dags` | DAG definitions, schedule, team assignment, pause state |
+| `tasks` | Task definitions (command, type, config, group, timeout, retry) |
+| `task_instances` | Execution records (state, logs, duration, worker_id, run_id) |
+| `dag_runs` | Run records with state, triggered_by, and timestamps |
+| `dag_versions` | Snapshots linking DAGs to source files for rollbacks |
+| `audit_log` | Permanent trail of security and operational events |
 | `workers` | Worker registrations (hostname, capacity, heartbeat, state) |
-| `users` | RBAC accounts (username, password_hash, role, api_key) |
+| `users` | RBAC accounts with API keys and team IDs |
+| `teams` | Multi-tenancy isolation with resource quotas |
 | `secrets` | AES-256-GCM encrypted key-value pairs |
 
 ### 4. Web Dashboard
 
 Single-page application embedded in the binary via `rust-embed`:
 
-- **Technology:** Vanilla JavaScript + Tailwind CSS (CDN) + D3.js + Dagre-D3
-- **Features:** Visual DAG graphs, run history, code editor, secret management, user management
+- **Technology:** Vanilla JavaScript + Tailwind CSS + D3.js + Dagre-D3
+- **Features:** Visual DAG graphs, Gantt timelines, calendar views, rollbacks, secret/user/team management
 - **Auth:** Login form → API key stored in `localStorage`
-- **RBAC:** Admin sees all; Operator sees DAGs + triggers; Viewer is read-only
+- **RBAC:** Admin sees all; Operator sees team-isolated DAGs; Viewer is read-only
 - **Auto-refresh:** 5-second polling for DAG status and Swarm health
 
 ---

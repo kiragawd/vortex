@@ -1,0 +1,252 @@
+ Downloading crates ...
+  Downloaded serde_yaml v0.9.34+deprecated
+  Downloaded unsafe-libyaml v0.2.11
+    Checking unsafe-libyaml v0.2.11
+    Checking serde_yaml v0.9.34+deprecated
+    Checking vortex v0.6.0 (/Users/ashwin/vortex)
+warning: unused variable: `content`
+   --> src/web.rs:240:17
+    |
+240 |             let content = String::from_utf8_lossy(&da...
+    |                 ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_content`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `id`
+    --> src/web.rs:1286:11
+     |
+1286 |     Path((id, username)): Path<(String, String)>,
+     |           ^^ help: if this is intentional, prefix it with an underscore: `_id`
+
+warning[E0133]: call to unsafe function `libloading::Library::new` is unsafe and requires unsafe block
+  --> src/executor.rs:69:19
+   |
+69 |         let lib = Library::new(path)?;
+   |                   ^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/executor.rs:68:5
+   |
+68 |     pub unsafe fn load_plugin<S: Into<String>>(&mut self, path: &str, name: S) -> Result<()> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `libloading::Library::get` is unsafe and requires unsafe block
+  --> src/executor.rs:70:94
+   |
+70 | ...tor> = lib.get(b"_vortex_plugin_create\0")?;
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function is unsafe and requires unsafe block
+  --> src/executor.rs:72:19
+   |
+72 |         let ptr = creator();
+   |                   ^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `std::boxed::Box::<T>::from_raw` is unsafe and requires unsafe block
+  --> src/executor.rs:77:28
+   |
+77 |         let boxed_plugin = Box::from_raw(ptr);
+   |                            ^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `vortex` (lib) generated 6 warnings (run `cargo fix --lib -p vortex` to apply 3 suggestions)
+warning: unused import: `format::Justify`
+   --> src/bin/vortex-cli.rs:167:53
+    |
+167 | ...   use cli_table::{format::Justify, Cell, Style, T...
+    |                       ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vortex` (bin "vortex-cli") generated 1 warning (run `cargo fix --bin "vortex-cli" -p vortex` to apply 1 suggestion)
+warning: variable does not need to be mutable
+  --> src/dag_factory.rs:66:13
+   |
+66 |         let mut t = match task.task_type.as_str() {
+   |             ----^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `db`
+  --> src/main.rs:66:13
+   |
+66 |         let db: Arc<dyn db_trait::DatabaseBackend> = i...
+   |             ^^ help: if this is intentional, prefix it with an underscore: `_db`
+
+warning: field `is_paused` is never read
+  --> src/scheduler.rs:33:9
+   |
+28 | pub struct Dag {
+   |            --- field in this struct
+...
+33 |     pub is_paused: bool,
+   |         ^^^^^^^^^
+   |
+   = note: `Dag` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new` and `run` are never used
+   --> src/scheduler.rs:164:12
+    |
+163 | impl Scheduler {
+    | -------------- associated items in this implementation
+164 |     pub fn new(dag: Dag, db: Arc<dyn DatabaseBackend>...
+    |            ^^^
+...
+185 |     pub async fn run(&self) -> Result<()> {
+    |                  ^^^
+
+warning: struct `VortexTask` is never constructed
+  --> src/python_parser.rs:15:12
+   |
+15 | pub struct VortexTask {
+   |            ^^^^^^^^^^
+
+warning: struct `VortexDAG` is never constructed
+  --> src/python_parser.rs:22:12
+   |
+22 | pub struct VortexDAG {
+   |            ^^^^^^^^^
+
+warning: function `is_airflow_compatible_dag` is never used
+  --> src/python_parser.rs:41:8
+   |
+41 | pub fn is_airflow_compatible_dag(content: &str) -> bool {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `parse_dag_file` is never used
+  --> src/python_parser.rs:56:8
+   |
+56 | pub fn parse_dag_file(content: &str) -> Result<VortexD...
+   |        ^^^^^^^^^^^^^^
+
+warning: function `dag_to_json` is never used
+   --> src/python_parser.rs:213:8
+    |
+213 | pub fn dag_to_json(dag: &VortexDAG) -> Result<String> {
+    |        ^^^^^^^^^^^
+
+warning: function `detect_cycles` is never used
+   --> src/python_parser.rs:218:4
+    |
+218 | fn detect_cycles(tasks: &[VortexTask], edges: &[(Stri...
+    |    ^^^^^^^^^^^^^
+
+warning: method `worker_count` is never used
+  --> src/swarm.rs:67:18
+   |
+49 | impl SwarmState {
+   | --------------- method in this implementation
+...
+67 |     pub async fn worker_count(&self) -> usize {
+   |                  ^^^^^^^^^^^^
+
+warning: field `env_vars` is never read
+  --> src/executor.rs:35:9
+   |
+31 | pub struct TaskContext {
+   |            ----------- field in this struct
+...
+35 |     pub env_vars: HashMap<String, String>,
+   |         ^^^^^^^^
+   |
+   = note: `TaskContext` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: constant `XCOM_TABLE_SQL` is never used
+  --> src/xcom.rs:12:11
+   |
+12 | pub const XCOM_TABLE_SQL: &str = "CREATE TABLE IF NOT ...
+   |           ^^^^^^^^^^^^^^
+
+warning: struct `XComEntry` is never constructed
+  --> src/xcom.rs:25:12
+   |
+25 | pub struct XComEntry {
+   |            ^^^^^^^^^
+
+warning: constant `POOLS_TABLE_SQL` is never used
+  --> src/pools.rs:10:11
+   |
+10 | pub const POOLS_TABLE_SQL: &str = "CREATE TABLE IF NOT...
+   |           ^^^^^^^^^^^^^^^
+
+warning: constant `POOL_SLOTS_TABLE_SQL` is never used
+  --> src/pools.rs:16:11
+   |
+16 | pub const POOL_SLOTS_TABLE_SQL: &str = "CREATE TABLE I...
+   |           ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `Pool` is never constructed
+  --> src/pools.rs:29:12
+   |
+29 | pub struct Pool {
+   |            ^^^^
+
+warning: methods `acquire_slot` and `release_slot` are never used
+   --> src/pools.rs:111:18
+    |
+ 43 | impl PoolManager {
+    | ---------------- methods in this implementation
+...
+111 |     pub async fn acquire_slot(&self, pool_name: &str,...
+    |                  ^^^^^^^^^^^^
+...
+142 |     pub async fn release_slot(&self, pool_name: &str,...
+    |                  ^^^^^^^^^^^^
+
+warning: constant `CALLBACKS_TABLE_SQL` is never used
+  --> src/notifications.rs:14:11
+   |
+14 | pub const CALLBACKS_TABLE_SQL: &str = "
+   |           ^^^^^^^^^^^^^^^^^^^
+
+warning: struct `NotificationPayload` is never constructed
+  --> src/notifications.rs:63:12
+   |
+63 | pub struct NotificationPayload {
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> src/notifications.rs:74:12
+   |
+73 | impl NotificationPayload {
+   | ------------------------ associated function in this implementation
+74 |     pub fn new(
+   |            ^^^
+
+warning: function `shell_escape_single` is never used
+   --> src/notifications.rs:155:4
+    |
+155 | fn shell_escape_single(s: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `send_notification` is never used
+   --> src/notifications.rs:160:14
+    |
+160 | pub async fn send_notification(
+    |              ^^^^^^^^^^^^^^^^^
+
+warning: function `fire_callbacks` is never used
+   --> src/notifications.rs:351:14
+    |
+351 | pub async fn fire_callbacks(
+    |              ^^^^^^^^^^^^^^
+
+warning: `vortex` (bin "vortex") generated 30 warnings (6 duplicates) (run `cargo fix --bin "vortex" -p vortex` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.06s
+warning: the following packages contain code that will be rejected by a future version of Rust: sqlx-postgres v0.7.4
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 5`

@@ -1,0 +1,2 @@
+cargo:rerun-if-changed=proto/swarm.proto
+cargo:rerun-if-changed=proto

@@ -31,11 +31,11 @@ cargo build --release
 ### Controller (Server)
 
 ```bash
-# Basic mode (local execution only)
+# Basic mode (SQLite development mode)
 ./target/debug/vortex server
 
-# With Swarm mode (distributed workers via gRPC)
-./target/debug/vortex server --swarm
+# Production mode with PostgreSQL
+./target/debug/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex"
 
 # Custom gRPC port (default: 50051)
 ./target/debug/vortex server --swarm --swarm-port 50052
@@ -57,14 +57,19 @@ The REST API and dashboard are served on **http://localhost:3000**.
   --labels gpu,high-memory
 ```
 
-### Background Mode
+### Official CLI (`vortex-cli`)
+
+VORTEX includes a binary for administrative automation:
 
 ```bash
-# Server
-nohup ./target/debug/vortex server --swarm > server.log 2>&1 &
+# Set environment variables
+export VORTEX_API_KEY="vortex_admin_key"
+export VORTEX_SERVER_URL="http://localhost:3000"
 
-# Worker
-nohup ./target/debug/vortex worker --controller http://localhost:50051 --capacity 4 > worker.log 2>&1 &
+# Use the CLI
+vortex dags list
+vortex dags trigger my_pipeline
+vortex secrets set DB_PASS "password123"
 ```
 
 ---
@@ -99,6 +104,7 @@ Workers connecting to a TLS-enabled controller:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VORTEX_SECRET_KEY` | For Pillar 3 | 32-byte key for AES-256-GCM encryption |
+| `VORTEX_DATABASE_URL` | Optional | Connection string for PostgreSQL |
 | `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | Python 3.14+ | Set to `1` for PyO3 compatibility |
 
 ### Generate Encryption Key
@@ -113,18 +119,21 @@ echo "VORTEX_SECRET_KEY=$VORTEX_SECRET_KEY"
 
 ### Database
 
-VORTEX creates `vortex.db` in the current working directory. All tables are auto-migrated on startup.
+VORTEX supports PostgreSQL and SQLite. For production, **PostgreSQL 14+** is highly recommended.
+
+**Migrations:**
+Database schema is managed via `sqlx`. Run migrations manually or let the server auto-migrate on startup:
 
 ```bash
-# Inspect database
-sqlite3 vortex.db ".tables"
-# dags  dag_runs  dag_versions  secrets  task_instances  tasks  users  workers
-
-# Check integrity
-sqlite3 vortex.db "PRAGMA integrity_check;"
+vortex db migrate --database-url "postgres://..."
 ```
 
-### Default User
+**SQLite (Local Dev):**
+VORTEX defaults to `vortex.db` in the current working directory if no `--database-url` is provided.
+
+---
+
+## Default User
 
 On first run, VORTEX seeds a default admin user:
 
@@ -132,26 +141,22 @@ On first run, VORTEX seeds a default admin user:
 |----------|----------|------|---------|
 | `admin` | `admin` | Admin | `vortex_admin_key` |
 
-**Passwords are bcrypt-hashed** (cost factor 12) before storage. The default admin password `"admin"` is automatically bcrypt-hashed on first startup. If an existing plaintext password is detected in the database (shorter than 30 characters), it is migrated to bcrypt automatically.
-
-**⚠️ Change the admin password in production!**
+**Passwords are bcrypt-hashed** before storage. Change the admin password immediately.
 
 ---
 
 ## DAG Files
 
-Place Python DAG files in the `dags/` directory. They are loaded automatically on server startup.
+Place Python DAG files in the `dags/` directory. They are loaded automatically on server startup. VORTEX supports dynamic DAG generation and Task Groups.
 
-```bash
-dags/
-├── example_dag.py
-├── parallel_benchmark.py
-└── my_pipeline.py
+```python
+from vortex import DAG, BashOperator, TaskGroup
+
+with DAG("dynamic_pipeline", schedule_interval="@daily") as dag:
+    with TaskGroup("processing") as tg:
+        for i in range(5):
+             BashOperator(task_id=f"task_{i}", bash_command=f"echo {i}")
 ```
-
-DAGs can also be uploaded at runtime via:
-- **Web UI:** Click "Upload" in the navbar
-- **API:** `POST /api/dags/upload` with multipart form
 
 ---
 
@@ -160,20 +165,18 @@ DAGs can also be uploaded at runtime via:
 ### Dashboard
 
 Open **http://localhost:3000** for the built-in dashboard featuring:
-- Real-time DAG stats (total, active, paused)
-- Swarm worker count and queue depth
-- Visual DAG dependency graphs
-- Run history with per-run task breakdowns
-- Task log viewer
+- Real-time DAG stats and aggregation
+- Gantt Timeline execution visualization
+- Monthly schedule Calendar
+- Side-by-side version diffing and rollbacks
+- Audit logging (Accountability trail)
+- Prometheus metrics endpoint (`/metrics`)
 
 ### Server Logs
 
 ```bash
-# Follow server output
-tail -f server.log
-
-# Task execution logs (per-dag/per-task)
-ls logs/<dag_id>/<task_id>/
+# Follow server output (Structured JSON or Text)
+tail -f logs/vortex.log
 ```
 
 ### Database Queries

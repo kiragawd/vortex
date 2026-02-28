@@ -10,6 +10,24 @@ class Dag:
         self.catchup = catchup
         self.tasks = []
         self.dependencies = []
+        
+        # Detect if this DAG is generated dynamically (contains loops or comprehensions)
+        self.is_dynamic = False
+        try:
+            import inspect
+            import ast
+            frame = inspect.currentframe().f_back
+            filename = frame.f_code.co_filename
+            if filename and getattr(filename, 'endswith', lambda x: False)('.py'):
+                with open(filename, 'r') as f:
+                    tree = ast.parse(f.read())
+                    for node in ast.walk(tree):
+                        if isinstance(node, (ast.For, ast.While, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)):
+                            self.is_dynamic = True
+                            break
+        except Exception:
+            pass
+
         _DAG_REGISTRY.append(self)
 
     def add_task(self, task):
@@ -25,6 +43,7 @@ class Dag:
             "timezone": self.timezone,
             "max_active_runs": self.max_active_runs,
             "catchup": self.catchup,
+            "is_dynamic": self.is_dynamic,
             "tasks": [t.to_dict() for t in self.tasks],
             "dependencies": self.dependencies
         }
@@ -64,3 +83,4 @@ from .airflow_shim import (
     DummyOperator,
     EmptyOperator,
 )
+from .task_group import TaskGroup

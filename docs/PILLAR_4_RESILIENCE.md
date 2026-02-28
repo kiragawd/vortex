@@ -71,32 +71,18 @@ Workers transition through several states based on heartbeat activity and task e
 
 ### Health Check Loop
 
-The controller runs a `health_check_loop` that executes every 15 seconds:
+The controller runs a `health_check_loop` that executes every 15 seconds. It utilizes the `DatabaseBackend` trait to perform cross-platform recovery:
 
 ```rust
-async fn health_check_loop(db: Arc<Database>) -> Result<()> {
+async fn health_check_loop(db: Arc<dyn DatabaseBackend>) -> Result<()> {
     loop {
-        // Find all ACTIVE workers with stale heartbeats
-        let offline_workers = db.query(
-            "SELECT id FROM workers WHERE state = 'ACTIVE' 
-             AND datetime('now') - datetime(last_heartbeat) > '60 seconds'"
-        )?;
-
-        for worker in offline_workers {
-            // Mark worker as OFFLINE
-            db.execute("UPDATE workers SET state = 'OFFLINE' WHERE id = ?", [worker.id])?;
-
-            // Re-queue all RUNNING tasks from this worker
-            db.execute(
-                "UPDATE task_instances SET state = 'Queued', worker_id = NULL 
-                 WHERE worker_id = ? AND state = 'Running'",
-                [worker.id]
-            )?;
-
-            // Log recovery event
-            log::info!("Worker {} offline; re-queued {} tasks", worker.id, count);
+        // Mark stale workers offline and requeue tasks via unified trait
+        if let Ok(stale_ids) = db.mark_stale_workers_offline(60).await {
+            for id in stale_ids {
+                let count = db.requeue_worker_tasks(&id).await?;
+                info!("Worker {} offline; re-queued {} tasks", id, count);
+            }
         }
-
         tokio::time::sleep(Duration::from_secs(15)).await;
     }
 }
@@ -108,8 +94,8 @@ async fn health_check_loop(db: Arc<Database>) -> Result<()> {
 |----------|-------|-------------|
 | **Check Interval** | 15 seconds | How often health check runs |
 | **Heartbeat Timeout** | 60 seconds | Time before worker marked Offline |
-| **Detection Latency** | 15-75 seconds | Worst case: worker dies just after check, next check finds it |
-| **DB Queries** | Indexed on `state` and `last_heartbeat` | O(1) lookups for efficiency |
+| **Detection Latency** | 15-75 seconds | Worst case: worker dies just after check |
+| **Abstraction** | `DatabaseBackend` | Trait-based recovery logic (Postgres/SQLite compatible) |
 
 ### Event-Driven Detection
 

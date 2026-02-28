@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::db::Db;
+use crate::db_trait::DatabaseBackend;
 
 // ---------------------------------------------------------------------------
 // SQL
@@ -108,51 +108,34 @@ impl NotificationManager {
     // -----------------------------------------------------------------------
 
     /// Persist (upsert) a `CallbackConfig` for the given DAG.
-    pub fn save_callbacks(
-        db: &Arc<Db>,
+    pub async fn save_callbacks(
+        db: &Arc<dyn DatabaseBackend>,
         dag_id: &str,
         config: &CallbackConfig,
     ) -> Result<()> {
         let config_json = serde_json::to_string(config)?;
-        let updated_at = Utc::now().to_rfc3339();
-        let conn = db.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO dag_callbacks (dag_id, config, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(dag_id) DO UPDATE SET config = excluded.config,
-                                               updated_at = excluded.updated_at",
-            rusqlite::params![dag_id, config_json, updated_at],
-        )?;
+        db.save_callbacks(dag_id, &config_json).await?;
         info!(dag_id, "saved callback config");
         Ok(())
     }
 
     /// Retrieve the `CallbackConfig` for the given DAG, if any.
-    pub fn get_callbacks(
-        db: &Arc<Db>,
+    pub async fn get_callbacks(
+        db: &Arc<dyn DatabaseBackend>,
         dag_id: &str,
     ) -> Result<Option<CallbackConfig>> {
-        let conn = db.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT config FROM dag_callbacks WHERE dag_id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![dag_id])?;
-        if let Some(row) = rows.next()? {
-            let json: String = row.get(0)?;
-            let config: CallbackConfig = serde_json::from_str(&json)?;
-            Ok(Some(config))
-        } else {
-            Ok(None)
+        match db.get_callbacks(dag_id).await? {
+            Some(val) => {
+                let config: CallbackConfig = serde_json::from_value(val)?;
+                Ok(Some(config))
+            }
+            None => Ok(None),
         }
     }
 
     /// Remove all callbacks for a DAG.
-    pub fn delete_callbacks(db: &Arc<Db>, dag_id: &str) -> Result<()> {
-        let conn = db.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM dag_callbacks WHERE dag_id = ?1",
-            rusqlite::params![dag_id],
-        )?;
+    pub async fn delete_callbacks(db: &Arc<dyn DatabaseBackend>, dag_id: &str) -> Result<()> {
+        db.delete_callbacks(dag_id).await?;
         info!(dag_id, "deleted callback config");
         Ok(())
     }

@@ -4,12 +4,10 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use chrono::Utc;
-use crate::db::Db;
+use crate::db_trait::DatabaseBackend;
 use crate::vault::Vault;
 
-pub mod proto {
-    tonic::include_proto!("vortex.swarm");
-}
+use crate::proto;
 
 use proto::swarm_controller_server::{SwarmController, SwarmControllerServer};
 use proto::*;
@@ -42,18 +40,20 @@ pub struct PendingTask {
 pub struct SwarmState {
     pub workers: RwLock<HashMap<String, WorkerState>>,
     pub task_queue: RwLock<Vec<PendingTask>>,
-    pub db: Arc<Db>,
+    pub db: Arc<dyn DatabaseBackend>,
     pub vault: Option<Arc<Vault>>, // Pillar 3
+    pub metrics: Option<Arc<crate::metrics::VortexMetrics>>, // Phase 3
     pub enabled: bool,
 }
 
 impl SwarmState {
-    pub fn new(db: Arc<Db>, enabled: bool, vault: Option<Arc<Vault>>) -> Self {
+    pub fn new(db: Arc<dyn DatabaseBackend>, enabled: bool, vault: Option<Arc<Vault>>, metrics: Option<Arc<crate::metrics::VortexMetrics>>) -> Self {
         Self {
             workers: RwLock::new(HashMap::new()),
             task_queue: RwLock::new(Vec::new()),
             db,
             vault,
+            metrics,
             enabled,
         }
     }
@@ -62,10 +62,6 @@ impl SwarmState {
         let mut queue = self.task_queue.write().await;
         info!("🐝 Swarm: Task queued for remote execution: {}/{}", task.dag_id, task.task_id);
         queue.push(task);
-    }
-
-    pub async fn worker_count(&self) -> usize {
-        self.workers.read().await.len()
     }
 
     pub async fn active_worker_count(&self) -> usize {
@@ -105,19 +101,25 @@ impl SwarmState {
             interval.tick().await;
             if !self.enabled { continue; }
 
+            // Phase 3 Metrics
+            if let Some(m) = &self.metrics {
+                m.set_workers_active(self.active_worker_count().await as i64);
+                m.set_queue_depth(self.queue_depth().await as i64);
+            }
+
             // 1. Detect Offline Workers
-            if let Ok(stale_workers) = self.db.mark_stale_workers_offline(60) {
+            if let Ok(stale_workers) = self.db.mark_stale_workers_offline(60).await {
                 for worker_id in stale_workers {
                     warn!("⚠️ Swarm: Worker {} missed heartbeats. Marking OFFLINE.", worker_id);
                     
                     // 2. Re-queue tasks assigned to this worker
-                    if let Ok(count) = self.db.requeue_worker_tasks(&worker_id) {
+                    if let Ok(count) = self.db.requeue_worker_tasks(&worker_id).await {
                         if count > 0 {
                             warn!("♻️ Swarm: Re-queued {} tasks from offline worker {}.", count, worker_id);
                             
                             // 3. Move them back to in-memory queue for scheduling
                             let mut queue = self.task_queue.write().await;
-                            if let Ok(tasks) = self.db.get_interrupted_tasks_by_worker(&worker_id) {
+                            if let Ok(tasks) = self.db.get_interrupted_tasks_by_worker(&worker_id).await {
                                 for t in tasks {
                                     queue.push(PendingTask {
                                         task_instance_id: t.0,
@@ -133,7 +135,7 @@ impl SwarmState {
                                     });
                                 }
                             }
-                            let _ = self.db.clear_worker_id_from_queued_tasks(&worker_id);
+                            let _ = self.db.clear_worker_id_from_queued_tasks(&worker_id).await;
                         }
                     }
 
@@ -158,7 +160,7 @@ impl SwarmController for SwarmService {
         
         // Pillar 4: Persistent Worker State
         let labels_str = info.labels.join(",");
-        let _ = self.state.db.upsert_worker(&info.worker_id, &info.hostname, info.capacity, &labels_str);
+        let _ = self.state.db.upsert_worker(&info.worker_id, &info.hostname, info.capacity, &labels_str).await;
 
         workers.insert(info.worker_id.clone(), WorkerState {
             worker_id: info.worker_id, hostname: info.hostname, capacity: info.capacity,
@@ -172,7 +174,7 @@ impl SwarmController for SwarmService {
         let mut workers = self.state.workers.write().await;
         
         // Pillar 4: DB Heartbeat
-        let _ = self.state.db.update_worker_heartbeat(&hb.worker_id, hb.active_tasks);
+        let _ = self.state.db.update_worker_heartbeat(&hb.worker_id, hb.active_tasks).await;
 
         let should_drain = if let Some(worker) = workers.get_mut(&hb.worker_id) {
             worker.last_heartbeat = Utc::now();
@@ -191,13 +193,15 @@ impl SwarmController for SwarmService {
         for t in queue.drain(..count) {
             info!("🐝 Swarm: Dispatching {}/{} to worker {}", t.dag_id, t.task_id, poll.worker_id);
             // Pillar 4: Assign task to worker in DB
-            let _ = self.state.db.assign_task_to_worker(&t.task_instance_id, &poll.worker_id);
+            let _ = self.state.db.assign_task_to_worker(&t.task_instance_id, &poll.worker_id).await;
+
+            if let Some(m) = &self.state.metrics { m.record_task_start(); }
 
             // Pillar 3: Resolve and Decrypt Secrets
             let mut resolved_secrets = HashMap::new();
             if let Some(vault) = &self.state.vault {
                 for secret_key in t.required_secrets {
-                    if let Ok(Some(encrypted)) = self.state.db.get_secret(&secret_key) {
+                    if let Ok(Some(encrypted)) = self.state.db.get_secret(&secret_key).await {
                         if let Ok(decrypted) = vault.decrypt(&encrypted) {
                             resolved_secrets.insert(secret_key, decrypted);
                         }
@@ -233,15 +237,20 @@ impl SwarmController for SwarmService {
             stderr: result.stderr.clone(),
             duration_ms: result.duration_ms as u64,
         };
-        let _ = self.state.db.store_task_result(&result.task_instance_id, &exec_result);
+        let _ = self.state.db.store_task_result(&result.task_instance_id, &exec_result).await;
+
+        if result.success {
+            if let Some(m) = &self.state.metrics { m.record_task_success(result.duration_ms as f64 / 1000.0); }
+        }
 
         // Phase 2.5: Retry Logic
         if !result.success {
-            if let Ok((retry_count, _)) = self.state.db.get_task_instance_retry_info(&result.task_instance_id) {
+            if let Some(m) = &self.state.metrics { m.record_task_failure(result.duration_ms as f64 / 1000.0); }
+            if let Ok((retry_count, _)) = self.state.db.get_task_instance_retry_info(&result.task_instance_id).await {
                 if retry_count < result.max_retries {
                     warn!("♻️ Swarm: Task {} failed. Retrying ({}/{}).", result.task_id, retry_count + 1, result.max_retries);
-                    let _ = self.state.db.increment_task_retry_count(&result.task_instance_id);
-                    let _ = self.state.db.update_task_state(&result.task_instance_id, "Queued");
+                    let _ = self.state.db.increment_task_retry_count(&result.task_instance_id).await;
+                    let _ = self.state.db.update_task_state(&result.task_instance_id, "Queued").await;
                     
                     // Re-enqueue after delay
                     let state_clone = Arc::clone(&self.state);
@@ -250,7 +259,7 @@ impl SwarmController for SwarmService {
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(retry_delay as u64)).await;
                         
-                        if let Ok(Some(details)) = state_clone.db.get_task_instance_details(&ti_id) {
+                        if let Ok(Some(details)) = state_clone.db.get_task_instance_details(&ti_id).await {
                             let (dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs) = details;
                             state_clone.enqueue_task(PendingTask {
                                 task_instance_id: ti_id,
