@@ -857,7 +857,8 @@
         // ─── DAG List ───────────────────────────────────────────────
         async function fetchDags() {
             try {
-                const dags = await api('/api/dags');
+                const resp = await api('/api/dags');
+                const dags = resp.data || resp;
                 document.getElementById('stat-total').textContent = dags.length;
                 document.getElementById('stat-active').textContent = dags.filter(function (d) { return !d.is_paused; }).length;
                 document.getElementById('stat-paused').textContent = dags.filter(function (d) { return d.is_paused; }).length;
@@ -1281,7 +1282,8 @@
         async function togglePause() {
             if (!currentDagId) return;
             try {
-                var dags = await api('/api/dags');
+                var resp = await api('/api/dags');
+                var dags = resp.data || resp;
                 var d = dags.find(function (x) { return x.id === currentDagId; });
                 if (!d) return;
                 var action = d.is_paused ? 'unpause' : 'pause';

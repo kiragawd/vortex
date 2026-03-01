@@ -146,7 +146,7 @@ impl DatabaseBackend for PostgresDb {
         .bind(dag.max_active_runs)
         .bind(dag.catchup)
         .bind(dag.is_dynamic)
-        .bind(&dag.team_id)
+        .bind(None::<String>)  // Dag struct has no team_id field; NULL by default
         .execute(&self.pool)
         .await
         .context("register_dag: upsert dag")?;

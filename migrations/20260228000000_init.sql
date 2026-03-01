@@ -3,14 +3,14 @@
 
 CREATE TABLE IF NOT EXISTS dags (
     id                TEXT        PRIMARY KEY,
-    created_at        TIMESTAMP   NOT NULL,
+    created_at        TIMESTAMPTZ   NOT NULL,
     schedule_interval TEXT,
-    last_run          TIMESTAMP,
+    last_run          TIMESTAMPTZ,
     is_paused         BOOLEAN     NOT NULL DEFAULT FALSE,
     timezone          TEXT        NOT NULL DEFAULT 'UTC',
     max_active_runs   INTEGER     NOT NULL DEFAULT 1,
     catchup           BOOLEAN     NOT NULL Default FALSE,
-    next_run          TIMESTAMP
+    next_run          TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -33,9 +33,9 @@ CREATE TABLE IF NOT EXISTS task_instances (
     dag_id         TEXT        NOT NULL REFERENCES dags(id),
     task_id        TEXT        NOT NULL,
     state          TEXT        NOT NULL,
-    execution_date TIMESTAMP   NOT NULL,
-    start_time     TIMESTAMP,
-    end_time       TIMESTAMP,
+    execution_date TIMESTAMPTZ   NOT NULL,
+    start_time     TIMESTAMPTZ,
+    end_time       TIMESTAMPTZ,
     try_number     INTEGER     NOT NULL DEFAULT 1,
     worker_id      TEXT,
     stdout         TEXT,
@@ -49,9 +49,9 @@ CREATE TABLE IF NOT EXISTS dag_runs (
     id             TEXT        PRIMARY KEY,
     dag_id         TEXT        NOT NULL REFERENCES dags(id),
     state          TEXT        NOT NULL,
-    execution_date TIMESTAMP   NOT NULL,
-    start_time     TIMESTAMP,
-    end_time       TIMESTAMP,
+    execution_date TIMESTAMPTZ   NOT NULL,
+    start_time     TIMESTAMPTZ,
+    end_time       TIMESTAMPTZ,
     triggered_by   TEXT        NOT NULL DEFAULT 'scheduler'
 );
 
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS secrets (
     key        TEXT        PRIMARY KEY,
     value      TEXT        NOT NULL,
-    updated_at TIMESTAMP   NOT NULL
+    updated_at TIMESTAMPTZ   NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workers (
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS workers (
     hostname       TEXT        NOT NULL,
     capacity       INTEGER     NOT NULL,
     active_tasks   INTEGER     NOT NULL DEFAULT 0,
-    last_heartbeat TIMESTAMP   NOT NULL,
+    last_heartbeat TIMESTAMPTZ   NOT NULL,
     state          TEXT        NOT NULL,
     labels         TEXT
 );
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS dag_callbacks (
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id          TEXT     PRIMARY KEY,
-    timestamp   TIMESTAMP NOT NULL,
+    timestamp   TIMESTAMPTZ NOT NULL,
     actor       TEXT     NOT NULL,
     action      TEXT     NOT NULL,
     target_type TEXT     NOT NULL,

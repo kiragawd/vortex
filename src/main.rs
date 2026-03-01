@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
     // ARCH-2: Use tokio::sync::Mutex to match AppState.dags type.
     let all_dags = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     {
-        let mut map = all_dags.blocking_lock();
+        let mut map = all_dags.lock().await;
         let bench = create_benchmark_dag();
         info!("🛠️ Registering core DAG: {}", bench.id);
         map.insert(bench.id.clone(), Arc::new(bench));
@@ -610,7 +610,7 @@ async fn main() -> Result<()> {
             match db_cron.get_scheduled_dags().await {
                 Ok(scheduled_dags) => {
                     metrics_cron.set_dags_total(scheduled_dags.len() as i64);
-                    for (dag_id, schedule_expr, last_run, is_paused, _timezone, max_active_runs, _catchup) in scheduled_dags {
+                    for (dag_id, schedule_expr, last_run, is_paused, _timezone, max_active_runs, _catchup, _team_id) in scheduled_dags {
                         if is_paused { continue; }
                         
                         if let Ok(active_count) = db_cron.get_active_dag_run_count(&dag_id).await {
