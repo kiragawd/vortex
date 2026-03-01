@@ -14,6 +14,7 @@ pub struct DagConfig {
     pub max_active_runs: i32,
     #[serde(default)]
     pub catchup: bool,
+    pub sla_seconds: Option<u64>,
     pub tasks: Vec<TaskConfig>,
 }
 
@@ -60,6 +61,7 @@ pub fn parse_dag_file<P: AsRef<Path>>(path: P) -> Result<Vec<Dag>> {
     dag.max_active_runs = config.max_active_runs;
     dag.catchup = config.catchup;
     dag.is_dynamic = false;
+    dag.sla_seconds = config.sla_seconds;
 
     for task in config.tasks {
         let name = task.name.unwrap_or_else(|| task.id.clone());

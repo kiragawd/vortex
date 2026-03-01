@@ -9,7 +9,7 @@ test.describe('02 - DAG List & Detail View', () => {
 
   test('Click DAG card opens detail view', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     // Get available DAGs
     const dags = await helpers.fetchDAGs();
     expect(dags.length).toBeGreaterThan(0);
@@ -21,13 +21,13 @@ test.describe('02 - DAG List & Detail View', () => {
     await dagCard.click();
 
     // Wait for detail view to appear
-    const detailView = page.locator('#dag-detail');
+    const detailView = page.locator('#view-details');
     await expect(detailView).toBeVisible();
   });
 
   test('Detail view shows DAG title and ID', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -42,16 +42,12 @@ test.describe('02 - DAG List & Detail View', () => {
     // Check title is displayed
     const detailTitle = page.locator('#detail-title');
     await expect(detailTitle).toBeVisible();
-    expect(await detailTitle.textContent()).not.toBeEmpty();
-
-    // Check ID subtitle
-    const idSub = page.locator('#detail-id-sub');
-    await expect(idSub).toBeVisible();
+    expect(await detailTitle.textContent()).not.toBe('');
   });
 
-  test('Detail view shows action buttons: Pause, Schedule, Backfill, Trigger', async ({ page }) => {
+  test('Detail view shows action buttons: Edit, Retry, Pause, Backfill, Trigger', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -62,28 +58,33 @@ test.describe('02 - DAG List & Detail View', () => {
     // Click to show detail
     const dagCard = page.locator(`text=${firstDagId}`).first();
     await dagCard.click();
+
+    // Check Edit Code button
+    const editBtn = page.locator('#btn-edit');
+    await expect(editBtn).toBeVisible();
+
+    // Check Retry Failures button
+    const retryBtn = page.locator('#btn-retry');
+    await expect(retryBtn).toBeVisible();
 
     // Check Pause button
-    const pauseBtn = page.locator('#pause-btn');
+    const pauseBtn = page.locator('#btn-pause');
     await expect(pauseBtn).toBeVisible();
 
-    // Check Schedule button
-    const scheduleBtn = page.locator('#schedule-btn');
-    await expect(scheduleBtn).toBeVisible();
-
     // Check Backfill button
-    const backfillBtn = page.locator('#backfill-btn');
+    const backfillBtn = page.locator('#btn-backfill');
     await expect(backfillBtn).toBeVisible();
 
-    // Check Trigger button (TRIGGER RUN)
-    const triggerBtn = page.locator('#trigger-btn');
+    // Check Trigger button
+    const triggerBtn = page.locator('#btn-trigger');
     await expect(triggerBtn).toBeVisible();
-    expect(await triggerBtn.textContent()).toContain('TRIGGER RUN');
+    const triggerText = await triggerBtn.textContent();
+    expect(triggerText).toMatch(/TRIGGER\s+RUN/i);
   });
 
-  test('Tabs exist: "Tasks & Instances" and "DAG Runs"', async ({ page }) => {
+  test('Tabs exist: "Visual Graph", "Run History", and "Timeline"', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -95,20 +96,25 @@ test.describe('02 - DAG List & Detail View', () => {
     const dagCard = page.locator(`text=${firstDagId}`).first();
     await dagCard.click();
 
-    // Check Tasks & Instances tab
-    const tasksTab = page.locator('#tab-tasks');
-    await expect(tasksTab).toBeVisible();
-    expect(await tasksTab.textContent()).toContain('Tasks & Instances');
+    // Check Visual Graph tab
+    const graphTab = page.locator('#tab-graph');
+    await expect(graphTab).toBeVisible();
+    expect(await graphTab.textContent()).toContain('Visual Graph');
 
-    // Check DAG Runs tab
-    const runsTab = page.locator('#tab-runs');
-    await expect(runsTab).toBeVisible();
-    expect(await runsTab.textContent()).toContain('DAG Runs');
+    // Check Run History tab
+    const historyTab = page.locator('#tab-history');
+    await expect(historyTab).toBeVisible();
+    expect(await historyTab.textContent()).toContain('Run History');
+
+    // Check Timeline tab
+    const timelineTab = page.locator('#tab-timeline');
+    await expect(timelineTab).toBeVisible();
+    expect(await timelineTab.textContent()).toContain('Timeline');
   });
 
   test('Back button closes detail view and returns to list', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -121,24 +127,24 @@ test.describe('02 - DAG List & Detail View', () => {
     await dagCard.click();
 
     // Verify detail view is visible
-    await expect(page.locator('#dag-detail')).toBeVisible();
+    await expect(page.locator('#view-details')).toBeVisible();
 
     // Click back button
-    const backBtn = page.locator('#dag-detail >> button:has-text("") >> nth=0').first();
+    const backBtn = page.locator('#view-details button[onclick="showView(\'registry\')"]').first();
     await backBtn.click();
 
     // Detail should be hidden
-    const detailView = page.locator('#dag-detail');
+    const detailView = page.locator('#view-details');
     expect(await detailView.isHidden()).toBeTruthy();
 
     // DAG list should be visible again
-    const dagContainer = page.locator('#dag-container');
+    const dagContainer = page.locator('#view-registry');
     await expect(dagContainer).toBeVisible();
   });
 
   test('Pause/Unpause toggle changes button text', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -150,12 +156,12 @@ test.describe('02 - DAG List & Detail View', () => {
     const dagCard = page.locator(`text=${firstDagId}`).first();
     await dagCard.click();
 
-    const pauseBtn = page.locator('#pause-btn');
+    const pauseBtn = page.locator('#btn-pause');
     const initialText = await pauseBtn.textContent();
 
     // Click pause button
     await pauseBtn.click();
-    
+
     // Wait for state change
     await page.waitForTimeout(500);
 
@@ -164,9 +170,9 @@ test.describe('02 - DAG List & Detail View', () => {
     expect(newText).not.toBe(initialText);
   });
 
-  test('Schedule modal opens on "Schedule" button click', async ({ page }) => {
+  test('Backfill modal opens on "BACKFILL" button click', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -178,53 +184,18 @@ test.describe('02 - DAG List & Detail View', () => {
     const dagCard = page.locator(`text=${firstDagId}`).first();
     await dagCard.click();
 
-    // Click schedule button
-    const scheduleBtn = page.locator('#schedule-btn');
-    await scheduleBtn.click();
+    // Click backfill button
+    const backfillBtn = page.locator('#btn-backfill');
+    await backfillBtn.click();
 
-    // Check if any modal or form appears (schedule info bar is shown)
-    const scheduleInfo = page.locator('#schedule-info');
-    await expect(scheduleInfo).toBeVisible();
-  });
-
-  test('Schedule info bar displays schedule details', async ({ page }) => {
-    const helpers = createHelpers(page);
-    
-    const dags = await helpers.fetchDAGs();
-    if (dags.length === 0) {
-      test.skip();
-    }
-
-    const firstDagId = (dags[0] as Record<string, string>).id || Object.keys(dags[0])[0];
-
-    // Click to show detail
-    const dagCard = page.locator(`text=${firstDagId}`).first();
-    await dagCard.click();
-
-    // Check schedule info bar
-    const scheduleInfo = page.locator('#schedule-info');
-    await expect(scheduleInfo).toBeVisible();
-
-    // Check for schedule field
-    const schedule = page.locator('#info-schedule');
-    await expect(schedule).toBeVisible();
-
-    // Check for timezone field
-    const timezone = page.locator('#info-timezone');
-    await expect(timezone).toBeVisible();
-
-    // Check for max runs field
-    const maxRuns = page.locator('#info-max-runs');
-    await expect(maxRuns).toBeVisible();
-
-    // Check for next run field
-    const nextRun = page.locator('#info-next-run');
-    await expect(nextRun).toBeVisible();
+    // Check if modal appears
+    const backfillModal = page.locator('#backfill-modal');
+    await expect(backfillModal).toBeVisible();
   });
 
   test('Trigger Run button is prominently visible', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -237,7 +208,7 @@ test.describe('02 - DAG List & Detail View', () => {
     await dagCard.click();
 
     // Check trigger button
-    const triggerBtn = page.locator('#trigger-btn');
+    const triggerBtn = page.locator('#btn-trigger');
     await expect(triggerBtn).toBeVisible();
 
     // Should be styled with vortex-gradient (indicates prominence)
@@ -247,7 +218,7 @@ test.describe('02 - DAG List & Detail View', () => {
 
   test('Switching tabs shows different content', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -260,28 +231,28 @@ test.describe('02 - DAG List & Detail View', () => {
     await dagCard.click();
 
     // Tasks tab should be active by default
-    const tasksContent = page.locator('#tab-content-tasks');
-    const runsContent = page.locator('#tab-content-runs');
+    const graphContent = page.locator('#detail-tab-graph');
+    const historyContent = page.locator('#detail-tab-history');
 
-    // Tasks content should be visible
-    const tasksVisible = await tasksContent.isVisible();
-    expect(tasksVisible).toBeTruthy();
+    // Graph content should be visible
+    const graphVisible = await graphContent.isVisible();
+    expect(graphVisible).toBeTruthy();
 
-    // Click Runs tab
-    const runsTab = page.locator('#tab-runs');
-    await runsTab.click();
+    // Click History tab
+    const historyTab = page.locator('#tab-history');
+    await historyTab.click();
 
     // Wait for content switch
     await page.waitForTimeout(300);
 
-    // Runs content should now be visible
-    const runsVisible = await runsContent.isVisible();
-    expect(runsVisible).toBeTruthy();
+    // History content should now be visible
+    const historyVisible = await historyContent.isVisible();
+    expect(historyVisible).toBeTruthy();
   });
 
   test('Task list is populated with tasks', async ({ page }) => {
     const helpers = createHelpers(page);
-    
+
     const dags = await helpers.fetchDAGs();
     if (dags.length === 0) {
       test.skip();
@@ -293,13 +264,8 @@ test.describe('02 - DAG List & Detail View', () => {
     const dagCard = page.locator(`text=${firstDagId}`).first();
     await dagCard.click();
 
-    // Check task list
-    const taskList = page.locator('#task-list');
-    await expect(taskList).toBeVisible();
-
-    // Tasks might be empty or populated
-    const taskElements = page.locator('#task-list > div');
-    const count = await taskElements.count();
-    expect(count).toBeGreaterThanOrEqual(0); // 0 or more tasks is valid
+    // Check SVG container graph
+    const svgList = page.locator('#dag-svg');
+    await expect(svgList).toBeVisible();
   });
 });

@@ -5,8 +5,7 @@ use pyo3::exceptions::PyRuntimeError;
 use anyhow::{Result, anyhow};
 use crate::scheduler::Dag;
 use std::ffi::CString;
-use std::collections::{HashMap, HashSet};
-use regex::Regex;
+
 
 
 // ─── PyO3 runtime parser (kept for live execution) ───────────────────────────

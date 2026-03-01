@@ -171,39 +171,29 @@ pub async fn check_file_sensor(path: &str) -> bool {
 
 /// Returns `true` when an HTTP GET to `url` returns `expected_status`.
 ///
-/// Uses `curl` via `tokio::process::Command` to avoid adding reqwest as a dependency.
+/// ARCH-3 FIX: Uses `reqwest` (already a project dependency) instead of shelling
+/// out to `curl` — more portable, testable, and does not depend on curl being
+/// installed on the host.
 pub async fn check_http_sensor(url: &str, expected_status: u16) -> bool {
-    let output = Command::new("curl")
-        .args([
-            "--silent",
-            "--output",
-            "/dev/null",
-            "--write-out",
-            "%{http_code}",
-            "--max-time",
-            "10",
-            "--location",
-            url,
-        ])
-        .output()
-        .await;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .unwrap_or_default();
 
-    match output {
-        Ok(out) => {
-            let status_str = String::from_utf8_lossy(&out.stdout);
-            let status_code: u16 = status_str.trim().parse().unwrap_or(0);
-            debug!(
-                "🌐 curl {} → HTTP {}  (want {})",
-                url, status_code, expected_status
-            );
-            status_code == expected_status
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let got = resp.status().as_u16();
+            debug!("\u{1F310} HttpSensor {} \u{2192} HTTP {}  (want {})", url, got, expected_status);
+            got == expected_status
         }
         Err(e) => {
-            warn!("🌐 HttpSensor: curl failed for '{}': {}", url, e);
+            warn!("\u{1F310} HttpSensor: request to '{}' failed: {}", url, e);
             false
         }
     }
 }
+
 
 /// Returns `true` when a task in another DAG has state "Success" in `task_instances`.
 pub async fn check_external_task_sensor(
@@ -212,12 +202,14 @@ pub async fn check_external_task_sensor(
     task_id: &str,
 ) -> bool {
     // Query task_instances for the latest instance of the target task using the trait.
-    match db.get_task_instances(dag_id).await {
-        Ok(instances) => {
+    // We only need the latest, so a small limit is fine if we ordered correctly, 
+    // but the DB orders by execution_date DESC so checking the most recent runs (up to 100) is sufficient.
+    match db.get_task_instances(dag_id, 100, 0).await {
+        Ok((instances, _)) => {
             // Find the most recent instance for the given task_id
             let latest = instances.iter()
                 .filter(|ti| ti["task_id"].as_str() == Some(task_id))
-                .last();
+                .next(); // Since it's already ordered DESC
 
             match latest {
                 Some(ti) => {
@@ -249,37 +241,42 @@ pub async fn check_external_task_sensor(
 
 /// Returns `true` when the SQL `query` returns at least one row.
 ///
-/// Uses `sqlite3` via `Command` to avoid adding a new async SQL dependency.
-/// `connection_string` should be a path to the SQLite database file.
+/// `connection_string` must be a PostgreSQL `DATABASE_URL` (e.g. `postgres://user:pass@host/db`).
+/// Uses `sqlx` directly — no external CLI tools required.
 pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
-    // Append a LIMIT to avoid fetching unbounded rows — we only care whether
-    // any row exists at all.
-    let bounded_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_count LIMIT 1;", query);
+    // BUG-10 FIX: Use sqlx PgPool instead of shelling out to sqlite3 CLI.
+    // This supports any Postgres-compatible connection string and is portable.
+    use sqlx::postgres::PgPoolOptions;
 
-    let output = Command::new("sqlite3")
-        .arg(connection_string)
-        .arg(&bounded_query)
-        .output()
-        .await;
+    let pool = match PgPoolOptions::new()
+        .max_connections(1)
+        .connect(connection_string)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("🗄️  SqlSensor: Failed to connect to '{}': {}", connection_string, e);
+            return false;
+        }
+    };
 
-    match output {
-        Ok(out) => {
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                warn!("🗄️  SqlSensor: sqlite3 error: {}", stderr.trim());
-                return false;
-            }
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let count: i64 = stdout.trim().parse().unwrap_or(0);
-            debug!("🗄️  SqlSensor: row count = {}", count);
+    // Wrap user query as a subquery and count rows — we only care if ≥1 row exists.
+    let count_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_sensor_q", query);
+    match sqlx::query_scalar::<_, i64>(&count_query)
+        .fetch_one(&pool)
+        .await
+    {
+        Ok(count) => {
+            debug!("🗄️  SqlSensor: query returned {} rows", count);
             count > 0
         }
         Err(e) => {
-            warn!("🗄️  SqlSensor: failed to spawn sqlite3: {}", e);
+            warn!("🗄️  SqlSensor: query error: {}", e);
             false
         }
     }
 }
+
 
 // ─── Sensor Loop ─────────────────────────────────────────────────────────────
 

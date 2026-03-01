@@ -1,37 +1,9 @@
 use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
+
 use std::sync::Arc;
 use tracing::{info, warn, error};
 
 use crate::db_trait::DatabaseBackend;
-
-// ─── SQL Schema Constants ────────────────────────────────────────────────────
-
-pub const POOLS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS pools (
-    name TEXT PRIMARY KEY,
-    slots INTEGER NOT NULL DEFAULT 128,
-    description TEXT DEFAULT ''
-)";
-
-pub const POOL_SLOTS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS pool_slots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pool_name TEXT NOT NULL,
-    task_instance_id TEXT NOT NULL,
-    acquired_at TEXT NOT NULL,
-    FOREIGN KEY (pool_name) REFERENCES pools(name),
-    UNIQUE(pool_name, task_instance_id)
-)";
-
-// ─── Pool Struct ─────────────────────────────────────────────────────────────
-
-/// Represents a task pool with a fixed number of concurrency slots.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pool {
-    pub name: String,
-    pub slots: i32,
-    pub description: String,
-    pub occupied_slots: i32,
-}
 
 // ─── PoolManager ─────────────────────────────────────────────────────────────
 
@@ -128,6 +100,10 @@ impl PoolManager {
             return Ok(false);
         }
 
+        // BUG-6 FIX: Actually write the slot claim into pool_slots so the
+        // occupied count reflects reality on the next get_pool_usage call.
+        self.db.acquire_pool_slot(pool_name, task_instance_id).await?;
+
         info!(
             pool = pool_name,
             task_instance_id,
@@ -140,6 +116,8 @@ impl PoolManager {
 
     /// Release the slot held by `task_instance_id` in `pool_name`.
     pub async fn release_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
+        // BUG-6 FIX: Actually delete the slot row so the pool count decrements.
+        self.db.release_pool_slot(pool_name, task_instance_id).await?;
         info!(pool = pool_name, task_instance_id, "Slot released");
         Ok(())
     }

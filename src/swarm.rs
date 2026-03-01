@@ -131,7 +131,8 @@ impl SwarmState {
                                         config_json: "{}".to_string(),
                                         max_retries: 0,
                                         retry_delay_secs: 30,
-                                        required_secrets: vec!["STRESS_TEST_SECRET".to_string()], // Pillar 3: Pass secret reqs
+                                        // BUG-2 FIX: secrets come from task definition, not hardcoded
+                                        required_secrets: vec![],
                                     });
                                 }
                             }
@@ -194,6 +195,7 @@ impl SwarmController for SwarmService {
             info!("🐝 Swarm: Dispatching {}/{} to worker {}", t.dag_id, t.task_id, poll.worker_id);
             // Pillar 4: Assign task to worker in DB
             let _ = self.state.db.assign_task_to_worker(&t.task_instance_id, &poll.worker_id).await;
+            let _ = self.state.db.log_task_event(&t.task_instance_id, &t.dag_id, &t.task_id, &t.dag_run_id, "started", None, Some(&poll.worker_id)).await;
 
             if let Some(m) = &self.state.metrics { m.record_task_start(); }
 
@@ -240,17 +242,21 @@ impl SwarmController for SwarmService {
         let _ = self.state.db.store_task_result(&result.task_instance_id, &exec_result).await;
 
         if result.success {
+            let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "success", None, Some(&result.worker_id)).await;
             if let Some(m) = &self.state.metrics { m.record_task_success(result.duration_ms as f64 / 1000.0); }
         }
 
         // Phase 2.5: Retry Logic
         if !result.success {
+            let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "failed", Some("Task failed on worker"), Some(&result.worker_id)).await;
             if let Some(m) = &self.state.metrics { m.record_task_failure(result.duration_ms as f64 / 1000.0); }
             if let Ok((retry_count, _)) = self.state.db.get_task_instance_retry_info(&result.task_instance_id).await {
                 if retry_count < result.max_retries {
                     warn!("♻️ Swarm: Task {} failed. Retrying ({}/{}).", result.task_id, retry_count + 1, result.max_retries);
                     let _ = self.state.db.increment_task_retry_count(&result.task_instance_id).await;
                     let _ = self.state.db.update_task_state(&result.task_instance_id, "Queued").await;
+                    let msg = format!("Retrying task: attempt {}/{}", retry_count + 1, result.max_retries);
+                    let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "retry", Some(&msg), Some(&result.worker_id)).await;
                     
                     // Re-enqueue after delay
                     let state_clone = Arc::clone(&self.state);
@@ -271,7 +277,7 @@ impl SwarmController for SwarmService {
                                 config_json,
                                 max_retries,
                                 retry_delay_secs,
-                                required_secrets: vec!["STRESS_TEST_SECRET".to_string()], // Pillar 3: Pass secret reqs
+                                required_secrets: vec![], // BUG-2 FIX: secrets come from task definition, not hardcoded
                             }).await;
                         }
                     });

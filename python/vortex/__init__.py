@@ -2,12 +2,13 @@
 _DAG_REGISTRY = []
 
 class Dag:
-    def __init__(self, id, schedule_interval=None, timezone='UTC', max_active_runs=1, catchup=False):
+    def __init__(self, id, schedule_interval=None, timezone='UTC', max_active_runs=1, catchup=False, sla_seconds=None):
         self.dag_id = id
         self.schedule_interval = schedule_interval
         self.timezone = timezone
         self.max_active_runs = max_active_runs
         self.catchup = catchup
+        self.sla_seconds = sla_seconds
         self.tasks = []
         self.dependencies = []
         
@@ -44,6 +45,7 @@ class Dag:
             "max_active_runs": self.max_active_runs,
             "catchup": self.catchup,
             "is_dynamic": self.is_dynamic,
+            "sla_seconds": self.sla_seconds,
             "tasks": [t.to_dict() for t in self.tasks],
             "dependencies": self.dependencies
         }

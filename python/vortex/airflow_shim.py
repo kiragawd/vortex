@@ -21,6 +21,7 @@ class DAG:
         schedule_interval=None,
         start_date=None,
         catchup=False,
+        sla_seconds=None,
         tags=None,
         owner=None,
         **kwargs,
@@ -31,6 +32,7 @@ class DAG:
         self.schedule_interval = schedule_interval
         self.start_date = start_date
         self.catchup = catchup
+        self.sla_seconds = sla_seconds
         self.tags = tags or []
         self.owner = owner
         self.tasks = []
@@ -56,6 +58,7 @@ class DAG:
             "description": self.description,
             "schedule_interval": self.schedule_interval,
             "catchup": self.catchup,
+            "sla_seconds": self.sla_seconds,
             "tasks": [t.to_dict() for t in self.tasks],
             "dependencies": self.get_dependencies(),
         }

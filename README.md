@@ -86,6 +86,28 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 - **RBAC enforcement** — Middleware-level role checks on all API endpoints
 - **PostgreSQL Connectivity** — Connection pooling and production-grade migrations
 
+## ⚠️ Production Considerations
+
+By default, VORTEX runs as a single-node controller, which introduces a Single Point of Failure (SPOF). For production environments, it is strongly recommended to run VORTEX behind a supervisor (like `systemd` or Kubernetes deployments) configured to automatically restart the process on failure.
+
+For true active-standby High Availability (HA) across multiple machines, VORTEX supports a leader election mode using PostgreSQL advisory locks.
+
+See the [High Availability Guide](./docs/high-availability.md) for full setup instructions and architectural details.
+
+## Current Limitations & Roadmap
+
+While VORTEX provides a highly performant execution engine, it intentionally foregoes some of the larger ecosystem features found in legacy orchestrators like Airflow. The following features are currently missing or planned for future releases:
+
+- **Provider/Connector Ecosystem:** VORTEX includes a native HTTP operator and a dynamic plugin system. It does not ship with thousands of pre-built integrations (AWS, GCP, Snowflake, etc.).
+- **Dataset-Triggered Scheduling:** Data-aware scheduling and Dataset triggers are not currently implemented, but are on the **Roadmap**.
+- **Dynamic Task Mapping:** Runtime task fan-out (e.g., `task.expand()`) is not yet supported. Static DAGs cover the vast majority of use cases; dynamic mapping is on the **Roadmap**.
+- **Authentication (SSO/LDAP):** Authentication is handled natively via API keys, which is appropriate for a v1 OSS release. OAuth 2.0, SAML, and LDAP integrations are not included.
+- **Kubernetes Executor:** VORTEX scales horizontally via its built-in gRPC Swarm (Worker/Controller pattern), which efficiently manages multi-node workloads. A native pod-per-task K8s executor is considered **v2 territory**.
+- **Quality of Life Enhancements:** 
+  - **Data Lineage:** OpenLineage / Atlas integrations are not supported.
+  - **Connection UI:** connection management is scoped to the Secrets Vault; named connections with UI builder are not implemented.
+  - **Custom Timetables:** Schedules rely on cron and standard presets rather than custom timetable classes.
+
 ## Getting Started
 
 ### Prerequisites

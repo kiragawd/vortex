@@ -103,7 +103,7 @@ export class VortexHelpers {
   ): Promise<void> {
     await this.api('/api/users', 'POST', {
       username,
-      password_hash: password,
+      password: password,
       role,
     });
   }
@@ -187,7 +187,7 @@ export class VortexHelpers {
    * Check if detail view is visible
    */
   async isDetailViewVisible(): Promise<boolean> {
-    const detailDiv = this.page.locator('#dag-detail');
+    const detailDiv = this.page.locator('#view-details');
     return await detailDiv.isVisible();
   }
 
@@ -195,21 +195,21 @@ export class VortexHelpers {
    * Check if secrets section is visible
    */
   async isSecretsSectionVisible(): Promise<boolean> {
-    return await this.page.locator('#secrets-section').isVisible();
+    return await this.page.locator('#view-secrets').isVisible();
   }
 
   /**
    * Check if users section is visible
    */
   async isUsersSectionVisible(): Promise<boolean> {
-    return await this.page.locator('#users-section').isVisible();
+    return await this.page.locator('#view-users').isVisible();
   }
 
   /**
    * Get current pause button text
    */
   async getPauseButtonText(): Promise<string> {
-    return await this.page.locator('#pause-btn').textContent() || '';
+    return await this.page.locator('#btn-pause').textContent() || '';
   }
 
   /**

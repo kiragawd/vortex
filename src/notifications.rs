@@ -7,17 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::db_trait::DatabaseBackend;
 
-// ---------------------------------------------------------------------------
-// SQL
-// ---------------------------------------------------------------------------
 
-pub const CALLBACKS_TABLE_SQL: &str = "
-CREATE TABLE IF NOT EXISTS dag_callbacks (
-    dag_id     TEXT PRIMARY KEY,
-    config     TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (dag_id) REFERENCES dags(id)
-)";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,14 +89,6 @@ impl NotificationPayload {
 pub struct NotificationManager;
 
 impl NotificationManager {
-    pub fn new() -> Self {
-        Self
-    }
-
-    // -----------------------------------------------------------------------
-    // DB helpers
-    // -----------------------------------------------------------------------
-
     /// Persist (upsert) a `CallbackConfig` for the given DAG.
     pub async fn save_callbacks(
         db: &Arc<dyn DatabaseBackend>,
@@ -141,11 +123,6 @@ impl NotificationManager {
     }
 }
 
-impl Default for NotificationManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Notification dispatch
@@ -284,60 +261,64 @@ pub async fn send_notification(
             username,
             password,
         } => {
-            // Best-effort: use curl's SMTP support.
-            // curl smtp://host:port --mail-from <from> --mail-rcpt <to> ...
+            // ARCH-4 FIX: Use `lettre` async SMTP instead of shelling out to `curl`.
+            use lettre::{
+                AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+                message::header::ContentType,
+                transport::smtp::authentication::{Credentials, Mechanism},
+            };
+
             let subject = format!(
                 "VORTEX: {} — DAG {} ({})",
                 payload.event_type, payload.dag_id, payload.state
             );
-            let body_text = format!(
-                "Subject: {}\r\nFrom: {}\r\nTo: {}\r\n\r\n{}\r\n\r\nDAG: {}\nRun: {}\nState: {}\nTime: {}",
-                subject,
-                from,
-                to.join(", "),
-                payload.message,
-                payload.dag_id,
-                payload.run_id,
-                payload.state,
-                payload.timestamp,
-            );
 
-            let smtp_url = format!("smtp://{}:{}", smtp_host, smtp_port);
-
-            let mut cmd = tokio::process::Command::new("curl");
-            cmd.args(["-s", "--url", &smtp_url, "--mail-from", from]);
+            // Build the email message
+            let mut msg_builder = Message::builder()
+                .from(from.parse().map_err(|e| anyhow!("invalid from address '{}': {}", from, e))?)
+                .subject(&subject);
 
             for recipient in to {
-                cmd.args(["--mail-rcpt", recipient]);
+                msg_builder = msg_builder.to(
+                    recipient.parse().map_err(|e| anyhow!("invalid to address '{}': {}", recipient, e))?
+                );
             }
+
+            let body = format!(
+                "{}\r\n\r\nDAG: {}\nRun: {}\nState: {}\nTime: {}",
+                payload.message, payload.dag_id, payload.run_id, payload.state, payload.timestamp,
+            );
+
+            let email = msg_builder
+                .header(ContentType::TEXT_PLAIN)
+                .body(body)
+                .map_err(|e| anyhow!("failed to build email: {}", e))?;
+
+            // Build SMTP transport with the configured port
+            let mut transport_builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)
+                .map_err(|e| anyhow!("invalid smtp_host '{}': {}", smtp_host, e))?
+                .port(*smtp_port);
 
             if let (Some(user), Some(pass)) = (username, password) {
-                cmd.args(["--user", &format!("{}:{}", user, pass)]);
+                transport_builder = transport_builder
+                    .credentials(Credentials::new(user.clone(), pass.clone()))
+                    .authentication(vec![Mechanism::Login, Mechanism::Plain]);
             }
 
-            // Pipe the email body via stdin using --upload-file -
-            cmd.args(["--upload-file", "-"]);
-            cmd.stdin(std::process::Stdio::piped());
+            let mailer = transport_builder.build();
 
-            let mut child = cmd.spawn()?;
-            if let Some(stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let mut stdin = tokio::io::BufWriter::new(stdin);
-                stdin.write_all(body_text.as_bytes()).await?;
-                stdin.flush().await?;
-            }
-
-            let output = child.wait_with_output().await?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(
-                    smtp_host = %smtp_host,
-                    stderr = %stderr,
-                    "email notification may have failed (best effort)"
-                );
-                // Don't hard-error on email — it's best effort.
-            } else {
-                info!(smtp_host = %smtp_host, to = ?to, "email notification sent");
+            match mailer.send(email).await {
+                Ok(_) => {
+                    info!(smtp_host = %smtp_host, to = ?to, "email notification sent");
+                }
+                Err(e) => {
+                    warn!(
+                        smtp_host = %smtp_host,
+                        error = %e,
+                        "email notification may have failed (best effort)"
+                    );
+                    // Don't hard-error on email — it's best effort.
+                }
             }
             Ok(())
         }

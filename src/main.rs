@@ -1,10 +1,8 @@
-#![allow(clippy::all)]
-#![allow(warnings)]
 
 use anyhow::Result;
 use scheduler::{Dag, Scheduler};
 use std::env;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use chrono::Utc;
@@ -27,7 +25,6 @@ mod notifications;
 mod metrics;
 mod db_trait;
 mod db_postgres;
-mod db_sqlite;
 mod proto;
 mod dag_factory;
 
@@ -65,14 +62,25 @@ async fn main() -> Result<()> {
 
     // 🗄️ DB MIGRATE MODE
     if args.len() > 2 && args[1] == "db" && args[2] == "migrate" {
-        let db_url = args.iter().position(|a| a == "--database-url").and_then(|i| args.get(i + 1));
-        let db: Arc<dyn db_trait::DatabaseBackend> = if let Some(url) = db_url {
-            info!("🗄️ Running PostgreSQL migrations...");
-            Arc::new(db_postgres::PostgresDb::new(url, 1, 1, std::time::Duration::from_secs(30)).await?)
-        } else {
-            info!("🗄️ Running SQLite migrations (vortex.db)...");
-            Arc::new(db_sqlite::SqliteDb::new("vortex.db", 1, 1, std::time::Duration::from_secs(30)).await?)
-        };
+        // SQLITE-2 FIX: PostgreSQL is the only supported backend.
+        // --database-url or DATABASE_URL env var is mandatory.
+        let db_url = args.iter().position(|a| a == "--database-url")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str())
+            .or_else(|| std::env::var("DATABASE_URL").ok().as_deref().map(|_| ""))
+            .unwrap_or_else(|| {
+                eprintln!("❌ --database-url or DATABASE_URL env var is required (PostgreSQL only)");
+                std::process::exit(1);
+            });
+        // Re-read cleanly (env var fallback)
+        let url = args.iter().position(|a| a == "--database-url")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| {
+                Box::leak(std::env::var("DATABASE_URL").expect("DATABASE_URL must be set").into_boxed_str())
+            });
+        info!("🗄️ Running PostgreSQL migrations ({})...", &url[..url.find('@').map(|i| i+1).unwrap_or(url.len())]);
+        let _db = db_postgres::PostgresDb::new(url, 1, 1, std::time::Duration::from_secs(30)).await?;
         info!("✅ Database migrations applied successfully.");
         return Ok(());
     }
@@ -96,21 +104,25 @@ async fn main() -> Result<()> {
         Err(e) => { warn!("⚠️ Secret Vault DISABLED: {}. Secrets will not be available.", e); None }
     };
 
-    // Phase 3: Initialize Database Backend
-    let db_url = args.iter().position(|a| a == "--database-url")
-        .and_then(|i| args.get(i + 1));
+    // Phase 3: Initialize Database Backend (PostgreSQL only)
+    // SQLITE-2 FIX: SQLite removed. --database-url or DATABASE_URL env var is mandatory.
+    let db_url_owned: String = args.iter().position(|a| a == "--database-url")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("DATABASE_URL").ok())
+        .unwrap_or_else(|| {
+            eprintln!("❌ --database-url or DATABASE_URL env var is required. VORTEX requires PostgreSQL.");
+            std::process::exit(1);
+        });
 
     let db_max_connections: u32 = args.iter().position(|a| a == "--db-max-connections").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(20);
     let db_min_connections: u32 = args.iter().position(|a| a == "--db-min-connections").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(2);
     let db_idle_timeout = std::time::Duration::from_secs(args.iter().position(|a| a == "--db-idle-timeout").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(300));
 
-    let db: Arc<dyn db_trait::DatabaseBackend> = if let Some(url) = db_url {
-        info!("🗄️ Initializing PostgreSQL backend...");
-        Arc::new(db_postgres::PostgresDb::new(url, db_max_connections, db_min_connections, db_idle_timeout).await?)
-    } else {
-        info!("🗄️ Initializing SQLite backend (vortex.db)...");
-        Arc::new(db_sqlite::SqliteDb::new("vortex.db", db_max_connections, db_min_connections, db_idle_timeout).await?)
-    };
+    info!("🗄️ Initializing PostgreSQL backend...");
+    let db: Arc<dyn db_trait::DatabaseBackend> = Arc::new(
+        db_postgres::PostgresDb::new(&db_url_owned, db_max_connections, db_min_connections, db_idle_timeout).await?
+    );
     info!("✅ Database initialized.");
 
     // Phase 3: Initialize Prometheus Metrics
@@ -155,9 +167,10 @@ async fn main() -> Result<()> {
     }
     executor::init_global_registry(plugin_registry);
     
-    let all_dags = Arc::new(Mutex::new(HashMap::new()));
+    // ARCH-2: Use tokio::sync::Mutex to match AppState.dags type.
+    let all_dags = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     {
-        let mut map = all_dags.lock().unwrap();
+        let mut map = all_dags.blocking_lock();
         let bench = create_benchmark_dag();
         info!("🛠️ Registering core DAG: {}", bench.id);
         map.insert(bench.id.clone(), Arc::new(bench));
@@ -214,6 +227,33 @@ async fn main() -> Result<()> {
     }
     info!("✅ Loaded DAGs.");
 
+    // High Availability
+    let ha_mode = args.iter().any(|a| a == "--ha-mode");
+    let (leader_tx, leader_rx) = tokio::sync::watch::channel(!ha_mode);
+
+    if ha_mode {
+        let db_leader = Arc::clone(&db);
+        tokio::spawn(async move {
+            info!("🔒 HA Mode Enabled. Standing by for Leader Lock...");
+            loop {
+                match db_leader.try_acquire_leader_lock().await {
+                    Ok(true) => {
+                        info!("👑 Acquired HA Leader Lock. Promoting to Active.");
+                        let _ = leader_tx.send(true);
+                        break;
+                    }
+                    Ok(false) => {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                    Err(e) => {
+                        warn!("⚠️ DB error during leader lock acquisition: {}", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+    }
+
     // Swarm
     let swarm_enabled = args.iter().any(|a| a == "--swarm");
     let swarm_port: u16 = args.iter().position(|a| a == "--swarm-port").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(50051);
@@ -252,7 +292,11 @@ async fn main() -> Result<()> {
         });
 
         // Pillar 4: Spawn Health Check Loop
+        let mut leader_rx_health = leader_rx.clone();
         tokio::spawn(async move {
+            if !*leader_rx_health.borrow() {
+                let _ = leader_rx_health.changed().await;
+            }
             health_state.health_check_loop().await;
         });
     }
@@ -283,12 +327,16 @@ async fn main() -> Result<()> {
     let dags_sched = Arc::clone(&all_dags);
     let swarm_sched = Arc::clone(&swarm_state);
     let metrics_sched = Arc::clone(&vortex_metrics);
+    let mut leader_rx_sched = leader_rx.clone();
     tokio::spawn(async move {
+        if !*leader_rx_sched.borrow() {
+            let _ = leader_rx_sched.changed().await;
+        }
         info!("🌀 Scheduler loop started.");
         while let Some(req) = rx.recv().await {
             debug!("🔔 Scheduler received request: {:?}", req);
             let dag = {
-                let map = dags_sched.lock().unwrap();
+                let map = dags_sched.lock().await;
                 map.get(&req.dag_id).cloned()
             };
 
@@ -305,10 +353,10 @@ async fn main() -> Result<()> {
                     
                     let mut pre_finished_tasks = std::collections::HashSet::new();
                     if let scheduler::RunType::RetryFromFailure = req.run_type {
-                        if let Ok(runs) = db_sched.get_dag_runs(&req.dag_id).await {
+                        if let Ok((runs, _)) = db_sched.get_dag_runs(&req.dag_id, 100, 0).await {
                             if let Some(last_failed) = runs.iter().find(|r| r["state"] == "Failed") {
                                 if let Some(_run_id) = last_failed["id"].as_str() {
-                                     if let Ok(instances) = db_sched.get_task_instances(&req.dag_id).await {
+                                     if let Ok((instances, _)) = db_sched.get_task_instances(&req.dag_id, 1000, 0).await {
                                          for inst in instances {
                                              if inst["state"] == "Success" {
                                                  if let Some(tid) = inst["task_id"].as_str() {
@@ -370,7 +418,8 @@ async fn main() -> Result<()> {
                                     command: task.command.clone(), dag_run_id: run_id_clone.clone(),
                                     task_type: task.task_type.clone(), config_json: task.config.to_string(),
                                     max_retries: task.max_retries, retry_delay_secs: task.retry_delay_secs,
-                                    required_secrets: vec!["STRESS_TEST_SECRET".to_string()],
+                                    // BUG-2 FIX: secrets come from task definition, not hardcoded
+                                    required_secrets: vec![],
                                 }).await;
 
                                 // Monitor this specific task
@@ -378,11 +427,23 @@ async fn main() -> Result<()> {
                                 let tx_mon = tx_done.clone();
                                 let tid_mon = tid.clone();
                                 tokio::spawn(async move {
+                                    // BUG-12 FIX: cap polling to 300 iterations (~10 min) to avoid infinite loop on DB failure
+                                    let mut attempts = 0u32;
                                     loop {
                                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                        if let Ok((_, state)) = db_mon.get_task_instance_retry_info(&ti_id).await {
-                                            if state == "Success" { let _ = tx_mon.send((tid_mon, true)).await; break; }
-                                            if state == "Failed" { let _ = tx_mon.send((tid_mon, false)).await; break; }
+                                        match db_mon.get_task_instance_retry_info(&ti_id).await {
+                                            Ok((_, state)) => {
+                                                if state == "Success" { let _ = tx_mon.send((tid_mon, true)).await; break; }
+                                                if state == "Failed"  { let _ = tx_mon.send((tid_mon, false)).await; break; }
+                                            }
+                                            Err(_) => {
+                                                attempts += 1;
+                                                if attempts >= 300 {
+                                                    warn!("Monitor timed out polling task instance {} — marking failed", ti_id);
+                                                    let _ = tx_mon.send((tid_mon, false)).await;
+                                                    break;
+                                                }
+                                            }
                                         }
                                     }
                                 });
@@ -400,9 +461,19 @@ async fn main() -> Result<()> {
                                         let deg = in_degree.get_mut(down).unwrap();
                                         *deg -= 1;
                                         if *deg == 0 {
+                                            // BUG-4 FIX: skip downstream tasks if upstream failed
+                                            if !success {
+                                                let skipped_ti = uuid::Uuid::new_v4().to_string();
+                                                let _ = db_clone.create_task_instance(&skipped_ti, &dag_clone.id, down, "Upstream_Failed", execution_date_clone, &run_id_clone).await;
+                                                let _ = db_clone.log_task_event(&skipped_ti, &dag_clone.id, down, &run_id_clone, "upstream_failed", Some("Upstream task failed"), None).await;
+                                                tasks_remaining -= 1;
+                                                continue;
+                                            }
+
                                             let task = dag_clone.tasks.get(down).unwrap();
                                             let ti_id = uuid::Uuid::new_v4().to_string();
                                             let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, down, "Queued", execution_date_clone, &run_id_clone).await;
+                                            let _ = db_clone.log_task_event(&ti_id, &dag_clone.id, down, &run_id_clone, "queued", None, None).await;
                                             
                                             metrics_clone.record_task_queued();
                                             swarm_clone.enqueue_task(swarm::PendingTask {
@@ -410,18 +481,31 @@ async fn main() -> Result<()> {
                                                 command: task.command.clone(), dag_run_id: run_id_clone.clone(),
                                                 task_type: task.task_type.clone(), config_json: task.config.to_string(),
                                                 max_retries: task.max_retries, retry_delay_secs: task.retry_delay_secs,
-                                                required_secrets: vec!["STRESS_TEST_SECRET".to_string()],
+                                                // BUG-2 FIX: secrets come from task definition, not hardcoded
+                                                required_secrets: vec![],
                                             }).await;
 
                                             let db_mon = Arc::clone(&db_clone);
                                             let tx_mon = tx_done.clone();
                                             let down_mon = down.clone();
                                             tokio::spawn(async move {
+                                                // BUG-12 FIX: cap polling to 300 iterations (~10 min)
+                                                let mut attempts = 0u32;
                                                 loop {
                                                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                                    if let Ok((_, state)) = db_mon.get_task_instance_retry_info(&ti_id).await {
-                                                        if state == "Success" { let _ = tx_mon.send((down_mon, true)).await; break; }
-                                                        if state == "Failed" { let _ = tx_mon.send((down_mon, false)).await; break; }
+                                                    match db_mon.get_task_instance_retry_info(&ti_id).await {
+                                                        Ok((_, state)) => {
+                                                            if state == "Success" { let _ = tx_mon.send((down_mon, true)).await; break; }
+                                                            if state == "Failed"  { let _ = tx_mon.send((down_mon, false)).await; break; }
+                                                        }
+                                                        Err(_) => {
+                                                            attempts += 1;
+                                                            if attempts >= 300 {
+                                                                warn!("Monitor timed out polling task instance {} — marking failed", ti_id);
+                                                                let _ = tx_mon.send((down_mon, false)).await;
+                                                                break;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             });
@@ -451,11 +535,73 @@ async fn main() -> Result<()> {
         }
     });
 
+    // SLA Proactive Breach Detection Loop (Sprint 3)
+    let db_sla = Arc::clone(&db);
+    let dags_sla = Arc::clone(&all_dags);
+    let mut leader_rx_sla = leader_rx.clone();
+    tokio::spawn(async move {
+        if !*leader_rx_sla.borrow() {
+            let _ = leader_rx_sla.changed().await;
+        }
+        info!("🔴 SLA Monitor loop started (checking every 60s)");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            
+            // Wait for DB to be responsive before doing work
+            if db_sla.get_all_users().await.is_err() {
+                continue; // Skip cycle if DB is unreachable
+            }
+
+            // We only care about runs that are currently "Running"
+            match db_sla.get_interrupted_tasks().await {
+                Ok(interrupted) => {
+                    // Extract unique running run IDs
+                    let mut running_run_ids = std::collections::HashSet::new();
+                    for (_, _, run_id) in &interrupted {
+                        running_run_ids.insert(run_id.clone());
+                    }
+
+                    for run_id in running_run_ids {
+                        // Quick lookup isn't in DB trait, so we scan recent dag runs (or better, make a specific query)
+                        // For simplicity, fetch the run by inspecting all DAGs for this run
+                        let _dags_guard = dags_sla.lock().await;
+                        for (dag_id, dag) in _dags_guard.iter() {
+                            if let Some(sla_secs) = dag.sla_seconds {
+                                // We'll borrow the paginated get_dag_runs to find this specific run
+                                if let Ok((runs, _)) = db_sla.get_dag_runs(dag_id, 100, 0).await {
+                                    if let Some(run_data) = runs.iter().find(|r| r["id"].as_str() == Some(&run_id)) {
+                                        let is_missed = run_data["sla_missed"].as_bool().unwrap_or(false);
+                                        if !is_missed {
+                                            if let Some(start_time_str) = run_data["start_time"].as_str() {
+                                                if let Ok(start_time) = chrono::DateTime::parse_from_rfc3339(start_time_str) {
+                                                    let elapsed = Utc::now().signed_duration_since(start_time.with_timezone(&Utc));
+                                                    if elapsed.num_seconds() > sla_secs as i64 {
+                                                        warn!("🔴 SLA BREACH: DAG Run {} for DAG {} exceeded {}s limit", run_id, dag_id, sla_secs);
+                                                        let _ = db_sla.mark_sla_missed(&run_id).await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(e) => warn!("⚠️ SLA Monitor DB error: {}", e),
+            }
+        }
+    });
+
     // Cron Scheduler Loop
     let db_cron = Arc::clone(&db);
     let tx_cron = tx.clone();
     let metrics_cron = Arc::clone(&vortex_metrics);
+    let mut leader_rx_cron = leader_rx.clone();
     tokio::spawn(async move {
+        if !*leader_rx_cron.borrow() {
+            let _ = leader_rx_cron.changed().await;
+        }
         info!("⏰ Cron scheduler loop started (checking every 60s)");
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;

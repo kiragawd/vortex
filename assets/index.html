@@ -236,7 +236,7 @@
 
         <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             <!-- Global Stats -->
-            <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+            <div id="stats-row" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
                 <div class="glass p-5 rounded-2xl vortex-border">
                     <p class="text-xs text-white/40 mb-1">Total DAGs</p>
                     <h3 class="text-2xl font-bold" id="stat-total">-</h3>
@@ -331,8 +331,8 @@
                 </div>
 
                 <div id="detail-tab-graph"
-                    class="glass p-8 rounded-3xl vortex-border min-h-[500px] flex items-center justify-center overflow-auto">
-                    <svg id="dag-svg" width="100%" height="600"></svg>
+                    class="glass p-8 rounded-3xl vortex-border min-h-[500px] max-h-[800px] overflow-auto relative">
+                    <svg id="dag-svg" style="display: block;"></svg>
                 </div>
 
                 <div id="detail-tab-history" class="hidden space-y-4">
@@ -486,6 +486,36 @@
     </div>
 
     <!-- Modals -->
+    <div id="events-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
+        <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col overflow-hidden">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <div>
+                    <h3 class="text-lg font-bold" id="modal-events-task-id">Event Log</h3>
+                    <p class="text-xs text-white/40" id="modal-events-ti-id"></p>
+                </div>
+                <button onclick="closeEvents()" class="p-3 rounded-full hover:bg-white/10 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-auto bg-[#0a0a0c] p-6">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-white/5 text-white/40 text-[10px] uppercase tracking-widest">
+                            <th class="text-left p-4">Timestamp</th>
+                            <th class="text-left p-4">Event</th>
+                            <th class="text-left p-4">Worker ID</th>
+                            <th class="text-left p-4">Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="events-content"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <div id="logs-modal" class="fixed inset-0 bg-black/95 hidden z-[10000] items-center justify-center p-12">
         <div class="glass w-full h-full max-w-6xl rounded-3xl vortex-border flex flex-col overflow-hidden">
             <div class="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
@@ -846,8 +876,52 @@
         }
 
         // ─── Graph Renderer ─────────────────────────────────────────
+        let graphVisibleNodes = new Set();
+        let lastRenderedDagId = null;
+
         function renderGraph(svgId, tasks, instances, edges) {
             try {
+                let currentIdToTrack = (svgId === 'dag-svg') ? currentDagId : svgId;
+                if (lastRenderedDagId !== currentIdToTrack) {
+                    graphVisibleNodes = new Set();
+                    lastRenderedDagId = currentIdToTrack;
+                }
+
+                if (graphVisibleNodes.size === 0) {
+                    const hasUpstream = new Set();
+                    if (edges) {
+                        edges.forEach(e => {
+                            const down = Array.isArray(e) ? e[1] : e.downstream;
+                            hasUpstream.add(down);
+                        });
+                    }
+                    tasks.forEach(function (t) {
+                        if (!hasUpstream.has(t.id)) graphVisibleNodes.add(t.id);
+                    });
+                    if (graphVisibleNodes.size === 0 && tasks.length > 0) {
+                        graphVisibleNodes.add(tasks[0].id);
+                    }
+                }
+
+                const visibleTasks = tasks.filter(t => graphVisibleNodes.has(t.id));
+                const visibleTaskIds = new Set(visibleTasks.map(t => t.id));
+                const visibleEdges = edges ? edges.filter(e => {
+                    const up = Array.isArray(e) ? e[0] : e.upstream;
+                    const down = Array.isArray(e) ? e[1] : e.downstream;
+                    return visibleTaskIds.has(up) && visibleTaskIds.has(down);
+                }) : [];
+
+                const nodeHasUnexpandedChildren = {};
+                if (edges) {
+                    edges.forEach(e => {
+                        const up = Array.isArray(e) ? e[0] : e.upstream;
+                        const down = Array.isArray(e) ? e[1] : e.downstream;
+                        if (visibleTaskIds.has(up) && !visibleTaskIds.has(down)) {
+                            nodeHasUnexpandedChildren[up] = true;
+                        }
+                    });
+                }
+
                 var g = new dagreD3.graphlib.Graph({ compound: true }).setGraph({
                     rankdir: 'LR',
                     nodesep: 50,
@@ -857,12 +931,12 @@
                 }).setDefaultEdgeLabel(function () { return {}; });
 
                 var groups = new Set();
-                tasks.forEach(function (t) {
+                visibleTasks.forEach(function (t) {
                     if (t.task_group) groups.add(t.task_group);
                 });
 
                 groups.forEach(function (gId) {
-                    var children = tasks.filter(function (t) { return t.task_group === gId; });
+                    var children = visibleTasks.filter(function (t) { return t.task_group === gId; });
                     var childStates = children.map(function (t) {
                         var ti = instances ? instances.find(function (i) { return i.task_id === t.id; }) : null;
                         return ti ? ti.state : 'Pending';
@@ -893,24 +967,29 @@
                     });
                 });
 
-                tasks.forEach(function (t) {
+                visibleTasks.forEach(function (t) {
                     var ti = instances ? instances.find(function (i) { return i.task_id === t.id; }) : null;
                     var state = ti ? ti.state : 'Pending';
+                    var labelStr = t.name || t.id;
+                    if (nodeHasUnexpandedChildren[t.id]) {
+                        labelStr += ' ➕';
+                    }
                     g.setNode(t.id, {
-                        label: t.name || t.id,
-                        labelStyle: "font-weight: 900; fill: #fff; text-shadow: 0 0 10px rgba(0,0,0,0.5);",
+                        label: labelStr,
+                        labelStyle: "font-weight: 900; fill: #fff; text-shadow: 0 0 10px rgba(0,0,0,0.5); cursor: " + (nodeHasUnexpandedChildren[t.id] ? "pointer" : "default") + ";",
                         class: state,
                         rx: 10,
                         ry: 10,
-                        padding: 15
+                        padding: 15,
+                        style: nodeHasUnexpandedChildren[t.id] ? "cursor: pointer; stroke: #00f2ff; stroke-width: 2px;" : ""
                     });
                     if (t.task_group) {
                         g.setParent(t.id, t.task_group);
                     }
                 });
 
-                if (edges && edges.length > 0) {
-                    edges.forEach(function (e) {
+                if (visibleEdges && visibleEdges.length > 0) {
+                    visibleEdges.forEach(function (e) {
                         var up = Array.isArray(e) ? e[0] : e.upstream;
                         var down = Array.isArray(e) ? e[1] : e.downstream;
                         if (up && down) {
@@ -930,16 +1009,46 @@
                 var render = new dagreD3.render();
                 render(inner, g);
 
-                // Adjust SVG height to content
-                var graphHeight = (g.graph().height || 200) + 100;
-                svg.attr('height', graphHeight);
+                inner.selectAll("g.node").on("click", function (e) {
+                    var d = typeof e === "string" ? e : (e.toElement && e.toElement.__data__ ? e.toElement.__data__ : (this.__data__ || (arguments.length > 1 ? arguments[1] : null)));
+                    if (d && nodeHasUnexpandedChildren[d]) {
+                        if (edges) {
+                            edges.forEach(function (edge) {
+                                var up = Array.isArray(edge) ? edge[0] : edge.upstream;
+                                var down = Array.isArray(edge) ? edge[1] : edge.downstream;
+                                if (up === d) graphVisibleNodes.add(down);
+                            });
+                            renderGraph(svgId, tasks, instances, edges);
+                        }
+                    }
+                });
 
-                // Center the graph
+                // Adjust SVG bounds dynamically to support scrolling
+                var gWidth = g.graph().width || 400;
+                var gHeight = g.graph().height || 200;
+
                 var svgNode = svg.node();
                 if (svgNode) {
-                    var svgWidth = svgNode.getBoundingClientRect().width;
-                    var xCenterOffset = Math.max(0, (svgWidth - (g.graph().width || 0)) / 2);
-                    inner.attr('transform', 'translate(' + xCenterOffset + ', 20)');
+                    var container = svgNode.parentElement;
+                    var minWidth = container ? container.clientWidth - 64 : 800; // Account for p-8 (64px)
+                    var containerHeight = container ? container.clientHeight - 64 : 500;
+
+                    var finalWidth = Math.max(gWidth + 100, minWidth);
+                    // Add significant extra padding at the bottom as nodes expand downwards too
+                    var finalHeight = Math.max(gHeight + 200, containerHeight);
+
+                    // Directly set style properties as D3 attr might get overridden by CSS
+                    svgNode.style.width = finalWidth + 'px';
+                    svgNode.style.height = finalHeight + 'px';
+                    svgNode.style.minWidth = finalWidth + 'px';
+                    svgNode.style.minHeight = finalHeight + 'px';
+
+                    // Center ONLY if the graph is smaller than the view width, otherwise pin to left margin
+                    var xCenterOffset = 40;
+                    if (finalWidth > gWidth + 80) {
+                        xCenterOffset = (finalWidth - gWidth) / 2;
+                    }
+                    inner.attr('transform', 'translate(' + xCenterOffset + ', 40)');
                 }
             } catch (e) {
                 console.error('renderGraph error:', e);
@@ -986,10 +1095,13 @@
                         ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
                         : 'bg-rose-400/10 text-rose-400 border-rose-400/20';
                     var startedStr = run.execution_date ? new Date(run.execution_date).toLocaleString() : 'N/A';
+                    var slaBadge = run.sla_missed ? '<span class="text-[10px] px-2 py-0.5 rounded border font-bold bg-rose-500/20 text-rose-500 border-rose-500/50 flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>SLA BREACH</span>' : '';
+
                     html += '<div class="glass rounded-2xl vortex-border overflow-hidden">'
                         + '<div class="p-4 flex items-center justify-between cursor-pointer run-header" onclick="toggleRunAccordion(\'' + run.id + '\')">'
                         + '<div class="flex items-center gap-4">'
                         + '<span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + stateClass + '">' + run.state + '</span>'
+                        + slaBadge
                         + '<span class="text-xs font-mono text-white/60">' + run.id + '</span>'
                         + '</div>'
                         + '<div class="flex items-center gap-6 text-[10px] text-white/30 font-bold uppercase tracking-widest">'
@@ -1065,7 +1177,8 @@
                         + '<div class="flex items-center gap-3">'
                         + '<span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + sc + '">' + i.state + '</span>'
                         + '<span class="text-xs font-bold text-white/60">' + i.task_id + '</span></div>'
-                        + '<button onclick="viewLogs(\'' + i.id + '\', \'' + i.task_id + '\')" class="text-[10px] font-black text-vortex-primary">VIEW LOGS</button>'
+                        + '<div><button onclick="viewEvents(\'' + i.id + '\', \'' + i.task_id + '\')" class="text-[10px] font-black text-emerald-400 mr-4">EVENTS</button>'
+                        + '<button onclick="viewLogs(\'' + i.id + '\', \'' + i.task_id + '\')" class="text-[10px] font-black text-vortex-primary">VIEW LOGS</button></div>'
                         + '</div>';
                 });
                 logsEl.innerHTML = html;
@@ -1244,6 +1357,8 @@
         function showAddUserModal() {
             document.getElementById('add-user-modal').style.display = 'flex';
             document.getElementById('add-user-error').classList.add('hidden');
+            document.getElementById('new-user-name').value = '';
+            document.getElementById('new-user-pass').value = '';
         }
         function closeAddUserModal() { document.getElementById('add-user-modal').style.display = 'none'; }
 
@@ -1275,6 +1390,8 @@
         function showAddSecretModal() {
             document.getElementById('add-secret-modal').style.display = 'flex';
             document.getElementById('add-secret-error').classList.add('hidden');
+            document.getElementById('new-secret-key').value = '';
+            document.getElementById('new-secret-val').value = '';
         }
         function closeAddSecretModal() { document.getElementById('add-secret-modal').style.display = 'none'; }
 
@@ -1447,6 +1564,47 @@
             }
         }
         function closeLogs() { document.getElementById('logs-modal').style.display = 'none'; }
+
+        // ─── Events Modal ───────────────────────────────────────────
+        async function viewEvents(id, tid) {
+            document.getElementById('modal-events-task-id').textContent = tid + ' Events';
+            document.getElementById('modal-events-ti-id').textContent = 'Instance: ' + id;
+            document.getElementById('events-content').innerHTML = '<tr><td colspan="4" class="text-center p-4">Loading...</td></tr>';
+            document.getElementById('events-modal').style.display = 'flex';
+            try {
+                var events = await api('/api/task-instances/' + encodeURIComponent(currentDagId) + '/' + encodeURIComponent(id) + '/events');
+                if (!events || events.length === 0) {
+                    document.getElementById('events-content').innerHTML = '<tr><td colspan="4" class="text-center p-4 text-white/40 italic">No events found.</td></tr>';
+                    return;
+                }
+                var html = '';
+                events.forEach(function (e) {
+                    var ts = e.created_at ? new Date(e.created_at).toLocaleString() : '-';
+                    var ev = e.event || '-';
+                    var msg = e.message || '-';
+                    var wid = e.worker_id || 'System';
+
+                    var badge = 'bg-white/10 text-white border-white/20';
+                    if (ev === 'success') badge = 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20';
+                    if (ev === 'failed') badge = 'bg-rose-400/10 text-rose-400 border-rose-400/20';
+                    if (ev === 'started') badge = 'bg-vortex-primary/10 text-vortex-primary border-vortex-primary/20';
+                    if (ev === 'queued') badge = 'bg-amber-400/10 text-amber-400 border-amber-400/20';
+                    if (ev === 'retry') badge = 'bg-purple-400/10 text-purple-400 border-purple-400/20';
+                    if (ev === 'upstream_failed') badge = 'bg-rose-600/10 text-rose-500 border-rose-600/20';
+
+                    html += '<tr class="border-b border-white/5 hover:bg-white/5">'
+                        + '<td class="p-4 text-xs font-mono text-white/50">' + ts + '</td>'
+                        + '<td class="p-4"><span class="text-[10px] px-2 py-0.5 rounded border font-bold ' + badge + '">' + ev + '</span></td>'
+                        + '<td class="p-4 text-xs font-mono text-white/60">' + wid + '</td>'
+                        + '<td class="p-4 text-xs">' + msg + '</td>'
+                        + '</tr>';
+                });
+                document.getElementById('events-content').innerHTML = html;
+            } catch (e) {
+                document.getElementById('events-content').innerHTML = '<tr><td colspan="4" class="text-center p-4 text-rose-400">Error: ' + e.message + '</td></tr>';
+            }
+        }
+        function closeEvents() { document.getElementById('events-modal').style.display = 'none'; }
 
         // ─── Audit Log ──────────────────────────────────────────────
         async function refreshAuditLog() {

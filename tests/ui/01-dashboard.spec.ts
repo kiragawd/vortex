@@ -22,21 +22,19 @@ test.describe('01 - Dashboard Rendering', () => {
     expect(errors.length).toBe(0);
   });
 
-  test('Navigation bar displays VORTEX logo, Status, and Admin button', async ({ page }) => {
+  test('Navigation bar displays VORTEX logo, Username, and LOGOUT button', async ({ page }) => {
     // Check VORTEX logo
     const logo = page.locator('nav >> text=/VORTEX/');
     await expect(logo).toBeVisible();
 
-    // Check Status badge
-    const status = page.locator('nav >> text=/Status:/');
-    await expect(status).toBeVisible();
+    // Check Username indicator
+    const username = page.locator('#nav-username');
+    await expect(username).toBeVisible();
+    await expect(username).toHaveText('admin');
 
-    const statusBadge = page.locator('nav >> text=Active');
-    await expect(statusBadge).toBeVisible();
-
-    // Check Admin button
-    const adminBtn = page.locator('nav >> button:has-text("Admin")');
-    await expect(adminBtn).toBeVisible();
+    // Check Logout button
+    const logoutBtn = page.locator('nav >> button:has-text("LOGOUT")');
+    await expect(logoutBtn).toBeVisible();
   });
 
   test('Navigation buttons: Users and Secrets are visible', async ({ page }) => {
@@ -51,39 +49,32 @@ test.describe('01 - Dashboard Rendering', () => {
 
   test('Stats cards render with correct labels and values', async ({ page }) => {
     // Total DAGs stat
-    const totalDagsLabel = page.locator('#stats-row >> text=Total DAGs');
-    await expect(totalDagsLabel).toBeVisible();
-    const totalDagsValue = page.locator('#total-dags');
-    const totalText = await totalDagsValue.textContent();
-    expect(totalText).not.toBe('-'); // Should be a number or 0+
+    const totalDagsValue = page.locator('#stat-total');
+    await expect(totalDagsValue).toBeVisible();
 
     // Active stat
-    const activeLabel = page.locator('#stats-row >> text=Active');
-    await expect(activeLabel).toBeVisible();
-    const activeValue = page.locator('#active-dags');
+    const activeValue = page.locator('#stat-active');
+    await expect(activeValue).toBeVisible();
     expect(await activeValue.textContent()).toMatch(/^\d+$/);
 
     // Paused stat
-    const pausedLabel = page.locator('#stats-row >> text=Paused');
-    await expect(pausedLabel).toBeVisible();
-    const pausedValue = page.locator('#paused-dags');
+    const pausedValue = page.locator('#stat-paused');
+    await expect(pausedValue).toBeVisible();
     expect(await pausedValue.textContent()).toMatch(/^\d+$/);
 
-    // Success stat
-    const successLabel = page.locator('#stats-row >> text=Success');
-    await expect(successLabel).toBeVisible();
-    const successValue = page.locator('#success-tasks');
-    expect(await successValue.textContent()).toMatch(/^\d+$/);
+    // Workers stat
+    const workersValue = page.locator('#stat-workers');
+    await expect(workersValue).toBeVisible();
+    expect(await workersValue.textContent()).toMatch(/^\d+$/);
 
-    // Failures stat
-    const failuresLabel = page.locator('#stats-row >> text=Failures');
-    await expect(failuresLabel).toBeVisible();
-    const failuresValue = page.locator('#failed-tasks');
-    expect(await failuresValue.textContent()).toMatch(/^\d+$/);
+    // Queue stat
+    const queueValue = page.locator('#stat-queue');
+    await expect(queueValue).toBeVisible();
+    expect(await queueValue.textContent()).toMatch(/^\d+$/);
   });
 
   test('Refresh button exists and is clickable', async ({ page }) => {
-    const refreshBtn = page.locator('text=/Refresh/');
+    const refreshBtn = page.locator('button:has-text("Refresh")').first();
     await expect(refreshBtn).toBeVisible();
 
     // Click refresh
@@ -93,7 +84,7 @@ test.describe('01 - Dashboard Rendering', () => {
     await page.waitForLoadState('networkidle');
 
     // Page should still be responsive
-    const dagContainer = page.locator('#dag-container');
+    const dagContainer = page.locator('#view-registry');
     await expect(dagContainer).toBeVisible();
   });
 
@@ -127,18 +118,6 @@ test.describe('01 - Dashboard Rendering', () => {
     // Check status badge
     const statusBadge = page.locator('#swarm-status-badge');
     await expect(statusBadge).toBeVisible();
-
-    // Check worker count display
-    const workerLabel = page.locator('#swarm-panel >> text=Workers:');
-    await expect(workerLabel).toBeVisible();
-    const workerCount = page.locator('#swarm-worker-count');
-    await expect(workerCount).toBeVisible();
-
-    // Check queue depth display
-    const queueLabel = page.locator('#swarm-panel >> text=Queue:');
-    await expect(queueLabel).toBeVisible();
-    const queueDepth = page.locator('#swarm-queue-depth');
-    await expect(queueDepth).toBeVisible();
 
     // Check chevron for expand/collapse
     const chevron = page.locator('#swarm-chevron');

@@ -1,6 +1,3 @@
-#![allow(clippy::all)]
-#![allow(warnings)]
-
 // Library exports for testing
 pub mod swarm;
 pub mod vault;
@@ -16,5 +13,5 @@ pub mod notifications;
 pub mod metrics;
 pub mod db_trait;
 pub mod db_postgres;
-pub mod db_sqlite;
 pub mod proto;
+pub mod dag_factory;

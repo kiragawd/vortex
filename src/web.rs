@@ -13,9 +13,24 @@ use crate::swarm::SwarmState;
 use crate::vault::Vault;
 
 use serde_json::json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
+#[derive(Deserialize, Clone)]
+pub struct PaginationQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 use std::collections::HashMap;
+
 use tokio::sync::mpsc;
 use std::sync::Mutex;
 
@@ -42,7 +57,8 @@ pub struct AppState {
     pub tx: mpsc::Sender<ScheduleRequest>,
     pub swarm: Arc<SwarmState>,
     pub vault: Option<Arc<Vault>>,
-    pub dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
+    // ARCH-2 FIX: Use tokio::sync::Mutex so the guard is Send across await boundaries.
+    pub dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
     pub xcom: Arc<XComStore>,
     pub pool_manager: Arc<PoolManager>,
     pub metrics: Arc<VortexMetrics>,
@@ -54,12 +70,12 @@ pub struct WebServer {
     tx: mpsc::Sender<ScheduleRequest>,
     swarm: Arc<SwarmState>,
     vault: Option<Arc<Vault>>,
-    dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
+    dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
     metrics: Arc<VortexMetrics>,
 }
 
 impl WebServer {
-    pub fn new(db: Arc<dyn DatabaseBackend>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>, metrics: Arc<VortexMetrics>) -> Self {
+    pub fn new(db: Arc<dyn DatabaseBackend>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>, metrics: Arc<VortexMetrics>) -> Self {
         Self { db, tx, swarm, vault, dags, metrics }
     }
 
@@ -94,6 +110,7 @@ impl WebServer {
             .route("/api/dags/:id/versions/:version/rollback", post(rollback_dag_version_handler))
             .route("/api/dags/:id/retry", post(retry_dag))
             .route("/api/tasks/:id/logs", get(get_task_logs))
+            .route("/api/task-instances/:dag_id/:ti_id/events", get(get_task_events_handler))
             // Swarm
             .route("/api/swarm/status", get(swarm_status))
             .route("/api/swarm/workers", get(swarm_workers))
@@ -260,7 +277,7 @@ async fn upload_dag(State(state): State<Arc<AppState>>, axum::extract::Extension
                     let task_count = dag.tasks.len();
                     
                     {
-                        let mut dags = state.dags.lock().unwrap();
+                        let mut dags = state.dags.lock().await;
                         dags.insert(dag.id.clone(), Arc::new(dag.clone()));
                     }
                     
@@ -417,23 +434,39 @@ async fn delete_secret(Path(key): Path<String>, State(state): State<Arc<AppState
 }
 
 // Existing Handlers
-async fn get_dags(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
-    match state.db.get_all_dags().await {
-        Ok(dags) => {
+async fn get_dags(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationQuery>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(50).min(500);
+    let offset = params.offset.unwrap_or(0);
+
+    match state.db.get_all_dags(limit, offset).await {
+        Ok((dags, total)) => {
             if let Some(user_team_id) = auth_user.team_id {
-                // Filter the list to only include DAGs matching the user's team
                 let filtered: Vec<_> = dags.into_iter().filter(|d| {
                     d.get("team_id").and_then(|v| v.as_str()) == Some(&user_team_id)
                 }).collect();
-                Json(filtered)
+                // When filtering, the 'total' reflects the DB count, not strictly the filtered count,
+                // which is acceptable for this level.
+                Json(PaginatedResponse { data: filtered, total, limit, offset })
             } else {
-                Json(dags)
+                Json(PaginatedResponse { data: dags, total, limit, offset })
             }
         },
-        Err(_) => Json(vec![]),
+        Err(_) => Json(PaginatedResponse { data: vec![], total: 0, limit, offset }),
     }
 }
-async fn get_dag_tasks(Path(id): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
+async fn get_dag_tasks(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationQuery>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(50).min(500);
+    let offset = params.offset.unwrap_or(0);
+
     let dag_db = state.db.get_dag_by_id(&id).await.unwrap_or_default();
     if let Some(dag) = &dag_db {
         if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
@@ -448,23 +481,34 @@ async fn get_dag_tasks(Path(id): Path<String>, State(state): State<Arc<AppState>
     let tasks = state.db.get_dag_tasks(&id).await.unwrap_or_default();
     
     // Pillar 4: Pass run_id if it exists in task_instances table
-    let instances = state.db.get_task_instances(&id).await.unwrap_or_default();
+    let (instances_data, instances_total) = state.db.get_task_instances(&id, limit, offset).await.unwrap_or_default();
     
     // Get dependencies from in-memory map
     let dependencies = {
-        let map = state.dags.lock().unwrap();
+        let map = state.dags.lock().await;
         map.get(&id).map(|d| d.dependencies.clone()).unwrap_or_default()
     };
     
     Json(json!({
         "dag_id": id, 
         "tasks": tasks, 
-        "instances": instances, 
+        "instances": instances_data,
+        "instances_total": instances_total,
+        "instances_limit": limit,
+        "instances_offset": offset,
         "dag": dag_db,
         "dependencies": dependencies
     })).into_response()
 }
-async fn get_dag_runs(Path(id): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
+async fn get_dag_runs(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationQuery>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(50).min(500);
+    let offset = params.offset.unwrap_or(0);
+
     if let Ok(Some(dag)) = state.db.get_dag_by_id(&id).await {
         if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
             if auth_user.team_id.as_deref() != Some(t) && auth_user.team_id.is_some() {
@@ -475,8 +519,8 @@ async fn get_dag_runs(Path(id): Path<String>, State(state): State<Arc<AppState>>
         return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response();
     }
 
-    let runs = state.db.get_dag_runs(&id).await.unwrap_or_default();
-    Json(json!({"dag_id": id, "runs": runs})).into_response()
+    let (runs, total) = state.db.get_dag_runs(&id, limit, offset).await.unwrap_or_default();
+    Json(PaginatedResponse { data: runs, total, limit, offset }).into_response()
 }
 async fn get_task_logs(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // 1. Try DB first
@@ -493,6 +537,17 @@ async fn get_task_logs(Path(id): Path<String>, State(state): State<Arc<AppState>
     
     (StatusCode::NOT_FOUND, Json(json!({ "error": "Log not found" }))).into_response()
 }
+
+async fn get_task_events_handler(
+    Path((_dag_id, ti_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>
+) -> impl IntoResponse {
+    match state.db.get_task_events(&ti_id).await {
+        Ok(events) => Json(events).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to fetch task events"}))).into_response(),
+    }
+}
+
 async fn trigger_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
     if let Ok(Some(dag)) = state.db.get_dag_by_id(&id).await {
         if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
@@ -529,7 +584,7 @@ async fn retry_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>, a
 
     let _ = state.tx.send(ScheduleRequest {
         dag_id: id,
-        triggered_by: "api".to_string(),
+        triggered_by: auth_user.username.clone(), // BUG-5 FIX: use real username, not "api"
         run_type: RunType::RetryFromFailure,
         execution_date: None,
     }).await;
@@ -579,7 +634,7 @@ async fn update_dag_source(Path(id): Path<String>, State(state): State<Arc<AppSt
                 let _ = state.db.register_dag(&dag).await;
                 
                 {
-                    let mut map = state.dags.lock().unwrap();
+                    let mut map = state.dags.lock().await;
                     map.insert(id.clone(), Arc::new(dag));
                 }
                 
@@ -674,8 +729,8 @@ async fn rollback_dag_version_handler(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     };
 
-    // Find the specific version and read its file path
-    let target_version = versions.iter().find(|v| v["id"].as_str() == Some(&version_id));
+    // BUG-3 FIX: look up by version number (same field as get_dag_version_source_handler)
+    let target_version = versions.iter().find(|v| v["version"].as_i64().map(|n| n.to_string()) == Some(version_id.clone()));
     if let Some(target) = target_version {
         let path = target["file_path"].as_str().unwrap_or("");
         
@@ -706,7 +761,7 @@ async fn rollback_dag_version_handler(
                     if let Some(dag) = target_dag {
                         let _ = state.db.register_dag(&dag).await;
                         {
-                            let mut map = state.dags.lock().unwrap();
+                            let mut map = state.dags.lock().await;
                             map.insert(id.clone(), Arc::new(dag));
                         }
                         
@@ -842,25 +897,38 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
         prog.insert(id.clone(), 0.0);
     }
 
-    let total = intervals.len() as f32;
-    for (i, dt) in intervals.into_iter().enumerate() {
-        let _ = state.tx.send(ScheduleRequest {
-            dag_id: id.clone(),
-            triggered_by: "backfill".to_string(),
-            run_type: RunType::Full,
-            execution_date: Some(dt),
-        }).await;
-        
-        if let Ok(mut prog) = state.backfill_progress.write() {
-             prog.insert(id.clone(), (i as f32) / total);
-        }
-    }
-    
-    if let Ok(mut prog) = state.backfill_progress.write() {
-        prog.insert(id.clone(), 1.0);
-    }
+    // BUG-11 FIX: Spawn the backfill loop in the background so the handler
+    // returns immediately. Without this, progress always reached 1.0 before
+    // the HTTP response was sent, making the progress endpoint useless.
+    let tx = state.tx.clone();
+    let backfill_progress = Arc::clone(&state.backfill_progress);
+    let dag_id_bg = id.clone();
+    let total = intervals.len();
 
-    Json(json!({"message": "Backfill triggered", "start": start, "end": end, "intervals_queued": total as usize})).into_response()
+    tokio::spawn(async move {
+        let total_f = total as f32;
+        if let Ok(mut prog) = backfill_progress.write() {
+            prog.insert(dag_id_bg.clone(), 0.0);
+        }
+        for (i, dt) in intervals.into_iter().enumerate() {
+            let _ = tx.send(ScheduleRequest {
+                dag_id: dag_id_bg.clone(),
+                triggered_by: "backfill".to_string(),
+                run_type: RunType::Full,
+                execution_date: Some(dt),
+            }).await;
+            if let Ok(mut prog) = backfill_progress.write() {
+                prog.insert(dag_id_bg.clone(), (i + 1) as f32 / total_f);
+            }
+            // Small yield so we don't starve other tasks while dispatching
+            tokio::task::yield_now().await;
+        }
+        if let Ok(mut prog) = backfill_progress.write() {
+            prog.insert(dag_id_bg.clone(), 1.0);
+        }
+    });
+
+    Json(json!({"message": "Backfill triggered", "start": start, "end": end, "intervals_queued": total})).into_response()
 }
 
 async fn get_backfill_progress(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -874,8 +942,25 @@ async fn get_backfill_progress(Path(id): Path<String>, State(state): State<Arc<A
 async fn swarm_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"enabled": state.swarm.enabled, "active_workers": state.swarm.active_worker_count().await, "queue_depth": state.swarm.queue_depth().await}))
 }
-async fn swarm_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({"workers": state.swarm.get_workers_info().await}))
+async fn swarm_workers(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(50).min(500) as usize;
+    let offset = params.offset.unwrap_or(0) as usize;
+
+    let workers = state.swarm.get_workers_info().await;
+    let total = workers.len();
+    
+    // In-memory pagination since swarm workers are kept in memory map.
+    let end = (offset + limit).min(total);
+    let paged = if offset < total {
+        workers[offset..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Json(PaginatedResponse { data: paged, total: total as i64, limit: limit as i64, offset: offset as i64 })
 }
 async fn swarm_drain_worker(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.swarm.drain_worker(&id).await; Json(json!({"message": "Draining"}))
@@ -938,9 +1023,16 @@ async fn xcom_pull_handler(State(state): State<Arc<AppState>>, Query(params): Qu
     }
 }
 
-async fn xcom_list_handler(State(state): State<Arc<AppState>>, Path((dag_id, run_id)): Path<(String, String)>) -> Response {
-    match state.xcom.xcom_pull_all(&dag_id, &run_id).await {
-        Ok(entries) => Json(json!(entries)).into_response(),
+async fn xcom_list_handler(
+    State(state): State<Arc<AppState>>,
+    Path((dag_id, run_id)): Path<(String, String)>,
+    Query(params): Query<PaginationQuery>,
+) -> Response {
+    let limit = params.limit.unwrap_or(50).min(500);
+    let offset = params.offset.unwrap_or(0);
+
+    match state.xcom.xcom_pull_all(&dag_id, &run_id, limit, offset).await {
+        Ok((entries, total)) => Json(PaginatedResponse { data: entries, total, limit, offset }).into_response(),
         Err(e) => {
             let msg = e.to_string();
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": msg}))).into_response()
@@ -1120,9 +1212,9 @@ async fn calendar_handler(
     let now = Utc::now();
     let end = now + Duration::days(days);
 
-    // Gather all DAGs from DB
-    let dags = match state.db.get_all_dags().await {
-        Ok(d) => d,
+    // Gather all DAGs from DB (assuming internal system queries max 1000 for this view)
+    let dags = match state.db.get_all_dags(1000, 0).await {
+        Ok((d, _)) => d,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     };
 
@@ -1154,7 +1246,7 @@ async fn calendar_handler(
     // Past completed runs from DB
     for dag in &dags {
         let dag_id = match dag["id"].as_str() { Some(s) => s, None => continue };
-        if let Ok(runs) = state.db.get_dag_runs(dag_id).await {
+        if let Ok((runs, _)) = state.db.get_dag_runs(dag_id, 100, 0).await {
             for run in runs {
                 if let Some(exec_date) = run["execution_date"].as_str() {
                     events.push(json!({
@@ -1291,7 +1383,17 @@ async fn assign_user_team_handler(
     if auth_user.role != "Admin" {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can manage teams"}))).into_response();
     }
-    // Id in path should match the body team_id or be 'unassign'
+
+    // ARCH-7 FIX: Validate that the path :id matches body.team_id so callers can't
+    // silently assign a user to a different team than the URL implies.
+    if let Some(ref body_team) = body.team_id {
+        if body_team != "unassign" && body_team != &id {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": format!("Path team id '{}' does not match body team_id '{}'", id, body_team)
+            }))).into_response();
+        }
+    }
+
     let target_team = if body.team_id.as_deref() == Some("unassign") { None } else { body.team_id.as_deref() };
     match state.db.assign_user_to_team(&username, target_team).await {
         Ok(()) => {

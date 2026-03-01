@@ -21,8 +21,8 @@ pub trait DatabaseBackend: Send + Sync {
     /// Register a full DAG (upsert DAG + sync tasks).
     async fn register_dag(&self, dag: &crate::scheduler::Dag) -> Result<()>;
 
-    /// Return all DAGs as JSON objects.
-    async fn get_all_dags(&self) -> Result<Vec<serde_json::Value>>;
+    /// Return a paginated list of all DAGs as JSON objects, along with the total count.
+    async fn get_all_dags(&self, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)>;
 
     /// Return a single DAG by its ID.
     async fn get_dag_by_id(&self, dag_id: &str) -> Result<Option<serde_json::Value>>;
@@ -108,8 +108,8 @@ pub trait DatabaseBackend: Send + Sync {
     /// Update the state of a task instance (also sets start/end timestamps).
     async fn update_task_state(&self, id: &str, state: &str) -> Result<()>;
 
-    /// Return all task instances for a DAG as JSON objects.
-    async fn get_task_instances(&self, dag_id: &str) -> Result<Vec<serde_json::Value>>;
+    /// Return a paginated list of task instances for a specific DAG, and the total count.
+    async fn get_task_instances(&self, dag_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)>;
 
     /// Return (dag_id, task_id, execution_date) for a single task instance.
     async fn get_task_instance(
@@ -145,7 +145,23 @@ pub trait DatabaseBackend: Send + Sync {
         ti_id: &str,
     ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>>;
 
-    /// Mark a task instance as Running and bind it to a worker.
+    // ── Task Events ──────────────────────────────────────────────────────────
+
+    /// Log a state transition or significant event for a task instance.
+    async fn log_task_event(
+        &self,
+        ti_id: &str,
+        dag_id: &str,
+        task_id: &str,
+        run_id: &str,
+        event: &str,
+        message: Option<&str>,
+        worker_id: Option<&str>,
+    ) -> Result<()>;
+
+    /// Retrieve the event log for a specific task instance.
+    async fn get_task_events(&self, ti_id: &str) -> Result<Vec<serde_json::Value>>;
+
     async fn assign_task_to_worker(&self, ti_id: &str, worker_id: &str) -> Result<()>;
 
     // ── DAG run operations ────────────────────────────────────────────────────
@@ -162,8 +178,11 @@ pub trait DatabaseBackend: Send + Sync {
     /// Transition a DAG run to a new state (also sets start/end timestamps).
     async fn update_dag_run_state(&self, id: &str, state: &str) -> Result<()>;
 
-    /// Return the most-recent 100 DAG runs for a DAG, newest first.
-    async fn get_dag_runs(&self, dag_id: &str) -> Result<Vec<serde_json::Value>>;
+    /// Return the most-recent DAG runs for a DAG, newest first.
+    async fn get_dag_runs(&self, dag_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)>;
+
+    /// Set the SLA breached flag for a DAG run.
+    async fn mark_sla_missed(&self, run_id: &str) -> Result<()>;
 
     // ── User management ───────────────────────────────────────────────────────
 
@@ -255,7 +274,7 @@ pub trait DatabaseBackend: Send + Sync {
 
     async fn xcom_push(&self, dag_id: &str, task_id: &str, run_id: &str, key: &str, value: &str) -> Result<()>;
     async fn xcom_pull(&self, dag_id: &str, task_id: &str, run_id: &str, key: &str) -> Result<Option<String>>;
-    async fn xcom_pull_all(&self, dag_id: &str, run_id: &str) -> Result<Vec<serde_json::Value>>;
+    async fn xcom_pull_all(&self, dag_id: &str, run_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)>;
 
     // ── Task Pool operations ──────────────────────────────────────────────────
 
@@ -264,6 +283,10 @@ pub trait DatabaseBackend: Send + Sync {
     async fn create_pool(&self, name: &str, slots: i32, description: &str) -> Result<()>;
     async fn update_pool(&self, name: &str, slots: i32, description: &str) -> Result<()>;
     async fn delete_pool(&self, name: &str) -> Result<()>;
+    /// Insert a row into pool_slots claiming one slot for `task_instance_id`.
+    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
+    /// Delete the row in pool_slots for `task_instance_id`, freeing its slot.
+    async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
 
     // ── Callback / Webhook operations ─────────────────────────────────────────
 
@@ -325,4 +348,12 @@ pub trait DatabaseBackend: Send + Sync {
     
     async fn assign_user_to_team(&self, username: &str, team_id: Option<&str>) -> Result<()>;
 
+    // ── High Availability (HA) Advisory Locks ─────────────────────────────────
+
+    /// Try to acquire the global advisory lock for the leader controller.
+    /// Returns true if lock was successfully acquired, false if it is held by another process.
+    async fn try_acquire_leader_lock(&self) -> Result<bool>;
+
+    /// Release the global advisory lock (e.g. on graceful shutdown).
+    async fn release_leader_lock(&self) -> Result<()>;
 }

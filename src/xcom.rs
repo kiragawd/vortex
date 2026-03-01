@@ -8,29 +8,6 @@ use crate::db_trait::DatabaseBackend;
 /// Maximum allowed size for an XCom value (64KB).
 pub const XCOM_MAX_VALUE_BYTES: usize = 65536;
 
-/// DDL for the XCom table. Called by `db.rs` during `init()`.
-pub const XCOM_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS task_xcom (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    dag_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    UNIQUE(dag_id, task_id, run_id, key)
-)";
-
-/// A single XCom entry — one key/value pair produced by a task during a run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct XComEntry {
-    pub dag_id: String,
-    pub task_id: String,
-    pub run_id: String,
-    pub key: String,
-    pub value: String,
-    pub timestamp: String,
-}
-
 /// XComStore provides inter-task data passing backed by the VORTEX database.
 pub struct XComStore {
     db: Arc<dyn DatabaseBackend>,
@@ -110,14 +87,14 @@ impl XComStore {
     /// Pull all XCom entries for a given dag run.
     ///
     /// Useful for surfacing all inter-task outputs in the UI or for auditing.
-    pub async fn xcom_pull_all(&self, dag_id: &str, run_id: &str) -> Result<Vec<serde_json::Value>> {
-        let entries = self.db.xcom_pull_all(dag_id, run_id).await?;
+    pub async fn xcom_pull_all(&self, dag_id: &str, run_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
+        let (entries, total) = self.db.xcom_pull_all(dag_id, run_id, limit, offset).await?;
         info!(
             dag_id = dag_id,
             run_id = run_id,
             count = entries.len(),
             "XCom pull_all complete"
         );
-        Ok(entries)
+        Ok((entries, total))
     }
 }

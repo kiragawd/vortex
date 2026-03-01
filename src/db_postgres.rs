@@ -46,6 +46,28 @@ impl PostgresDb {
             .await
             .context("Failed to run PostgreSQL migrations")?;
 
+        // ── Sprint 2: Create task_events table if no migration exists yet ───────
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS task_events (
+                id          BIGSERIAL PRIMARY KEY,
+                ti_id       TEXT NOT NULL,
+                dag_id      TEXT NOT NULL,
+                task_id     TEXT NOT NULL,
+                run_id      TEXT NOT NULL,
+                event       TEXT NOT NULL,
+                message     TEXT,
+                worker_id   TEXT,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );"
+        ).execute(&self.pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_events_run ON task_events(run_id);")
+            .execute(&self.pool).await?;
+
+        // ── Sprint 3: Add sla_missed to dag_runs ─────────────────────────────────
+        sqlx::query("ALTER TABLE dag_runs ADD COLUMN IF NOT EXISTS sla_missed BOOLEAN NOT NULL DEFAULT FALSE;")
+            .execute(&self.pool).await?;
+
+
         // ── Seed data ─────────────────────────────────────────────────────────
 
         // Seed default pool (idempotent)
@@ -165,17 +187,24 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
-    async fn get_all_dags(&self) -> Result<Vec<serde_json::Value>> {
+    async fn get_all_dags(&self, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
         let rows = sqlx::query(
             "SELECT id, created_at, schedule_interval, last_run, is_paused, timezone,
-                    max_active_runs, catchup, next_run, is_dynamic
-             FROM dags",
+                    max_active_runs, catchup, next_run, is_dynamic,
+                    COUNT(*) OVER() as total_count
+             FROM dags
+             ORDER BY created_at DESC
+             LIMIT $1 OFFSET $2",
         )
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .context("get_all_dags")?;
 
         use sqlx::Row;
+        let total = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        
         let dags = rows
             .iter()
             .map(|r| {
@@ -193,7 +222,7 @@ impl DatabaseBackend for PostgresDb {
                 })
             })
             .collect();
-        Ok(dags)
+        Ok((dags, total))
     }
 
     async fn get_dag_by_id(&self, dag_id: &str) -> Result<Option<serde_json::Value>> {
@@ -517,18 +546,25 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
-    async fn get_task_instances(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
+    async fn get_task_instances(&self, dag_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
         let rows = sqlx::query(
             "SELECT id, task_id, state, execution_date, start_time, end_time,
-                    stdout, stderr, duration_ms, retry_count, run_id
-             FROM task_instances WHERE dag_id = $1",
+                    stdout, stderr, duration_ms, retry_count, run_id,
+                    COUNT(*) OVER() as total_count
+             FROM task_instances WHERE dag_id = $1
+             ORDER BY execution_date DESC, start_time DESC NULLS LAST
+             LIMIT $2 OFFSET $3",
         )
         .bind(dag_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .context("get_task_instances")?;
 
         use sqlx::Row;
+        let total = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        
         let instances = rows
             .iter()
             .map(|r| {
@@ -547,7 +583,7 @@ impl DatabaseBackend for PostgresDb {
                 })
             })
             .collect();
-        Ok(instances)
+        Ok((instances, total))
     }
 
     async fn get_task_instance(
@@ -570,6 +606,58 @@ impl DatabaseBackend for PostgresDb {
                 r.get::<DateTime<Utc>, _>("execution_date"),
             )
         }))
+    }
+
+
+    // ── Task Events ──────────────────────────────────────────────────────────
+
+    async fn log_task_event(
+        &self,
+        ti_id: &str,
+        dag_id: &str,
+        task_id: &str,
+        run_id: &str,
+        event: &str,
+        message: Option<&str>,
+        worker_id: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO task_events (ti_id, dag_id, task_id, run_id, event, message, worker_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        )
+        .bind(ti_id)
+        .bind(dag_id)
+        .bind(task_id)
+        .bind(run_id)
+        .bind(event)
+        .bind(message)
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await
+        .context("log_task_event")?;
+        Ok(())
+    }
+
+    async fn get_task_events(&self, ti_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            "SELECT id, event, message, worker_id, created_at
+             FROM task_events WHERE ti_id = $1 ORDER BY created_at ASC"
+        )
+        .bind(ti_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_task_events")?;
+
+        use sqlx::Row;
+        Ok(rows.iter().map(|r| {
+            serde_json::json!({
+                "id": r.get::<i64, _>("id"),
+                "event": r.get::<String, _>("event"),
+                "message": r.get::<Option<String>, _>("message"),
+                "worker_id": r.get::<Option<String>, _>("worker_id"),
+                "created_at": r.get::<DateTime<Utc>, _>("created_at"),
+            })
+        }).collect())
     }
 
     async fn get_interrupted_tasks(&self) -> Result<Vec<(String, String, String)>> {
@@ -778,20 +866,25 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
-    async fn get_dag_runs(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
+    async fn get_dag_runs(&self, dag_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
         let rows = sqlx::query(
-            "SELECT id, dag_id, state, execution_date, start_time, end_time, triggered_by
+            "SELECT id, dag_id, state, execution_date, start_time, end_time, triggered_by, sla_missed,
+                    COUNT(*) OVER() as total_count
              FROM dag_runs
              WHERE dag_id = $1
              ORDER BY execution_date DESC
-             LIMIT 100",
+             LIMIT $2 OFFSET $3",
         )
         .bind(dag_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .context("get_dag_runs")?;
 
         use sqlx::Row;
+        let total = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        
         let runs = rows
             .iter()
             .map(|r| {
@@ -803,10 +896,20 @@ impl DatabaseBackend for PostgresDb {
                     "start_time":     r.get::<Option<DateTime<Utc>>, _>("start_time"),
                     "end_time":       r.get::<Option<DateTime<Utc>>, _>("end_time"),
                     "triggered_by":   r.get::<String, _>("triggered_by"),
+                    "sla_missed":     r.try_get::<bool, _>("sla_missed").unwrap_or(false),
                 })
             })
             .collect();
-        Ok(runs)
+        Ok((runs, total))
+    }
+
+    async fn mark_sla_missed(&self, run_id: &str) -> Result<()> {
+        sqlx::query("UPDATE dag_runs SET sla_missed = TRUE WHERE id = $1")
+            .bind(run_id)
+            .execute(&self.pool)
+            .await
+            .context("mark_sla_missed")?;
+        Ok(())
     }
 
     // ── User management ───────────────────────────────────────────────────────
@@ -1209,18 +1312,22 @@ impl DatabaseBackend for PostgresDb {
             .bind(dag_id).bind(task_id).bind(run_id).bind(key).fetch_optional(&self.pool).await.context("xcom_pull")
     }
 
-    async fn xcom_pull_all(&self, dag_id: &str, run_id: &str) -> Result<Vec<serde_json::Value>> {
-        let rows = sqlx::query("SELECT dag_id, task_id, run_id, key, value, timestamp FROM task_xcom WHERE dag_id=$1 AND run_id=$2")
-            .bind(dag_id).bind(run_id).fetch_all(&self.pool).await.context("xcom_pull_all")?;
+    async fn xcom_pull_all(&self, dag_id: &str, run_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
+        let rows = sqlx::query("SELECT dag_id, task_id, run_id, key, value, timestamp, COUNT(*) OVER() as total_count FROM task_xcom WHERE dag_id=$1 AND run_id=$2 ORDER BY timestamp ASC LIMIT $3 OFFSET $4")
+            .bind(dag_id).bind(run_id).bind(limit).bind(offset).fetch_all(&self.pool).await.context("xcom_pull_all")?;
+        
         use sqlx::Row;
-        Ok(rows.iter().map(|r| serde_json::json!({
+        let total = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        
+        let data = rows.iter().map(|r| serde_json::json!({
             "dag_id": r.get::<String, _>(0),
             "task_id": r.get::<String, _>(1),
             "run_id": r.get::<String, _>(2),
             "key": r.get::<String, _>(3),
             "value": r.get::<String, _>(4),
             "timestamp": r.get::<String, _>(5)
-        })).collect())
+        })).collect();
+        Ok((data, total))
     }
 
     // ── Task Pool operations ──────────────────────────────────────────────────
@@ -1266,7 +1373,33 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
-    // ── Callback / Webhook operations ─────────────────────────────────────────
+    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO pool_slots (pool_name, task_instance_id, acquired_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
+        )
+        .bind(pool_name)
+        .bind(task_instance_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .context("acquire_pool_slot")?;
+        Ok(())
+    }
+
+    async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM pool_slots WHERE pool_name = $1 AND task_instance_id = $2"
+        )
+        .bind(pool_name)
+        .bind(task_instance_id)
+        .execute(&self.pool)
+        .await
+        .context("release_pool_slot")?;
+        Ok(())
+    }
+
 
     async fn get_callbacks(&self, dag_id: &str) -> Result<Option<serde_json::Value>> {
         let row: Option<String> = sqlx::query_scalar("SELECT config FROM dag_callbacks WHERE dag_id=$1").bind(dag_id).fetch_optional(&self.pool).await.context("get_callbacks")?;
@@ -1516,6 +1649,26 @@ impl DatabaseBackend for PostgresDb {
             .execute(&self.pool)
             .await
             .context("assign_user_to_team")?;
+        Ok(())
+    }
+
+    // ── High Availability (HA) Advisory Locks ─────────────────────────────────
+
+    async fn try_acquire_leader_lock(&self) -> Result<bool> {
+        // 123456789 is the arbitrary 64-bit key used exclusively for the VORTEX HA controller lock.
+        let result: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock(123456789)")
+            .fetch_one(&self.pool)
+            .await
+            .context("try_acquire_leader_lock")?;
+        Ok(result.0)
+    }
+
+    async fn release_leader_lock(&self) -> Result<()> {
+        // Safely releases the advisory lock. Returns true if successfully released.
+        let _result: (bool,) = sqlx::query_as("SELECT pg_advisory_unlock(123456789)")
+            .fetch_one(&self.pool)
+            .await
+            .context("release_leader_lock")?;
         Ok(())
     }
 }

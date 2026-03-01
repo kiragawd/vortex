@@ -1,0 +1,103 @@
+2026-03-01T11:23:10.236338Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T11:23:10.236455Z  WARN vortex: ⚠️ Secret Vault DISABLED: VORTEX_SECRET_KEY environment variable not set. Pillar 3 requires a 32-byte key.. Secrets will not be available.
+2026-03-01T11:23:10.236492Z  INFO vortex: 🗄️ Initializing SQLite backend (vortex.db)...
+2026-03-01T11:23:10.241323Z  INFO vortex: ✅ Database initialized.
+2026-03-01T11:23:10.241921Z  INFO vortex: 📊 Prometheus metrics initialized (GET /metrics)
+2026-03-01T11:23:10.245878Z  INFO vortex: 🔌 Loaded plugin 'libdummy_plugin' from "plugins/libdummy_plugin.dylib"
+2026-03-01T11:23:10.245968Z  INFO vortex: 🛠️ Registering core DAG: parallel_benchmark
+2026-03-01T11:23:10.246044Z  INFO vortex: 🐍 Loading DAG file: dags/dynamic_mock.py
+2026-03-01T11:23:10.282972Z  INFO vortex: ✅ Loaded DAG: dynamic_loops
+2026-03-01T11:23:10.283903Z  INFO vortex: 🐍 Loading DAG file: dags/airflow_compat_example.py
+2026-03-01T11:23:10.284846Z  INFO vortex: ✅ Loaded DAG: airflow_compat_example
+2026-03-01T11:23:10.285295Z  INFO vortex: 🐍 Loading DAG file: dags/integration_test_dag.py
+2026-03-01T11:23:10.287065Z  INFO vortex: ✅ Loaded DAG: integration_test_dag
+2026-03-01T11:23:10.287489Z  INFO vortex: 🐍 Loading DAG file: dags/parallel_benchmark.py
+2026-03-01T11:23:10.287824Z  INFO vortex: ✅ Loaded DAG: parallel_benchmark
+2026-03-01T11:23:10.288241Z  INFO vortex: 🐍 Loading DAG file: dags/complex_100_job_dag.py
+2026-03-01T11:23:10.299008Z  INFO vortex: ✅ Loaded DAG: complex_100_job_dag
+2026-03-01T11:23:10.299539Z  INFO vortex: 🐍 Loading DAG file: dags/test_schedule.py
+2026-03-01T11:23:10.300017Z  INFO vortex: ✅ Loaded DAG: scheduled_test
+2026-03-01T11:23:10.300401Z  INFO vortex: 🐍 Loading DAG file: dags/example_dag.py
+2026-03-01T11:23:10.300755Z  INFO vortex: ✅ Loaded DAG: example_python_dag
+2026-03-01T11:23:10.301171Z  INFO vortex: 🐍 Loading DAG file: dags/stress_test.py
+2026-03-01T11:23:10.312128Z  INFO vortex: ✅ Loaded DAG: stress_test_dag
+2026-03-01T11:23:10.322466Z  INFO vortex: ✅ Loaded DAGs.
+2026-03-01T11:23:10.322633Z  INFO vortex: 🌀 Scheduler loop started.
+2026-03-01T11:23:10.322715Z  INFO vortex: ⏰ Cron scheduler loop started (checking every 60s)
+2026-03-01T11:23:10.324268Z  INFO vortex::web: 🌐 Web UI running on http://localhost:3000
+2026-03-01T11:26:19.862160Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T11:26:19.862299Z  WARN vortex: ⚠️ Secret Vault DISABLED: VORTEX_SECRET_KEY environment variable not set. Pillar 3 requires a 32-byte key.. Secrets will not be available.
+2026-03-01T11:26:19.862331Z  INFO vortex: 🗄️ Initializing SQLite backend (vortex.db)...
+2026-03-01T11:26:19.868690Z  INFO vortex: ✅ Database initialized.
+2026-03-01T11:26:19.869407Z  INFO vortex: 📊 Prometheus metrics initialized (GET /metrics)
+2026-03-01T11:26:19.871420Z  INFO vortex: 🔌 Loaded plugin 'libdummy_plugin' from "plugins/libdummy_plugin.dylib"
+2026-03-01T11:26:19.871513Z  INFO vortex: 🛠️ Registering core DAG: parallel_benchmark
+2026-03-01T11:26:19.871724Z  INFO vortex: 🐍 Loading DAG file: dags/dynamic_mock.py
+2026-03-01T11:26:19.914606Z  INFO vortex: ✅ Loaded DAG: dynamic_loops
+2026-03-01T11:26:19.915932Z  INFO vortex: 🐍 Loading DAG file: dags/airflow_compat_example.py
+2026-03-01T11:26:19.916778Z  INFO vortex: ✅ Loaded DAG: airflow_compat_example
+2026-03-01T11:26:19.917469Z  INFO vortex: 🐍 Loading DAG file: dags/integration_test_dag.py
+2026-03-01T11:26:19.919602Z  INFO vortex: ✅ Loaded DAG: integration_test_dag
+2026-03-01T11:26:19.920067Z  INFO vortex: 🐍 Loading DAG file: dags/parallel_benchmark.py
+2026-03-01T11:26:19.920598Z  INFO vortex: ✅ Loaded DAG: parallel_benchmark
+2026-03-01T11:26:19.921071Z  INFO vortex: 🐍 Loading DAG file: dags/complex_100_job_dag.py
+2026-03-01T11:26:19.926527Z  INFO vortex: ✅ Loaded DAG: complex_100_job_dag
+2026-03-01T11:26:19.927120Z  INFO vortex: 🐍 Loading DAG file: dags/test_schedule.py
+2026-03-01T11:26:19.927457Z  INFO vortex: ✅ Loaded DAG: scheduled_test
+2026-03-01T11:26:19.928132Z  INFO vortex: 🐍 Loading DAG file: dags/example_dag.py
+2026-03-01T11:26:19.928473Z  INFO vortex: ✅ Loaded DAG: example_python_dag
+2026-03-01T11:26:19.928931Z  INFO vortex: 🐍 Loading DAG file: dags/stress_test.py
+2026-03-01T11:26:19.939107Z  INFO vortex: ✅ Loaded DAG: stress_test_dag
+2026-03-01T11:26:19.950555Z  INFO vortex: ✅ Loaded DAGs.
+2026-03-01T11:26:19.950738Z  INFO vortex: 🌀 Scheduler loop started.
+2026-03-01T11:26:19.950817Z  INFO vortex: ⏰ Cron scheduler loop started (checking every 60s)
+2026-03-01T11:26:19.952402Z  INFO vortex::web: 🌐 Web UI running on http://localhost:3000
+2026-03-01T11:28:12.986772Z  INFO request{[3mrequest_id[0m[2m=[0mdb108306-a9fd-41f7-b250-7d18c346f1bf [3mmethod[0m[2m=[0mPOST [3mpath[0m[2m=[0m/api/login}: vortex::web: 🔑 User logged in: admin (Role: Admin)
+2026-03-01T11:30:19.978036Z  INFO vortex: ⏰ Cron triggering DAG: scheduled_test (schedule: */10 * * * * *)
+2026-03-01T11:30:19.983965Z  INFO vortex::scheduler: 🚀 Starting DAG (VORTEX Parallel Mode): scheduled_test
+2026-03-01T11:30:20.006773Z  INFO vortex::scheduler:   └─ SUCCESS: hello (15ms)
+2026-03-01T11:30:20.010275Z  INFO vortex::scheduler: ✅ DAG scheduled_test finished in 33ms [Success] (100x speed target: PASSED)
+2026-03-01T11:33:12.745840Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T11:33:12.745962Z  WARN vortex: ⚠️ Secret Vault DISABLED: VORTEX_SECRET_KEY environment variable not set. Pillar 3 requires a 32-byte key.. Secrets will not be available.
+2026-03-01T11:33:12.745993Z  INFO vortex: 🗄️ Initializing SQLite backend (vortex.db)...
+2026-03-01T11:33:12.752143Z  INFO vortex: ✅ Database initialized.
+2026-03-01T11:33:12.752788Z  INFO vortex: 📊 Prometheus metrics initialized (GET /metrics)
+2026-03-01T11:33:12.755559Z  INFO vortex: 🔌 Loaded plugin 'libdummy_plugin' from "plugins/libdummy_plugin.dylib"
+2026-03-01T11:33:12.755646Z  INFO vortex: 🛠️ Registering core DAG: parallel_benchmark
+2026-03-01T11:33:12.755725Z  INFO vortex: 🐍 Loading DAG file: dags/dynamic_mock.py
+2026-03-01T11:33:12.795868Z  INFO vortex: ✅ Loaded DAG: dynamic_loops
+2026-03-01T11:33:12.796819Z  INFO vortex: 🐍 Loading DAG file: dags/airflow_compat_example.py
+2026-03-01T11:33:12.797742Z  INFO vortex: ✅ Loaded DAG: airflow_compat_example
+2026-03-01T11:33:12.798224Z  INFO vortex: 🐍 Loading DAG file: dags/integration_test_dag.py
+2026-03-01T11:33:12.800469Z  INFO vortex: ✅ Loaded DAG: integration_test_dag
+2026-03-01T11:33:12.800868Z  INFO vortex: 🐍 Loading DAG file: dags/parallel_benchmark.py
+2026-03-01T11:33:12.801313Z  INFO vortex: ✅ Loaded DAG: parallel_benchmark
+2026-03-01T11:33:12.801731Z  INFO vortex: 🐍 Loading DAG file: dags/complex_100_job_dag.py
+2026-03-01T11:33:12.807418Z  INFO vortex: ✅ Loaded DAG: complex_100_job_dag
+2026-03-01T11:33:12.807901Z  INFO vortex: 🐍 Loading DAG file: dags/test_schedule.py
+2026-03-01T11:33:12.808189Z  INFO vortex: ✅ Loaded DAG: scheduled_test
+2026-03-01T11:33:12.808626Z  INFO vortex: 🐍 Loading DAG file: dags/example_dag.py
+2026-03-01T11:33:12.808938Z  INFO vortex: ✅ Loaded DAG: example_python_dag
+2026-03-01T11:33:12.809348Z  INFO vortex: 🐍 Loading DAG file: dags/stress_test.py
+2026-03-01T11:33:12.820306Z  INFO vortex: ✅ Loaded DAG: stress_test_dag
+2026-03-01T11:33:12.830418Z  INFO vortex: ✅ Loaded DAGs.
+2026-03-01T11:33:12.830599Z  INFO vortex: 🌀 Scheduler loop started.
+2026-03-01T11:33:12.830688Z  INFO vortex: ⏰ Cron scheduler loop started (checking every 60s)
+2026-03-01T11:33:12.832237Z  INFO vortex::web: 🌐 Web UI running on http://localhost:3000
+2026-03-01T11:40:12.879567Z  INFO vortex: ⏰ Cron triggering DAG: scheduled_test (schedule: */10 * * * * *)
+2026-03-01T11:40:12.887849Z  INFO vortex::scheduler: 🚀 Starting DAG (VORTEX Parallel Mode): scheduled_test
+2026-03-01T11:40:12.912239Z  INFO vortex::scheduler:   └─ SUCCESS: hello (16ms)
+2026-03-01T11:40:12.917182Z  INFO vortex::scheduler: ✅ DAG scheduled_test finished in 38ms [Success] (100x speed target: PASSED)
+2026-03-01T15:57:03.186026Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T15:57:31.833169Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T15:57:31.833387Z  INFO vortex: 🔐 Secret Vault initialized (AES-256-GCM).
+2026-03-01T15:57:31.833445Z  INFO vortex: 🗄️ Initializing PostgreSQL backend...
+2026-03-01T15:58:49.198073Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T15:58:49.198476Z  INFO vortex: 🔐 Secret Vault initialized (AES-256-GCM).
+2026-03-01T15:58:49.198568Z  INFO vortex: 🗄️ Initializing PostgreSQL backend...
+2026-03-01T15:59:52.759630Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T15:59:52.760017Z  INFO vortex: 🔐 Secret Vault initialized (AES-256-GCM).
+2026-03-01T15:59:52.760114Z  INFO vortex: 🗄️ Initializing PostgreSQL backend...
+2026-03-01T16:00:19.979589Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T16:00:19.980000Z  INFO vortex: 🔐 Secret Vault initialized (AES-256-GCM).
+2026-03-01T16:00:19.980101Z  INFO vortex: 🗄️ Initializing PostgreSQL backend...

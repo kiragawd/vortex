@@ -1,166 +1,205 @@
-/// Pillar 4: Database Tests
-/// Tests schema creation, migrations, transaction isolation, and data integrity
+/// Database Integration Tests — PostgreSQL backend
+///
+/// These tests require a real PostgreSQL connection via the `DATABASE_URL`
+/// environment variable. They are skipped (compile but do nothing) if
+/// `DATABASE_URL` is not set.
+///
+/// Run with:
+///   DATABASE_URL=postgres://user:pass@localhost/vortex_test cargo test db_tests
 
 #[cfg(test)]
 mod db_tests {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use chrono::Utc;
     use anyhow::Result;
 
-    fn get_test_db_path(test_name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("vortex_test_{}.db", test_name));
-        // Clean up any previous test runs
-        let _ = std::fs::remove_file(&path);
-        path
+    /// Helper: attempt to build a PostgresDb from `DATABASE_URL`.
+    /// Returns None if `DATABASE_URL` is not set, allowing tests to be skipped
+    /// gracefully in CI environments without a live database.
+    async fn try_postgres_db() -> Option<std::sync::Arc<vortex::db_postgres::PostgresDb>> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let db = vortex::db_postgres::PostgresDb::new(
+            &url, 2, 1, std::time::Duration::from_secs(30),
+        )
+        .await
+        .ok()?;
+        Some(std::sync::Arc::new(db))
     }
 
-    /// Test 1: Database Initialization
-    /// Verify all tables are created with correct schema
+    /// Test 1: Database Initialization — all tables created, migrations applied.
     #[tokio::test]
     async fn test_db_initialization() -> Result<()> {
-        let db_path = get_test_db_path("db_init");
-        
-        // This would be vortex::db::Db::init(&db_path)?;
-        // For now, verify the path structure
-        assert!(db_path.to_string_lossy().contains("vortex_test_db_init.db"));
-        
-        // In real test, verify:
-        // - dags table exists
-        // - workers table exists
-        // - task_instances table exists
-        // - secrets table exists
-        // - All columns present with correct types
-        
-        let _ = std::fs::remove_file(&db_path);
+        let Some(_db) = try_postgres_db().await else {
+            eprintln!("SKIP test_db_initialization — DATABASE_URL not set");
+            return Ok(());
+        };
+        // If PostgresDb::new() succeeded, migrations have been applied.
+        // A real assertion: query pg_tables to verify core tables exist.
         Ok(())
     }
 
-    /// Test 2: Workers Table Operations
-    /// Verify CRUD operations on workers table
-    #[test]
-    fn test_workers_table_operations() {
-        // Test structure:
-        // - INSERT worker record
-        // - SELECT worker by ID
-        // - UPDATE worker heartbeat
-        // - UPDATE worker state (Active → Offline)
-        // - DELETE worker
-        // - Verify state transitions
-        
-        let _worker_id = "test-worker-001";
-        let _hostname = "test-host";
-        let _capacity = 4;
-        
-        // Would call: db.upsert_worker(worker_id, hostname, capacity, "label1,label2")
-        // Then verify in DB
-    }
-
-    /// Test 3: Task Instances Table
-    /// Verify task state transitions are persisted
-    #[test]
-    fn test_task_instance_state_transitions() {
-        // Test state machine persistence:
-        // Queued → Running → Completed/Failed
-        
-        // INSERT task_instance with state='Queued'
-        // UPDATE to state='Running' when worker picks it up
-        // UPDATE to state='Completed' or 'Failed' on completion
-        
-        // Verify:
-        // - State changes persisted
-        // - Timestamps updated (start_time, end_time)
-        // - worker_id assigned when Running
-    }
-
-    /// Test 4: Foreign Key Constraints
-    /// Verify referential integrity
-    #[test]
-    fn test_foreign_key_constraints() {
-        // Setup:
-        // - Create DAG
-        // - Create Task referencing DAG
-        // - Create TaskInstance referencing Task & DAG
-        // - Try to delete DAG → should fail (has dependent tasks)
-        // - Delete all task_instances → delete tasks → then DAG succeeds
-    }
-
-    /// Test 5: Secrets Table Operations
-    /// Verify secret CRUD operations
-    #[test]
-    fn test_secrets_table_crud() {
-        // CREATE: store_secret("api_key", "encrypted_value")
-        // READ: get_secret("api_key") → "encrypted_value"
-        // UPDATE: store_secret("api_key", "new_encrypted_value")
-        // LIST: get_all_secrets() → ["api_key", "db_password", ...]
-        // DELETE: delete_secret("api_key")
-        
-        // Verify:
-        // - Updated_at timestamp changes on update
-        // - Deletes cascade correctly
-    }
-
-    /// Test 6: Transaction Isolation
-    /// Verify concurrent writes don't conflict
+    /// Test 2: Worker CRUD operations.
     #[tokio::test]
-    async fn test_transaction_isolation() -> Result<()> {
-        // Spawn 5 concurrent tasks:
-        // - Task1: Increment worker active_tasks from 0 → 5
-        // - Task2: Insert task_instances
-        // - Task3: Update task states
-        // - Task4: Query counts
-        // - Task5: Read back values
-        
-        // Verify:
-        // - All writes succeeded
-        // - No data loss
-        // - Final state is consistent (5 active tasks, etc.)
-        
+    async fn test_workers_table_operations() -> Result<()> {
+        let Some(db) = try_postgres_db().await else {
+            eprintln!("SKIP test_workers_table_operations — DATABASE_URL not set");
+            return Ok(());
+        };
+        use vortex::db_trait::DatabaseBackend;
+        let id = format!("test-worker-{}", uuid::Uuid::new_v4());
+        db.upsert_worker(&id, "test-host", 4, "test").await?;
+        db.update_worker_heartbeat(&id, 0).await?;
         Ok(())
     }
 
-    /// Test 7: Data Integrity - NULL Handling
-    /// Verify required fields cannot be NULL
-    #[test]
-    fn test_required_fields_not_null() {
-        // Verify these fields are NOT NULL:
-        // - dags.id, dags.created_at
-        // - workers.id, workers.hostname, workers.capacity, workers.last_heartbeat, workers.state
-        // - task_instances.id, task_instances.dag_id, task_instances.task_id, task_instances.state
-        // - secrets.key, secrets.value, secrets.updated_at
-        
-        // Try to INSERT with NULLs → should fail
-    }
-
-    /// Test 8: Query Performance - Large Result Sets
-    /// Verify queries handle 1000+ rows efficiently
+    /// Test 3: Task state transitions.
     #[tokio::test]
-    async fn test_large_result_sets() -> Result<()> {
-        // INSERT 1000 task_instances
-        // Query get_task_instances() → verify all 1000 returned
-        // Verify query completes in <1s
-        
+    async fn test_task_instance_state_transitions() -> Result<()> {
+        let Some(db) = try_postgres_db().await else {
+            eprintln!("SKIP test_task_instance_state_transitions — DATABASE_URL not set");
+            return Ok(());
+        };
+        use vortex::db_trait::DatabaseBackend;
+        let dag_id = format!("test-dag-{}", uuid::Uuid::new_v4());
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let ti_id  = uuid::Uuid::new_v4().to_string();
+
+        db.save_dag(&dag_id, None).await?;
+        db.create_dag_run(&run_id, &dag_id, chrono::Utc::now(), "test").await?;
+        db.create_task_instance(&ti_id, &dag_id, "task-a", "Queued", chrono::Utc::now(), &run_id).await?;
+        db.update_task_state(&ti_id, "Running").await?;
+        db.update_task_state(&ti_id, "Success").await?;
         Ok(())
     }
 
-    /// Test 9: Duplicate Key Handling
-    /// Verify PRIMARY KEY and UNIQUE constraints
-    #[test]
-    fn test_duplicate_key_constraints() {
-        // Try to INSERT same worker_id twice → second fails
-        // Try to INSERT same secret.key twice → uses OR REPLACE
-        // Verify semantics match schema intent
+    /// Test 4: Secret CRUD operations.
+    #[tokio::test]
+    async fn test_secrets_table_crud() -> Result<()> {
+        let Some(db) = try_postgres_db().await else {
+            eprintln!("SKIP test_secrets_table_crud — DATABASE_URL not set");
+            return Ok(());
+        };
+        use vortex::db_trait::DatabaseBackend;
+        let key = format!("test-secret-{}", uuid::Uuid::new_v4());
+        db.store_secret(&key, "encrypted_val").await?;
+        let val = db.get_secret(&key).await?;
+        assert_eq!(val.as_deref(), Some("encrypted_val"));
+        db.delete_secret(&key).await?;
+        let gone = db.get_secret(&key).await?;
+        assert!(gone.is_none());
+        Ok(())
     }
 
-    /// Test 10: Schema Versioning/Migrations
-    /// Verify schema column additions work correctly
-    #[test]
-    fn test_schema_migrations() {
-        // Test that:
-        // - Old code can read new schema (backward compat)
-        // - ALTER TABLE ADD COLUMN works
-        // - Default values are applied
-        // - Existing data not corrupted
+    /// Test 5: XCom push / pull.
+    #[tokio::test]
+    async fn test_xcom_push_pull() -> Result<()> {
+        let Some(db) = try_postgres_db().await else {
+            eprintln!("SKIP test_xcom_push_pull — DATABASE_URL not set");
+            return Ok(());
+        };
+        use vortex::db_trait::DatabaseBackend;
+        let dag_id = format!("xcom-dag-{}", uuid::Uuid::new_v4());
+        let run_id = uuid::Uuid::new_v4().to_string();
+        db.save_dag(&dag_id, None).await?;
+        db.create_dag_run(&run_id, &dag_id, chrono::Utc::now(), "test").await?;
+        db.xcom_push(&dag_id, "task-a", &run_id, "result", "hello").await?;
+        let pulled = db.xcom_pull(&dag_id, "task-a", &run_id, "result").await?;
+        assert_eq!(pulled.as_deref(), Some("hello"));
+        
+        let (all_xcoms, count) = db.xcom_pull_all(&dag_id, &run_id, 10, 0).await?;
+        assert_eq!(count, 1);
+        assert_eq!(all_xcoms.len(), 1);
+        Ok(())
+    }
+
+    /// Test 6: Task Event Logs.
+    #[tokio::test]
+    async fn test_task_event_logs() -> Result<()> {
+        let Some(db) = try_postgres_db().await else {
+            eprintln!("SKIP test_task_event_logs — DATABASE_URL not set");
+            return Ok(());
+        };
+        use vortex::db_trait::DatabaseBackend;
+        let dag_id = format!("test-dag-{}", uuid::Uuid::new_v4());
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let ti_id  = uuid::Uuid::new_v4().to_string();
+
+        db.save_dag(&dag_id, None).await?;
+        db.create_dag_run(&run_id, &dag_id, chrono::Utc::now(), "test").await?;
+        db.create_task_instance(&ti_id, &dag_id, "task-a", "Queued", chrono::Utc::now(), &run_id).await?;
+        
+        db.log_task_event(&ti_id, &dag_id, "task-a", &run_id, "queued", None, None).await?;
+        db.log_task_event(&ti_id, &dag_id, "task-a", &run_id, "started", None, Some("worker-1")).await?;
+        db.update_task_state(&ti_id, "Running").await?;
+        db.log_task_event(&ti_id, &dag_id, "task-a", &run_id, "success", None, Some("worker-1")).await?;
+        db.update_task_state(&ti_id, "Success").await?;
+        
+        let events = db.get_task_events(&ti_id).await?;
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0]["event"], "queued");
+        assert_eq!(events[1]["event"], "started");
+        assert_eq!(events[2]["event"], "success");
+        Ok(())
+    }
+
+    /// Test 7: SLA Breach marking.
+    #[tokio::test]
+    async fn test_sla_breach() -> Result<()> {
+        let Some(db) = try_postgres_db().await else {
+            eprintln!("SKIP test_sla_breach — DATABASE_URL not set");
+            return Ok(());
+        };
+        use vortex::db_trait::DatabaseBackend;
+        let dag_id = format!("sla-dag-{}", uuid::Uuid::new_v4());
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        db.save_dag(&dag_id, None).await?;
+        db.create_dag_run(&run_id, &dag_id, chrono::Utc::now(), "test").await?;
+        
+        let (runs_before, _) = db.get_dag_runs(&dag_id, 10, 0).await?;
+        assert!(!runs_before[0]["sla_missed"].as_bool().unwrap_or(false));
+
+        db.mark_sla_missed(&run_id).await?;
+
+        let (runs_after, _) = db.get_dag_runs(&dag_id, 10, 0).await?;
+        assert!(runs_after[0]["sla_missed"].as_bool().unwrap_or(false));
+
+        Ok(())
+    }
+
+    /// Test 8: High Availability Advisory Lock
+    #[tokio::test]
+    async fn test_ha_leader_lock() -> Result<()> {
+        let Some(db1) = try_postgres_db().await else {
+            eprintln!("SKIP test_ha_leader_lock — DATABASE_URL not set");
+            return Ok(());
+        };
+        let Some(db2) = try_postgres_db().await else {
+            return Ok(());
+        };
+
+        use vortex::db_trait::DatabaseBackend;
+
+        // Clean slate - ensure lock is released if left over from a panicked test
+        let _ = db1.release_leader_lock().await;
+        let _ = db2.release_leader_lock().await;
+
+        // DB1 acquires the lock
+        let lock1 = db1.try_acquire_leader_lock().await?;
+        assert!(lock1, "DB1 should acquire the leader lock");
+
+        // DB2 tries to acquire the lock and should fail
+        let lock2 = db2.try_acquire_leader_lock().await?;
+        assert!(!lock2, "DB2 should fail to acquire the lock while DB1 holds it");
+
+        // DB1 releases the lock
+        db1.release_leader_lock().await?;
+
+        // DB2 tries again and should succeed
+        let lock2_retry = db2.try_acquire_leader_lock().await?;
+        assert!(lock2_retry, "DB2 should acquire the lock after DB1 releases it");
+
+        // Release at the end
+        db2.release_leader_lock().await?;
+
+        Ok(())
     }
 }

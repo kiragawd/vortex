@@ -35,6 +35,7 @@ pub struct Dag {
     pub max_active_runs: i32,
     pub catchup: bool,
     pub is_dynamic: bool,
+    pub sla_seconds: Option<u64>,
 }
 
 impl Dag {
@@ -49,6 +50,7 @@ impl Dag {
             max_active_runs: 1,
             catchup: false,
             is_dynamic: false,
+            sla_seconds: None,
         }
     }
 
@@ -97,6 +99,45 @@ impl Dag {
             warn!("⚠️ Warning: Self-dependency detected in DAG {}: {}", self.id, upstream);
             return;
         }
+
+        // ARCH-1 FIX: Detect cycles before committing the edge.
+        // Temporarily add (upstream → downstream) and do a DFS from `downstream`
+        // looking for `upstream`. If found, the new edge would create a cycle.
+        let would_cycle = {
+            // Build a temporary adjacency list including the new edge.
+            let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+            for (up, dn) in &self.dependencies {
+                adj.entry(up.as_str()).or_default().push(dn.as_str());
+            }
+            // Add the new edge tentatively.
+            adj.entry(upstream).or_default().push(downstream);
+
+            // DFS from `downstream` — if we ever reach `upstream`, it's a cycle.
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![downstream];
+            let mut found_cycle = false;
+            while let Some(node) = stack.pop() {
+                if node == upstream {
+                    found_cycle = true;
+                    break;
+                }
+                if visited.insert(node) {
+                    if let Some(neighbors) = adj.get(node) {
+                        stack.extend(neighbors.iter().copied());
+                    }
+                }
+            }
+            found_cycle
+        };
+
+        if would_cycle {
+            warn!(
+                "⚠️ Cycle detected in DAG {}: adding edge ({} → {}) would create a cycle — dependency ignored.",
+                self.id, upstream, downstream
+            );
+            return;
+        }
+
         self.dependencies
             .push((upstream.to_string(), downstream.to_string()));
     }
@@ -218,8 +259,8 @@ impl Scheduler {
             self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs, &task.pool, task.task_group.as_deref(), task.execution_timeout).await?;
         }
 
-        // Recovery Mode
-        self.handle_recovery().await?;
+        // BUG-7 FIX: Crash recovery runs once at startup in main.rs.
+        // Calling it here on every trigger caused duplicate DB updates and potential races.
 
         let mut in_degree = HashMap::new();
         let mut adj = HashMap::new();
@@ -281,11 +322,23 @@ impl Scheduler {
                 
                 let downstream_tasks = adj.get(&finished_task_id).unwrap();
                 for down in downstream_tasks {
-                    let mut in_degree_guard = in_degree.lock().unwrap();
-                    let degree = in_degree_guard.get_mut(down).unwrap();
-                    *degree -= 1;
+                    let degree = {
+                        let mut in_degree_guard = in_degree.lock().unwrap();
+                        let deg = in_degree_guard.get_mut(down).unwrap();
+                        *deg -= 1;
+                        *deg
+                    };
                     
-                    if *degree == 0 {
+                    if degree == 0 {
+                        // BUG-4 FIX applied to local scheduler: skip downstream tasks if upstream failed
+                        if !success {
+                            let skipped_ti = Uuid::new_v4().to_string();
+                            let _ = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await;
+                            let _ = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await;
+                            tasks_remaining -= 1;
+                            continue;
+                        }
+
                         let tx_clone = tx.clone();
                         let dag_clone = Arc::clone(&dag);
                         let db_clone = Arc::clone(&db);
@@ -306,6 +359,25 @@ impl Scheduler {
         
         if let Some(m) = &self.metrics {
             m.record_dag_run_complete(final_state);
+        }
+
+        // BUG-8 FIX: Fire configured callbacks (on_success / on_failure) for this DAG.
+        let event = if all_success { "success" } else { "failure" };
+        if let Ok(Some(callback_config)) = crate::notifications::NotificationManager::get_callbacks(&self.db, &self.dag.id).await {
+            let payload = crate::notifications::NotificationPayload::new(
+                event,
+                &self.dag.id,
+                None,
+                &dag_run_id,
+                final_state,
+                format!("DAG {} finished with state {}", self.dag.id, final_state),
+            );
+            let results = crate::notifications::fire_callbacks(&callback_config, event, &payload).await;
+            for r in results {
+                if let Err(e) = r {
+                    warn!("Notification delivery failed for DAG {}: {}", self.dag.id, e);
+                }
+            }
         }
 
         let total_duration = Utc::now() - start_time;
@@ -337,6 +409,8 @@ impl Scheduler {
         // Persist initial state
         if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, "Queued", execution_date, &run_id).await {
             error!("Failed to create task instance in DB: {}", e);
+        } else {
+            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "queued", None, None).await;
         }
 
         if let Some(m) = &metrics { m.record_task_queued(); }
@@ -346,15 +420,17 @@ impl Scheduler {
         // Update to Running
         if let Err(e) = db.update_task_state(&ti_id, "Running").await {
             error!("Failed to update task state to Running: {}", e);
+        } else {
+            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "started", None, None).await;
         }
         
         if let Some(m) = &metrics { m.record_task_start(); }
 
         // Prepare environment variables (secrets + XCom context)
-        let mut _env_vars = HashMap::new();
-        _env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
-        _env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
-        _env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
+        let mut env_vars = HashMap::new();
+        env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
+        env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
+        env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
 
         let ds = execution_date.format("%Y-%m-%d").to_string();
         let ts = execution_date.to_rfc3339();
@@ -370,7 +446,7 @@ impl Scheduler {
         // Use TaskExecutor for real execution with log capture
         let result = match task.task_type.as_str() {
             "python" => {
-                crate::executor::TaskExecutor::execute_python(&task.id, &templated_command, _env_vars, task.execution_timeout.map(|t| t as u64)).await
+                crate::executor::TaskExecutor::execute_python(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
             },
             "sensor" => {
                 // Parse sensor config and run sensor loop
@@ -433,16 +509,16 @@ impl Scheduler {
                 }
             },
             "bash" => {
-                crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, _env_vars, task.execution_timeout.map(|t| t as u64)).await
+                crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
             },
             other => {
-                let registry = crate::executor::PluginRegistry::new();
-                if let Some(plugin) = registry.get(other) {
+                // BUG-1 FIX: Use the global plugin registry, not a new empty one.
+                if let Some(plugin) = crate::executor::get_plugin(other) {
                     let ctx = crate::executor::TaskContext {
                         task_id: task.id.clone(),
                         command: templated_command.clone(),
                         config: task.config.clone(),
-                        env_vars: _env_vars,
+                        env_vars,
                     };
                     plugin.execute(&ctx).await.unwrap_or_else(|e| {
                         crate::executor::ExecutionResult {
@@ -455,7 +531,7 @@ impl Scheduler {
                         }
                     })
                 } else {
-                    crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, _env_vars, task.execution_timeout.map(|t| t as u64)).await
+                    crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
                 }
             }
         };
@@ -486,6 +562,7 @@ impl Scheduler {
         if result.success {
             info!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
             let _ = db.update_task_state(&ti_id, "Success").await;
+            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "success", None, None).await;
             if let Some(m) = &metrics { m.record_task_success(duration as f64 / 1000.0); }
         } else {
             // Check for retries
@@ -495,6 +572,8 @@ impl Scheduler {
                         task_id, retry_count + 1, task.max_retries, task.retry_delay_secs);
                     let _ = db.increment_task_retry_count(&ti_id).await;
                     let _ = db.update_task_state(&ti_id, "Queued").await;
+                    let msg = format!("Attempt {}/{} after {}s delay", retry_count + 1, task.max_retries, task.retry_delay_secs);
+                    let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "retry", Some(&msg), None).await;
                     if let Some(m) = &metrics { m.record_task_queued(); }
                     
                     // Delay and re-execute
@@ -516,6 +595,7 @@ impl Scheduler {
             
             error!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
             let _ = db.update_task_state(&ti_id, "Failed").await;
+            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "failed", Some("Error in logs"), None).await;
             if let Some(m) = &metrics { m.record_task_failure(duration as f64 / 1000.0); }
         }
 
