@@ -1,6 +1,3 @@
-#![allow(clippy::all)]
-#![allow(warnings)]
-
 use clap::{Parser, Subcommand};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
@@ -167,7 +164,7 @@ async fn main() {
                             let text = res.text().await.unwrap_or_default();
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some(dags) = json.as_array() {
-                                    use cli_table::{format::Justify, Cell, Style, Table};
+                                    use cli_table::{Cell, Style, Table};
                                     let mut table = Vec::new();
                                     for dag in dags {
                                         let id = dag["dag_id"].as_str().unwrap_or("?");
@@ -278,14 +275,38 @@ async fn main() {
             }
             DagsAction::Pause { id } => {
                 match api.post(&format!("/api/dags/{}/config", id), json!({"is_paused": true})).await {
-                    Ok(res) => { if res.status().is_success() { println!("DAG {} paused.", id); } else { eprintln!("Fail: {}", res.status()); process::exit(1); } }
-                    Err(e) => { eprintln!("Error: {}", e); process::exit(1); }
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            println!("DAG {} paused.", id);
+                        } else {
+                            eprintln!("Failed to pause DAG: {}", res.status());
+                            let txt = res.text().await.unwrap_or_default();
+                            eprintln!("Response: {}", txt);
+                            process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error connecting to server: {}", e);
+                        process::exit(1);
+                    }
                 }
             }
             DagsAction::Unpause { id } => {
                 match api.post(&format!("/api/dags/{}/config", id), json!({"is_paused": false})).await {
-                    Ok(res) => { if res.status().is_success() { println!("DAG {} unpaused.", id); } else { eprintln!("Fail: {}", res.status()); process::exit(1); } }
-                    Err(e) => { eprintln!("Error: {}", e); process::exit(1); }
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            println!("DAG {} unpaused.", id);
+                        } else {
+                            eprintln!("Failed to unpause DAG: {}", res.status());
+                            let txt = res.text().await.unwrap_or_default();
+                            eprintln!("Response: {}", txt);
+                            process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error connecting to server: {}", e);
+                        process::exit(1);
+                    }
                 }
             }
         },
@@ -297,13 +318,20 @@ async fn main() {
                             let text = res.text().await.unwrap_or_default();
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                                 println!("{}", json["logs"].as_str().unwrap_or("No logs available."));
+                            } else {
+                                println!("Invalid response format: {}", text);
                             }
                         } else {
                             eprintln!("Failed to get logs: {}", res.status());
+                            let txt = res.text().await.unwrap_or_default();
+                            eprintln!("Response: {}", txt);
                             process::exit(1);
                         }
                     }
-                    Err(e) => { eprintln!("Error: {}", e); process::exit(1); }
+                    Err(e) => {
+                        eprintln!("Error connecting to server: {}", e);
+                        process::exit(1);
+                    }
                 }
             }
         },

@@ -201,14 +201,11 @@ pub async fn check_external_task_sensor(
     task_id: &str,
 ) -> bool {
     // Query task_instances for the latest instance of the target task using the trait.
-    // We only need the latest, so a small limit is fine if we ordered correctly, 
-    // but the DB orders by execution_date DESC so checking the most recent runs (up to 100) is sufficient.
     match db.get_task_instances(dag_id, 100, 0).await {
         Ok((instances, _)) => {
             // Find the most recent instance for the given task_id
-            let latest = instances.iter()
-                .filter(|ti| ti["task_id"].as_str() == Some(task_id))
-                .next(); // Since it's already ordered DESC
+            let latest = instances.into_iter()
+                .find(|ti| ti["task_id"].as_str() == Some(task_id));
 
             match latest {
                 Some(ti) => {
@@ -238,26 +235,41 @@ pub async fn check_external_task_sensor(
     }
 }
 
+use std::collections::HashMap;
+use tokio::sync::Mutex as AsyncMutex;
+use sqlx::PgPool;
+use once_cell::sync::Lazy;
+
+static SQL_POOL_CACHE: Lazy<AsyncMutex<HashMap<String, PgPool>>> = Lazy::new(|| AsyncMutex::new(HashMap::new()));
+
 /// Returns `true` when the SQL `query` returns at least one row.
 ///
 /// `connection_string` must be a PostgreSQL `DATABASE_URL` (e.g. `postgres://user:pass@host/db`).
 /// Uses `sqlx` directly — no external CLI tools required.
 pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
-    // BUG-10 FIX: Use sqlx PgPool instead of shelling out to sqlite3 CLI.
-    // This supports any Postgres-compatible connection string and is portable.
-    use sqlx::postgres::PgPoolOptions;
-
-    let pool = match PgPoolOptions::new()
-        .max_connections(1)
-        .connect(connection_string)
-        .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            warn!("🗄️  SqlSensor: Failed to connect to '{}': {}", connection_string, e);
-            return false;
+    let mut cache: tokio::sync::MutexGuard<'_, HashMap<String, PgPool>> = SQL_POOL_CACHE.lock().await;
+    
+    let pool = if let Some(p) = cache.get(connection_string) {
+        p.clone()
+    } else {
+        use sqlx::postgres::PgPoolOptions;
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(10))
+            .connect(connection_string)
+            .await
+        {
+            Ok(p) => {
+                cache.insert(connection_string.to_string(), p.clone());
+                p
+            }
+            Err(e) => {
+                warn!("🗄️  SqlSensor: Failed to connect to '{}': {}", connection_string, e);
+                return false;
+            }
         }
     };
+    drop(cache); // Release lock before awaiting query
 
     // Wrap user query as a subquery and count rows — we only care if ≥1 row exists.
     let count_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_sensor_q", query);

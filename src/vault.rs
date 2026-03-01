@@ -27,16 +27,16 @@ impl Vault {
     }
 
     pub fn encrypt(&self, plaintext: &str) -> Result<String> {
-        use aes_gcm::aead::OsRng;
-        use aes_gcm::aead::AeadCore;
+        use aes_gcm::aead::{AeadCore, OsRng};
 
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = self.cipher.encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| anyhow!("Encryption failure: {}", e))?;
 
         // Combine nonce + ciphertext
-        let mut combined = nonce.to_vec();
-        combined.extend(ciphertext);
+        let mut combined = Vec::with_capacity(nonce.len() + ciphertext.len());
+        combined.extend_from_slice(&nonce);
+        combined.extend_from_slice(&ciphertext);
 
         let result = general_purpose::STANDARD.encode(combined);
         if result.is_empty() {
@@ -53,13 +53,13 @@ impl Vault {
             return Err(anyhow!("Invalid ciphertext: too short"));
         }
 
-        // Potential side-channel: decryption failure should be generic but logged
         let (nonce_bytes, ciphertext) = combined.split_at(12);
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let plaintext_bytes = self.cipher.decrypt(nonce, ciphertext)
             .map_err(|_| anyhow!("Decryption failure"))?;
 
-        Ok(String::from_utf8(plaintext_bytes)?)
+        Ok(String::from_utf8(plaintext_bytes)
+            .map_err(|e| anyhow!("UTF-8 decode failure: {}", e))?)
     }
 }

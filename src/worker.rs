@@ -1,4 +1,4 @@
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use anyhow::Result;
 use std::time::Duration;
 
@@ -58,9 +58,8 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     let hb_worker_id = worker_id.to_string();
     let hb_active = active_tasks.clone();
     let hb_exit = should_exit.clone();
-    let hb_channel = channel.clone();
+    let mut hb_client = SwarmControllerClient::new(channel.clone());
     tokio::spawn(async move {
-        let mut hb_client = SwarmControllerClient::new(hb_channel);
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;
             
@@ -71,11 +70,16 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
                 memory_usage: 0.0,
             }).await;
 
-            if let Ok(resp) = response {
-                if resp.into_inner().should_drain {
-                    warn!("⚠️ Controller requested drain. Finishing active tasks...");
-                    hb_exit.store(true, std::sync::atomic::Ordering::Relaxed);
-                    break;
+            match response {
+                Ok(resp) => {
+                    if resp.into_inner().should_drain {
+                        warn!("⚠️ Controller requested drain. Finishing active tasks...");
+                        hb_exit.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ Heartbeat failed: {}. Continuing...", e);
                 }
             }
         }
@@ -89,6 +93,11 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
         {
             info!("👋 Worker draining complete. Exiting.");
             break;
+        }
+
+        if should_exit.load(std::sync::atomic::Ordering::Relaxed) {
+             tokio::time::sleep(Duration::from_secs(1)).await;
+             continue;
         }
 
         let current_active = active_tasks.load(std::sync::atomic::Ordering::Relaxed);
@@ -119,14 +128,16 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 
         for task in poll_response.tasks {
             let active = active_tasks.clone();
-            let mut report_client = SwarmControllerClient::new(channel.clone());
+            let mut report_client = client.clone();
             let wid = worker_id.to_string();
 
             active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             tokio::spawn(async move {
                 let result = execute_task_remote(&task, &wid).await;
-                let _ = report_client.report_task_result(result).await;
+                if let Err(e) = report_client.report_task_result(result).await {
+                    error!("❌ Failed to report task result to swarm: {}", e);
+                }
                 active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             });
         }

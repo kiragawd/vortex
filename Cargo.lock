@@ -3764,6 +3764,7 @@ dependencies = [
  "lettre",
  "libloading",
  "mime_guess",
+ "once_cell",
  "prometheus",
  "prost",
  "prost-types",

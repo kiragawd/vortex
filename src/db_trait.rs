@@ -249,14 +249,23 @@ pub trait DatabaseBackend: Send + Sync {
 
     /// Return Queued task instances still attributed to a dead worker.
     ///
-    /// Tuple: (ti_id, dag_id, task_id, command, run_id)
+    /// Tuple: (ti_id, dag_id, task_id, command, run_id, task_type, config, max_retries, retry_delay_secs)
     async fn get_interrupted_tasks_by_worker(
         &self,
         worker_id: &str,
-    ) -> Result<Vec<(String, String, String, String, String)>>;
+    ) -> Result<Vec<(String, String, String, String, String, String, String, i32, i32)>>;
 
     /// Clear the worker_id field from Queued tasks previously owned by a worker.
     async fn clear_worker_id_from_queued_tasks(&self, worker_id: &str) -> Result<()>;
+
+    /// Return full task execution details needed to re-run a task instance, including extra swarm fields.
+    ///
+    /// Tuple: (dag_id, task_id, command, run_id, task_type, config,
+    ///         max_retries, retry_delay_secs)
+    async fn get_task_instance_details_full(
+        &self,
+        ti_id: &str,
+    ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>>;
 
     // ── DAG versioning ────────────────────────────────────────────────────────
 
@@ -283,11 +292,6 @@ pub trait DatabaseBackend: Send + Sync {
     async fn create_pool(&self, name: &str, slots: i32, description: &str) -> Result<()>;
     async fn update_pool(&self, name: &str, slots: i32, description: &str) -> Result<()>;
     async fn delete_pool(&self, name: &str) -> Result<()>;
-    /// Insert a row into pool_slots claiming one slot for `task_instance_id`.
-    /// Returns `true` if the slot was successfully acquired, `false` if the pool is full or not found.
-    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool>;
-    /// Delete the row in pool_slots for `task_instance_id`, freeing its slot.
-    async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
 
     // ── Callback / Webhook operations ─────────────────────────────────────────
 
@@ -355,6 +359,9 @@ pub trait DatabaseBackend: Send + Sync {
     /// Returns true if lock was successfully acquired, false if it is held by another process.
     async fn try_acquire_leader_lock(&self) -> Result<bool>;
 
-    /// Release the global advisory lock (e.g. on graceful shutdown).
+    /// Release the global advisory lock for the leader controller.
     async fn release_leader_lock(&self) -> Result<()>;
+
+    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool>;
+    async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
 }

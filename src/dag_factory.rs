@@ -65,26 +65,26 @@ pub fn parse_dag_file<P: AsRef<Path>>(path: P) -> Result<Vec<Dag>> {
 
     for task in config.tasks {
         let name = task.name.unwrap_or_else(|| task.id.clone());
-        let mut t = match task.task_type.as_str() {
+        let t = match task.task_type.as_str() {
             "bash" => {
                 let cmd = task.command.unwrap_or_default();
                 dag.add_task(&task.id, &name, &cmd);
-                dag.tasks.get_mut(&task.id).unwrap()
+                dag.tasks.get_mut(&task.id).ok_or_else(|| anyhow::anyhow!("Task not found after insertion"))?
             },
             "python" => {
                 let code = task.code.unwrap_or_else(|| task.command.clone().unwrap_or_default());
                 dag.add_python_task(&task.id, &name, &code);
-                dag.tasks.get_mut(&task.id).unwrap()
+                dag.tasks.get_mut(&task.id).ok_or_else(|| anyhow::anyhow!("Task not found after insertion"))?
             },
             "sensor" => {
                 let cfg = task.sensor_config.unwrap_or_else(|| serde_json::json!({}));
                 dag.add_sensor_task(&task.id, &name, cfg);
-                dag.tasks.get_mut(&task.id).unwrap()
+                dag.tasks.get_mut(&task.id).ok_or_else(|| anyhow::anyhow!("Task not found after insertion"))?
             },
             _ => {
                 let cmd = task.command.unwrap_or_default();
                 dag.add_task(&task.id, &name, &cmd);
-                dag.tasks.get_mut(&task.id).unwrap()
+                dag.tasks.get_mut(&task.id).ok_or_else(|| anyhow::anyhow!("Task not found after insertion"))?
             }
         };
         t.task_group = task.task_group.clone();

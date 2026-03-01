@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use scheduler::{Dag, Scheduler};
 use std::env;
@@ -64,21 +63,20 @@ async fn main() -> Result<()> {
     if args.len() > 2 && args[1] == "db" && args[2] == "migrate" {
         // SQLITE-2 FIX: PostgreSQL is the only supported backend.
         // --database-url or DATABASE_URL env var is mandatory.
-        let db_url = args.iter().position(|a| a == "--database-url")
+        let url = args.iter().position(|a| a == "--database-url")
             .and_then(|i| args.get(i + 1))
             .map(|s| s.as_str())
-            .or_else(|| std::env::var("DATABASE_URL").ok().as_deref().map(|_| ""))
+            .or_else(|| {
+                match std::env::var("DATABASE_URL") {
+                    Ok(v) => Some(Box::leak(v.into_boxed_str()) as &str),
+                    Err(_) => None,
+                }
+            })
             .unwrap_or_else(|| {
                 eprintln!("❌ --database-url or DATABASE_URL env var is required (PostgreSQL only)");
                 std::process::exit(1);
             });
-        // Re-read cleanly (env var fallback)
-        let url = args.iter().position(|a| a == "--database-url")
-            .and_then(|i| args.get(i + 1))
-            .map(|s| s.as_str())
-            .unwrap_or_else(|| {
-                Box::leak(std::env::var("DATABASE_URL").expect("DATABASE_URL must be set").into_boxed_str())
-            });
+
         info!("🗄️ Running PostgreSQL migrations ({})...", &url[..url.find('@').map(|i| i+1).unwrap_or(url.len())]);
         let _db = db_postgres::PostgresDb::new(url, 1, 1, std::time::Duration::from_secs(30)).await?;
         info!("✅ Database migrations applied successfully.");

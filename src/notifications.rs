@@ -264,9 +264,15 @@ pub async fn send_notification(
                 .map_err(|e| anyhow!("failed to build email: {}", e))?;
 
             // Build SMTP transport with the configured port
-            let mut transport_builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)
-                .map_err(|e| anyhow!("invalid smtp_host '{}': {}", smtp_host, e))?
-                .port(*smtp_port);
+            let mut transport_builder = if *smtp_port == 465 {
+                AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host)
+                    .map_err(|e| anyhow!("invalid smtp_host '{}': {}", smtp_host, e))?
+            } else {
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)
+                    .map_err(|e| anyhow!("invalid smtp_host '{}': {}", smtp_host, e))?
+            };
+            
+            transport_builder = transport_builder.port(*smtp_port);
 
             if let (Some(user), Some(pass)) = (username, password) {
                 transport_builder = transport_builder

@@ -224,7 +224,7 @@ impl DatabaseBackend for PostgresDb {
                     "schedule_interval": r.get::<Option<String>, _>("schedule_interval"),
                     "last_run":          r.get::<Option<DateTime<Utc>>, _>("last_run"),
                     "is_paused":         r.get::<bool, _>("is_paused"),
-                    "timezone":          r.get::<String, _>("timezone"),
+                    "timezone":          r.get::<Option<String>, _>("timezone").unwrap_or_else(|| "UTC".to_string()),
                     "max_active_runs":   r.get::<i32, _>("max_active_runs"),
                     "catchup":           r.get::<bool, _>("catchup"),
                     "is_dynamic":        r.get::<bool, _>("is_dynamic"),
@@ -255,7 +255,7 @@ impl DatabaseBackend for PostgresDb {
                 "schedule_interval": r.get::<Option<String>, _>("schedule_interval"),
                 "last_run":          r.get::<Option<DateTime<Utc>>, _>("last_run"),
                 "is_paused":         r.get::<bool, _>("is_paused"),
-                "timezone":          r.get::<String, _>("timezone"),
+                "timezone":          r.get::<Option<String>, _>("timezone").unwrap_or_else(|| "UTC".to_string()),
                 "max_active_runs":   r.get::<i32, _>("max_active_runs"),
                 "catchup":           r.get::<bool, _>("catchup"),
                 "is_dynamic":        r.get::<bool, _>("is_dynamic"),
@@ -337,7 +337,8 @@ impl DatabaseBackend for PostgresDb {
             .map(|r| {
                 (
                     r.get::<String, _>("id"),
-                    r.get::<String, _>("schedule_interval"),
+                    r.get::<Option<String>, _>("schedule_interval")
+                        .unwrap_or_default(),
                     r.get::<Option<DateTime<Utc>>, _>("last_run"),
                     r.get::<bool, _>("is_paused"),
                     r.get::<Option<String>, _>("timezone")
@@ -1163,13 +1164,17 @@ impl DatabaseBackend for PostgresDb {
     async fn get_interrupted_tasks_by_worker(
         &self,
         worker_id: &str,
-    ) -> Result<Vec<(String, String, String, String, String)>> {
+    ) -> Result<Vec<(String, String, String, String, String, String, String, i32, i32)>> {
         let rows = sqlx::query(
             "SELECT ti.id,
                     ti.dag_id,
                     ti.task_id,
                     t.command,
-                    dr.id AS run_id
+                    dr.id AS run_id,
+                    t.task_type,
+                    t.config,
+                    t.max_retries,
+                    t.retry_delay_secs
              FROM task_instances ti
              JOIN tasks    t  ON ti.task_id = t.id AND ti.dag_id = t.dag_id
              JOIN dag_runs dr ON ti.dag_id  = dr.dag_id
@@ -1191,6 +1196,10 @@ impl DatabaseBackend for PostgresDb {
                     r.get::<String, _>("task_id"),
                     r.get::<String, _>("command"),
                     r.get::<String, _>("run_id"),
+                    r.get::<String, _>("task_type"),
+                    r.get::<String, _>("config"),
+                    r.get::<i32, _>("max_retries"),
+                    r.get::<i32, _>("retry_delay_secs"),
                 )
             })
             .collect())
@@ -1383,37 +1392,6 @@ impl DatabaseBackend for PostgresDb {
 
     async fn delete_pool(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM pools WHERE name=$1").bind(name).execute(&self.pool).await.context("delete_pool")?;
-        Ok(())
-    }
-
-    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool> {
-        // BUG-16 FIX: Single atomic query to acquire a slot only if the pool limit isn't reached.
-        let result = sqlx::query(
-            "INSERT INTO pool_slots (id, pool_name, task_instance_id, acquired_at)
-             SELECT $1, $2, $3, $4
-             WHERE (SELECT COUNT(*) FROM pool_slots WHERE pool_name = $2) < (SELECT slots FROM pools WHERE name = $2)
-             ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(pool_name)
-        .bind(task_instance_id)
-        .bind(Utc::now().to_rfc3339())
-        .execute(&self.pool)
-        .await
-        .context("acquire_pool_slot")?;
-
-        Ok(result.rows_affected() > 0)
-    }
-
-    async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM pool_slots WHERE pool_name = $1 AND task_instance_id = $2"
-        )
-        .bind(pool_name)
-        .bind(task_instance_id)
-        .execute(&self.pool)
-        .await
-        .context("release_pool_slot")?;
         Ok(())
     }
 
@@ -1673,19 +1651,55 @@ impl DatabaseBackend for PostgresDb {
 
     async fn try_acquire_leader_lock(&self) -> Result<bool> {
         // 123456789 is the arbitrary 64-bit key used exclusively for the VORTEX HA controller lock.
-        let result: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock(123456789)")
+        let (locked,): (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock(123456789)")
             .fetch_one(&self.pool)
             .await
             .context("try_acquire_leader_lock")?;
-        Ok(result.0)
+        Ok(locked)
     }
 
     async fn release_leader_lock(&self) -> Result<()> {
-        // Safely releases the advisory lock. Returns true if successfully released.
-        let _result: (bool,) = sqlx::query_as("SELECT pg_advisory_unlock(123456789)")
-            .fetch_one(&self.pool)
+        sqlx::query("SELECT pg_advisory_unlock(123456789)")
+            .execute(&self.pool)
             .await
             .context("release_leader_lock")?;
         Ok(())
+    }
+
+    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "INSERT INTO pool_slots (id, pool_name, task_instance_id, acquired_at)
+             SELECT $1, $2, $3, $4
+             WHERE (SELECT COUNT(*) FROM pool_slots WHERE pool_name = $2) < (SELECT slots FROM pools WHERE name = $2)
+             ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(pool_name)
+        .bind(task_instance_id)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .context("acquire_pool_slot")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM pool_slots WHERE pool_name = $1 AND task_instance_id = $2"
+        )
+        .bind(pool_name)
+        .bind(task_instance_id)
+        .execute(&self.pool)
+        .await
+        .context("release_pool_slot")?;
+        Ok(())
+    }
+
+    async fn get_task_instance_details_full(
+        &self,
+        ti_id: &str,
+    ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>> {
+        self.get_task_instance_details(ti_id).await
     }
 }

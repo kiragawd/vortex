@@ -320,35 +320,42 @@ impl Scheduler {
                     all_success = false;
                 }
                 
-                let downstream_tasks = adj.get(&finished_task_id).unwrap();
-                for down in downstream_tasks {
-                    let degree = {
-                        let mut in_degree_guard = in_degree.lock().unwrap();
-                        let deg = in_degree_guard.get_mut(down).unwrap();
-                        *deg -= 1;
-                        *deg
-                    };
-                    
-                    if degree == 0 {
-                        // BUG-4 FIX applied to local scheduler: skip downstream tasks if upstream failed
-                        if !success {
-                            let skipped_ti = Uuid::new_v4().to_string();
-                            let _ = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await;
-                            let _ = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await;
-                            tasks_remaining -= 1;
-                            continue;
-                        }
-
-                        let tx_clone = tx.clone();
-                        let dag_clone = Arc::clone(&dag);
-                        let db_clone = Arc::clone(&db);
-                        let metrics_clone = metrics.clone();
-                        let task_id_clone = down.clone();
-                        let run_id = dag_run_id.clone();
+                if let Some(downstream_tasks) = adj.get(&finished_task_id) {
+                    for down in downstream_tasks {
+                        let degree = {
+                            let mut in_degree_guard = in_degree.lock().unwrap();
+                            let deg = match in_degree_guard.get_mut(down) {
+                                Some(d) => d,
+                                None => {
+                                    error!("In-degree entry missing for task: {}", down);
+                                    continue;
+                                }
+                            };
+                            *deg -= 1;
+                            *deg
+                        };
                         
-                        tokio::spawn(async move {
-                            Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
-                        });
+                        if degree == 0 {
+                            // BUG-4 FIX applied to local scheduler: skip downstream tasks if upstream failed
+                            if !success {
+                                let skipped_ti = Uuid::new_v4().to_string();
+                                let _ = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await;
+                                let _ = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await;
+                                tasks_remaining -= 1;
+                                continue;
+                            }
+
+                            let tx_clone = tx.clone();
+                            let dag_clone = Arc::clone(&dag);
+                            let db_clone = Arc::clone(&db);
+                            let metrics_clone = metrics.clone();
+                            let task_id_clone = down.clone();
+                            let run_id = dag_run_id.clone();
+                            
+                            tokio::spawn(async move {
+                                Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
+                            });
+                        }
                     }
                 }
             }
@@ -386,23 +393,16 @@ impl Scheduler {
         Ok(())
     }
 
-    async fn handle_recovery(&self) -> Result<()> {
-        let interrupted = self.db.get_interrupted_tasks().await?;
-        if interrupted.is_empty() {
-            return Ok(());
-        }
-
-        warn!("⚠️ Recovery Mode: Found {} interrupted tasks.", interrupted.len());
-        for (ti_id, dag_id, task_id) in interrupted {
-            info!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
-            self.db.update_task_state(&ti_id, "Failed").await?;
-        }
-        Ok(())
-    }
-
     #[async_recursion::async_recursion]
     async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<VortexMetrics>>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
-        let task = dag.tasks.get(&task_id).expect("Task not found");
+        let task = match dag.tasks.get(&task_id) {
+            Some(t) => t,
+            None => {
+                error!("Task not found: {}", task_id);
+                let _ = tx.send((task_id, false)).await;
+                return;
+            }
+        };
         let ti_id = Uuid::new_v4().to_string();
         let execution_date = Utc::now();
 

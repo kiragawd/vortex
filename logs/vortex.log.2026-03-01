@@ -388,3 +388,45 @@
 2026-03-01T20:22:10.372013Z  INFO vortex: 🔴 SLA Monitor loop started (checking every 60s)
 2026-03-01T20:22:10.373409Z  INFO vortex::web: 🌐 Web UI running on http://localhost:3000
 2026-03-01T20:22:59.545760Z  INFO vortex::web: 🔑 User logged in: admin (Role: Admin)
+2026-03-01T20:30:00.118630Z  INFO vortex: ⏰ Cron triggering DAG: scheduled_test (schedule: */10 * * * * *)
+2026-03-01T20:30:00.139693Z  INFO vortex::scheduler: 🚀 Starting DAG (VORTEX Parallel Mode): scheduled_test
+2026-03-01T20:30:00.174290Z  INFO vortex::scheduler:   └─ SUCCESS: hello (15ms)
+2026-03-01T20:30:00.180777Z  INFO vortex::scheduler: ✅ DAG scheduled_test finished in 69ms [Success] (100x speed target: PASSED)
+2026-03-01T20:37:12.496069Z  INFO vortex: 🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational
+2026-03-01T20:37:12.496585Z  INFO vortex: 🔐 Secret Vault initialized (AES-256-GCM).
+2026-03-01T20:37:12.496913Z  INFO vortex: 🗄️ Initializing PostgreSQL backend...
+2026-03-01T20:37:12.702468Z  INFO vortex: ✅ Database initialized.
+2026-03-01T20:37:12.704212Z  INFO vortex: 📊 Prometheus metrics initialized (GET /metrics)
+2026-03-01T20:37:12.708539Z  INFO vortex: 🔌 Loaded plugin 'libdummy_plugin' from "plugins/libdummy_plugin.dylib"
+2026-03-01T20:37:12.709083Z  INFO vortex: 🛠️ Registering core DAG: parallel_benchmark
+2026-03-01T20:37:12.709674Z  INFO vortex: 🐍 Loading DAG file: dags/dynamic_mock.py
+2026-03-01T20:37:12.743977Z  INFO vortex: ✅ Loaded DAG: dynamic_loops
+2026-03-01T20:37:12.747924Z  INFO vortex: 🐍 Loading DAG file: dags/sla_test.py
+2026-03-01T20:37:12.748941Z  INFO vortex: ✅ Loaded DAG: sla_test_dag
+2026-03-01T20:37:12.749833Z  INFO vortex: 🐍 Loading DAG file: dags/airflow_compat_example.py
+2026-03-01T20:37:12.750239Z  INFO vortex: ✅ Loaded DAG: airflow_compat_example
+2026-03-01T20:37:12.751064Z  INFO vortex: 🐍 Loading DAG file: dags/integration_test_dag.py
+2026-03-01T20:37:12.753110Z  INFO vortex: ✅ Loaded DAG: integration_test_dag
+2026-03-01T20:37:12.754021Z  INFO vortex: 🐍 Loading DAG file: dags/parallel_benchmark.py
+2026-03-01T20:37:12.754543Z  INFO vortex: ✅ Loaded DAG: parallel_benchmark
+2026-03-01T20:37:12.755431Z  INFO vortex: 🐍 Loading DAG file: dags/complex_100_job_dag.py
+2026-03-01T20:37:12.773523Z  INFO vortex: ✅ Loaded DAG: complex_100_job_dag
+2026-03-01T20:37:12.774472Z  INFO vortex: 🐍 Loading DAG file: dags/test_schedule.py
+2026-03-01T20:37:12.775049Z  INFO vortex: ✅ Loaded DAG: scheduled_test
+2026-03-01T20:37:12.775817Z  INFO vortex: 🐍 Loading DAG file: dags/example_dag.py
+2026-03-01T20:37:12.776194Z  INFO vortex: ✅ Loaded DAG: example_python_dag
+2026-03-01T20:37:12.776879Z  INFO vortex: 🐍 Loading DAG file: dags/stress_test.py
+2026-03-01T20:37:12.785549Z  INFO vortex: ✅ Loaded DAG: stress_test_dag
+2026-03-01T20:37:12.831362Z  INFO vortex: ✅ Loaded DAGs.
+2026-03-01T20:37:12.834014Z  INFO vortex: 🐝 Swarm Controller listening on 0.0.0.0:50051
+2026-03-01T20:37:12.834211Z  INFO vortex: 🔴 SLA Monitor loop started (checking every 60s)
+2026-03-01T20:37:12.834225Z  INFO vortex: ⏰ Cron scheduler loop started (checking every 60s)
+2026-03-01T20:37:12.834373Z  INFO vortex: 🌀 Scheduler loop started.
+2026-03-01T20:40:00.249356Z  INFO vortex: ⏰ Cron triggering DAG: scheduled_test (schedule: */10 * * * * *)
+2026-03-01T20:40:00.269519Z  INFO vortex::scheduler: 🚀 Starting DAG (VORTEX Parallel Mode): scheduled_test
+2026-03-01T20:40:00.308569Z  INFO vortex::scheduler:   └─ SUCCESS: hello (15ms)
+2026-03-01T20:40:00.316195Z  INFO vortex::scheduler: ✅ DAG scheduled_test finished in 76ms [Success] (100x speed target: PASSED)
+2026-03-01T20:50:00.390120Z  INFO vortex: ⏰ Cron triggering DAG: scheduled_test (schedule: */10 * * * * *)
+2026-03-01T20:50:00.411163Z  INFO vortex::scheduler: 🚀 Starting DAG (VORTEX Parallel Mode): scheduled_test
+2026-03-01T20:50:00.444961Z  INFO vortex::scheduler:   └─ SUCCESS: hello (15ms)
+2026-03-01T20:50:00.451814Z  INFO vortex::scheduler: ✅ DAG scheduled_test finished in 69ms [Success] (100x speed target: PASSED)

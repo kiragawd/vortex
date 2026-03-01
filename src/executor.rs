@@ -66,15 +66,15 @@ impl PluginRegistry {
     /// Dynamically loads a plugin from a shared library.
     /// The library must export a `_vortex_plugin_create` C-ABI function.
     pub unsafe fn load_plugin<S: Into<String>>(&mut self, path: &str, name: S) -> Result<()> {
-        let lib = Library::new(path)?;
-        let creator: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn VortexOperator> = lib.get(b"_vortex_plugin_create\0")?;
+        let lib = unsafe { Library::new(path)? };
+        let creator: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn VortexOperator> = unsafe { lib.get(b"_vortex_plugin_create\0")? };
         
-        let ptr = creator();
+        let ptr = unsafe { creator() };
         if ptr.is_null() {
             return Err(anyhow!("Plugin returned a null pointer during initialization"));
         }
         
-        let boxed_plugin = Box::from_raw(ptr);
+        let boxed_plugin = unsafe { Box::from_raw(ptr) };
         self.plugins.insert(name.into(), Arc::from(boxed_plugin));
         self._libraries.push(lib);
         
@@ -105,6 +105,9 @@ impl VortexOperator for HttpOperator {
         let client = reqwest::Client::new();
         
         let url = context.config.get("endpoint").and_then(|v| v.as_str()).unwrap_or(&context.command);
+        if url.is_empty() {
+             return Err(anyhow!("HTTP operator: endpoint/command is empty"));
+        }
         let method = context.config.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         
         let mut req = match method.to_uppercase().as_str() {

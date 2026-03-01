@@ -4,7 +4,6 @@ use pyo3::types::{PyList, PyDict, PyTuple};
 use pyo3::exceptions::PyRuntimeError;
 use anyhow::{Result, anyhow};
 use crate::scheduler::Dag;
-use std::ffi::CString;
 
 
 
@@ -37,11 +36,10 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         locals.set_item("ds", "1970-01-01")?;
         locals.set_item("execution_date", "1970-01-01T00:00:00Z")?;
         
-        let py_code = CString::new(code)
-            .map_err(|e| PyRuntimeError::new_err(format!("NulError: {}", e)))?;
-        
         debug!("🐍 PyO3: Executing Python code...");
         // Use the same dict for globals and locals to support typical script behavior
+        let py_code = std::ffi::CString::new(code.as_str())
+            .map_err(|e| PyRuntimeError::new_err(format!("Invalid CString: {}", e)))?;
         py.run(&py_code, Some(&locals), Some(&locals))?;
 
         let get_dags = vortex.getattr("get_dags")?;
@@ -98,7 +96,7 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
                     dag.add_python_task(&task_id, &task_id, &callable.extract::<String>()?);
                 } else {
                     dag.add_task(&task_id, &task_id, "echo 'unknown operator'");
-                };
+                }
 
                 // Phase 2: Set pool if specified
                 if let Some(pool_val) = task_dict.get_item("pool")? {

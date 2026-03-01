@@ -32,7 +32,6 @@ pub struct PaginatedResponse<T> {
 use std::collections::HashMap;
 
 use tokio::sync::mpsc;
-use std::sync::Mutex;
 
 #[derive(RustEmbed)]
 #[folder = "assets/"]
@@ -254,7 +253,6 @@ async fn upload_dag(State(state): State<Arc<AppState>>, axum::extract::Extension
                 Ok(b) => b,
                 Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
             };
-            let content = String::from_utf8_lossy(&data);
             
             let dags_dir = std::env::current_dir()
                 .map(|p| p.join("dags").to_string_lossy().to_string())
