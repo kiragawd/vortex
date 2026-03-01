@@ -27,14 +27,15 @@ impl Vault {
     }
 
     pub fn encrypt(&self, plaintext: &str) -> Result<String> {
-        let nonce_bytes = uuid::Uuid::new_v4().as_bytes()[..12].to_vec(); // 96-bit nonce
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        
-        let ciphertext = self.cipher.encrypt(nonce, plaintext.as_bytes())
+        use aes_gcm::aead::OsRng;
+        use aes_gcm::aead::AeadCore;
+
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ciphertext = self.cipher.encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| anyhow!("Encryption failure: {}", e))?;
 
         // Combine nonce + ciphertext
-        let mut combined = nonce_bytes;
+        let mut combined = nonce.to_vec();
         combined.extend(ciphertext);
 
         let result = general_purpose::STANDARD.encode(combined);
@@ -57,7 +58,7 @@ impl Vault {
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let plaintext_bytes = self.cipher.decrypt(nonce, ciphertext)
-            .map_err(|_| anyhow!("Decryption failure - check your VORTEX_SECRET_KEY"))?;
+            .map_err(|_| anyhow!("Decryption failure"))?;
 
         Ok(String::from_utf8(plaintext_bytes)?)
     }

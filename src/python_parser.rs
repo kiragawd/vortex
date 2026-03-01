@@ -50,10 +50,10 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
 
         let mut dags = Vec::new();
 
-        for dag_data in dags_data {
+        for dag_data in dags_data.iter() {
             let dag_dict: Bound<'_, PyDict> = dag_data.downcast_into()?;
 
-            let dag_id: String = dag_dict.get_item("dag_id")?.unwrap().extract()?;
+            let dag_id: String = dag_dict.get_item("dag_id")?.ok_or_else(|| PyRuntimeError::new_err("Missing dag_id"))?.extract()?;
             let mut dag = Dag::new(&dag_id);
 
             if let Some(schedule) = dag_dict.get_item("schedule_interval")? {
@@ -87,10 +87,10 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
             }
 
             let tasks_data: Bound<'_, PyList> =
-                dag_dict.get_item("tasks")?.unwrap().downcast_into()?;
-            for task_data in tasks_data {
+                dag_dict.get_item("tasks")?.ok_or_else(|| PyRuntimeError::new_err("Missing tasks"))?.downcast_into()?;
+            for task_data in tasks_data.iter() {
                 let task_dict: Bound<'_, PyDict> = task_data.downcast_into()?;
-                let task_id: String = task_dict.get_item("task_id")?.unwrap().extract()?;
+                let task_id: String = task_dict.get_item("task_id")?.ok_or_else(|| PyRuntimeError::new_err("Missing task_id"))?.extract()?;
 
                 if let Some(cmd) = task_dict.get_item("bash_command")? {
                     dag.add_task(&task_id, &task_id, &cmd.extract::<String>()?);
@@ -127,8 +127,8 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
             }
 
             let deps_data: Bound<'_, PyList> =
-                dag_dict.get_item("dependencies")?.unwrap().downcast_into()?;
-            for dep_data in deps_data {
+                dag_dict.get_item("dependencies")?.ok_or_else(|| PyRuntimeError::new_err("Missing dependencies"))?.downcast_into()?;
+            for dep_data in deps_data.iter() {
                 let dep_tuple: Bound<'_, PyTuple> = dep_data.downcast_into()?;
                 let upstream: String = dep_tuple.get_item(0)?.extract()?;
                 let downstream: String = dep_tuple.get_item(1)?.extract()?;

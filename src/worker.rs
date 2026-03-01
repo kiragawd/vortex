@@ -24,8 +24,11 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     // Connect to controller with retry
     // TODO: Add --tls-ca flag for worker TLS: if provided, use tonic::transport::Channel
     //       with ClientTlsConfig::new().ca_certificate(...) for mTLS/TLS to the controller.
-    let mut client = loop {
-        match SwarmControllerClient::connect(controller_addr.to_string()).await {
+    let channel = loop {
+        match tonic::transport::Endpoint::from_shared(controller_addr.to_string())?
+            .connect()
+            .await 
+        {
             Ok(c) => break c,
             Err(e) => {
                 warn!("⚠️ Cannot connect to controller: {}. Retrying in 5s...", e);
@@ -33,6 +36,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
             }
         }
     };
+    let mut client = SwarmControllerClient::new(channel.clone());
 
     // Register
     let reg_response = client.register_worker(WorkerInfo {
@@ -52,18 +56,14 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 
     // Heartbeat loop
     let hb_worker_id = worker_id.to_string();
-    let hb_addr = controller_addr.to_string();
     let hb_active = active_tasks.clone();
     let hb_exit = should_exit.clone();
+    let hb_channel = channel.clone();
     tokio::spawn(async move {
+        let mut hb_client = SwarmControllerClient::new(hb_channel);
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;
             
-            let mut hb_client = match SwarmControllerClient::connect(hb_addr.clone()).await {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
             let response = hb_client.heartbeat(HeartbeatRequest {
                 worker_id: hb_worker_id.clone(),
                 active_tasks: hb_active.load(std::sync::atomic::Ordering::Relaxed),
@@ -107,13 +107,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
             Err(e) => {
                 warn!("⚠️ Poll error: {}. Retrying...", e);
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                client = match SwarmControllerClient::connect(controller_addr.to_string()).await {
-                    Ok(c) => c,
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
-                    }
-                };
+                // Client will automatically try to reconnect on next call thanks to Tower/Tonic channel
                 continue;
             }
         };
@@ -125,16 +119,14 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 
         for task in poll_response.tasks {
             let active = active_tasks.clone();
-            let addr = controller_addr.to_string();
+            let mut report_client = SwarmControllerClient::new(channel.clone());
             let wid = worker_id.to_string();
 
             active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             tokio::spawn(async move {
                 let result = execute_task_remote(&task, &wid).await;
-                if let Ok(mut report_client) = SwarmControllerClient::connect(addr).await {
-                    let _ = report_client.report_task_result(result).await;
-                }
+                let _ = report_client.report_task_result(result).await;
                 active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             });
         }

@@ -51,10 +51,10 @@ pub trait DatabaseBackend: Send + Sync {
     /// Return all DAGs that have a non-empty schedule_interval.
     ///
     /// Tuple fields: (dag_id, schedule_interval, last_run, is_paused, timezone,
-    ///                max_active_runs, catchup)
+    ///                max_active_runs, catchup, team_id)
     async fn get_scheduled_dags(
         &self,
-    ) -> Result<Vec<(String, String, Option<DateTime<Utc>>, bool, String, i32, bool)>>;
+    ) -> Result<Vec<(String, String, Option<DateTime<Utc>>, bool, String, i32, bool, Option<String>)>>;
 
     /// Pause a DAG (is_paused = true).
     async fn pause_dag(&self, dag_id: &str) -> Result<()>;
@@ -284,7 +284,8 @@ pub trait DatabaseBackend: Send + Sync {
     async fn update_pool(&self, name: &str, slots: i32, description: &str) -> Result<()>;
     async fn delete_pool(&self, name: &str) -> Result<()>;
     /// Insert a row into pool_slots claiming one slot for `task_instance_id`.
-    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
+    /// Returns `true` if the slot was successfully acquired, `false` if the pool is full or not found.
+    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool>;
     /// Delete the row in pool_slots for `task_instance_id`, freeing its slot.
     async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
 

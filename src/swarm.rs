@@ -121,18 +121,18 @@ impl SwarmState {
                             let mut queue = self.task_queue.write().await;
                             if let Ok(tasks) = self.db.get_interrupted_tasks_by_worker(&worker_id).await {
                                 for t in tasks {
+                                    // t is (task_instance_id, dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs)
                                     queue.push(PendingTask {
                                         task_instance_id: t.0,
                                         dag_id: t.1,
                                         task_id: t.2,
                                         command: t.3,
                                         dag_run_id: t.4,
-                                        task_type: "bash".to_string(), // Default for recovery
-                                        config_json: "{}".to_string(),
-                                        max_retries: 0,
-                                        retry_delay_secs: 30,
-                                        // BUG-2 FIX: secrets come from task definition, not hardcoded
-                                        required_secrets: vec![],
+                                        task_type: t.5,
+                                        config_json: t.6,
+                                        max_retries: t.7,
+                                        retry_delay_secs: t.8,
+                                        required_secrets: vec![], // Resolved at poll time
                                     });
                                 }
                             }
@@ -266,7 +266,12 @@ impl SwarmController for SwarmService {
                         tokio::time::sleep(std::time::Duration::from_secs(retry_delay as u64)).await;
                         
                         if let Ok(Some(details)) = state_clone.db.get_task_instance_details(&ti_id).await {
-                            let (dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs) = details;
+                            let (dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs, secrets_json) = details;
+                            let required_secrets = if !secrets_json.is_empty() {
+                                serde_json::from_str(&secrets_json).unwrap_or_else(|_| vec![])
+                            } else {
+                                vec![]
+                            };
                             state_clone.enqueue_task(PendingTask {
                                 task_instance_id: ti_id,
                                 dag_id,
@@ -277,7 +282,7 @@ impl SwarmController for SwarmService {
                                 config_json,
                                 max_retries,
                                 retry_delay_secs,
-                                required_secrets: vec![], // BUG-2 FIX: secrets come from task definition, not hardcoded
+                                required_secrets,
                             }).await;
                         }
                     });

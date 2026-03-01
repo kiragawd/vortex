@@ -128,16 +128,28 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn register_dag(&self, dag: &crate::scheduler::Dag) -> Result<()> {
-        self.save_dag(&dag.id, dag.schedule_interval.as_deref()).await?;
-        self.update_dag_config(
-            &dag.id,
-            dag.schedule_interval.as_deref(),
-            &dag.timezone,
-            dag.max_active_runs,
-            dag.catchup,
-            dag.is_dynamic,
+        sqlx::query(
+            "INSERT INTO dags (id, created_at, schedule_interval, timezone, max_active_runs, catchup, is_dynamic, team_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO UPDATE
+                SET schedule_interval = EXCLUDED.schedule_interval,
+                    timezone          = EXCLUDED.timezone,
+                    max_active_runs   = EXCLUDED.max_active_runs,
+                    catchup           = EXCLUDED.catchup,
+                    is_dynamic        = EXCLUDED.is_dynamic,
+                    team_id           = EXCLUDED.team_id",
         )
-        .await?;
+        .bind(&dag.id)
+        .bind(Utc::now())
+        .bind(dag.schedule_interval.as_deref())
+        .bind(&dag.timezone)
+        .bind(dag.max_active_runs)
+        .bind(dag.catchup)
+        .bind(dag.is_dynamic)
+        .bind(&dag.team_id)
+        .execute(&self.pool)
+        .await
+        .context("register_dag: upsert dag")?;
 
         // Remove tasks that are no longer in the DAG definition
         let task_ids: Vec<String> = dag.tasks.keys().cloned().collect();
@@ -149,10 +161,8 @@ impl DatabaseBackend for PostgresDb {
                 .context("register_dag: delete stale tasks")?;
         } else {
             // Build a NOT IN ($2, $3, ...) clause dynamically
-            let placeholders: String = task_ids
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("${}", i + 2))
+            let placeholders: String = (0..task_ids.len())
+                .map(|i| format!("${}", i + 2))
                 .collect::<Vec<_>>()
                 .join(", ");
             let query = format!(
@@ -190,7 +200,7 @@ impl DatabaseBackend for PostgresDb {
     async fn get_all_dags(&self, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
         let rows = sqlx::query(
             "SELECT id, created_at, schedule_interval, last_run, is_paused, timezone,
-                    max_active_runs, catchup, next_run, is_dynamic,
+                    max_active_runs, catchup, next_run, is_dynamic, team_id,
                     COUNT(*) OVER() as total_count
              FROM dags
              ORDER BY created_at DESC
@@ -219,6 +229,7 @@ impl DatabaseBackend for PostgresDb {
                     "catchup":           r.get::<bool, _>("catchup"),
                     "is_dynamic":        r.get::<bool, _>("is_dynamic"),
                     "next_run":          r.get::<Option<DateTime<Utc>>, _>("next_run"),
+                    "team_id":           r.get::<Option<String>, _>("team_id"),
                 })
             })
             .collect();
@@ -228,7 +239,7 @@ impl DatabaseBackend for PostgresDb {
     async fn get_dag_by_id(&self, dag_id: &str) -> Result<Option<serde_json::Value>> {
         let row = sqlx::query(
             "SELECT id, created_at, schedule_interval, last_run, is_paused, timezone,
-                    max_active_runs, catchup, next_run, is_dynamic
+                    max_active_runs, catchup, next_run, is_dynamic, team_id
              FROM dags WHERE id = $1",
         )
         .bind(dag_id)
@@ -249,6 +260,7 @@ impl DatabaseBackend for PostgresDb {
                 "catchup":           r.get::<bool, _>("catchup"),
                 "is_dynamic":        r.get::<bool, _>("is_dynamic"),
                 "next_run":          r.get::<Option<DateTime<Utc>>, _>("next_run"),
+                "team_id":           r.get::<Option<String>, _>("team_id"),
             })
         }))
     }
@@ -309,9 +321,9 @@ impl DatabaseBackend for PostgresDb {
 
     async fn get_scheduled_dags(
         &self,
-    ) -> Result<Vec<(String, String, Option<DateTime<Utc>>, bool, String, i32, bool)>> {
+    ) -> Result<Vec<(String, String, Option<DateTime<Utc>>, bool, String, i32, bool, Option<String>)>> {
         let rows = sqlx::query(
-            "SELECT id, schedule_interval, last_run, is_paused, timezone, max_active_runs, catchup
+            "SELECT id, schedule_interval, last_run, is_paused, timezone, max_active_runs, catchup, team_id
              FROM dags
              WHERE schedule_interval IS NOT NULL AND schedule_interval <> ''",
         )
@@ -332,6 +344,7 @@ impl DatabaseBackend for PostgresDb {
                         .unwrap_or_else(|| "UTC".to_string()),
                     r.get::<i32, _>("max_active_runs"),
                     r.get::<bool, _>("catchup"),
+                    r.get::<Option<String>, _>("team_id"),
                 )
             })
             .collect();
@@ -1373,19 +1386,23 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
-    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO pool_slots (pool_name, task_instance_id, acquired_at)
-             VALUES ($1, $2, $3)
+    async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool> {
+        // BUG-16 FIX: Single atomic query to acquire a slot only if the pool limit isn't reached.
+        let result = sqlx::query(
+            "INSERT INTO pool_slots (id, pool_name, task_instance_id, acquired_at)
+             SELECT $1, $2, $3, $4
+             WHERE (SELECT COUNT(*) FROM pool_slots WHERE pool_name = $2) < (SELECT slots FROM pools WHERE name = $2)
              ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
         )
+        .bind(uuid::Uuid::new_v4().to_string())
         .bind(pool_name)
         .bind(task_instance_id)
         .bind(Utc::now().to_rfc3339())
         .execute(&self.pool)
         .await
         .context("acquire_pool_slot")?;
-        Ok(())
+
+        Ok(result.rows_affected() > 0)
     }
 
     async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {

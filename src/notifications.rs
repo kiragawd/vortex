@@ -128,11 +128,6 @@ impl NotificationManager {
 // Notification dispatch
 // ---------------------------------------------------------------------------
 
-/// Escape a string for safe inclusion inside single-quoted shell arguments.
-fn shell_escape_single(s: &str) -> String {
-    s.replace('\'', r"'\''")
-}
-
 /// Dispatch a single notification to one target.
 pub async fn send_notification(
     target: &NotificationTarget,
@@ -141,44 +136,32 @@ pub async fn send_notification(
     match target {
         NotificationTarget::Webhook { url, headers } => {
             let body = serde_json::to_string(payload)?;
-            let escaped_body = shell_escape_single(&body);
-            let escaped_url = shell_escape_single(url);
 
-            // Build the curl command programmatically.
-            let mut cmd = tokio::process::Command::new("curl");
-            cmd.args([
-                "-s",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_code}",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-            ]);
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?;
+
+            let mut request = client
+                .post(url)
+                .header("Content-Type", "application/json")
+                .body(body);
 
             // Inject extra headers if supplied.
             if let Some(hdrs) = headers {
                 for (k, v) in hdrs {
-                    cmd.arg("-H");
-                    cmd.arg(format!("{}: {}", k, v));
+                    request = request.header(k.as_str(), v.as_str());
                 }
             }
 
-            // Use --data-raw so we don't need to worry about @ interpretation.
-            cmd.args(["--data-raw", &escaped_body, &escaped_url]);
+            let response = request.send().await.map_err(|e| {
+                anyhow!("webhook POST to {} failed: {}", url, e)
+            })?;
 
-            let output = cmd.output().await?;
-            let status_str = String::from_utf8_lossy(&output.stdout);
-            let http_status: u16 = status_str.trim().parse().unwrap_or(0);
-
-            if !output.status.success() || http_status >= 400 {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+            let http_status = response.status().as_u16();
+            if http_status >= 400 {
                 error!(
                     url = %url,
                     http_status,
-                    stderr = %stderr,
                     "webhook notification failed"
                 );
                 return Err(anyhow!(
@@ -210,37 +193,23 @@ pub async fn send_notification(
                 None => serde_json::json!({ "text": text }),
             };
 
-            let body = serde_json::to_string(&slack_payload)?;
-            let escaped_body = shell_escape_single(&body);
-            let escaped_url = shell_escape_single(webhook_url);
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?;
 
-            let output = tokio::process::Command::new("curl")
-                .args([
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "-X",
-                    "POST",
-                    "-H",
-                    "Content-Type: application/json",
-                    "--data-raw",
-                    &escaped_body,
-                    &escaped_url,
-                ])
-                .output()
-                .await?;
+            let response = client
+                .post(webhook_url)
+                .header("Content-Type", "application/json")
+                .json(&slack_payload)
+                .send()
+                .await
+                .map_err(|e| anyhow!("slack webhook POST to {} failed: {}", webhook_url, e))?;
 
-            let status_str = String::from_utf8_lossy(&output.stdout);
-            let http_status: u16 = status_str.trim().parse().unwrap_or(0);
-
-            if !output.status.success() || http_status >= 400 {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+            let http_status = response.status().as_u16();
+            if http_status >= 400 {
                 error!(
                     webhook_url = %webhook_url,
                     http_status,
-                    stderr = %stderr,
                     "slack notification failed"
                 );
                 return Err(anyhow!(
