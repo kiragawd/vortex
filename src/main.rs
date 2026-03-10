@@ -9,6 +9,7 @@ use swarm::SwarmState;
 use vault::Vault;
 use tracing::{info, warn, error, debug};
 use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use clap::{Parser, Subcommand};
 
 mod scheduler;
 mod python_parser;
@@ -27,25 +28,104 @@ mod db_postgres;
 mod proto;
 mod dag_factory;
 
+/// VORTEX Orchestration Engine
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Database URL (PostgreSQL only)
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: Option<String>,
+
+    /// Enable swarm mode
+    #[arg(long)]
+    swarm: bool,
+
+    /// Swarm mode gRPC bind address
+    #[arg(long, default_value = "0.0.0.0")]
+    grpc_bind: String,
+
+    /// Swarm mode port
+    #[arg(long, default_value_t = 50051)]
+    swarm_port: u16,
+
+    /// Web UI and API server port
+    #[arg(long, default_value_t = 3000)]
+    port: u16,
+
+    /// Log level (error, warn, info, debug, trace)
+    #[arg(long, env = "VORTEX_LOG_LEVEL", default_value = "info")]
+    log_level: String,
+
+    /// Output logs in JSON format
+    #[arg(long)]
+    log_json: bool,
+
+    /// Enable High Availability leader election
+    #[arg(long)]
+    ha_mode: bool,
+
+    /// Database max connections
+    #[arg(long, default_value_t = 20)]
+    db_max_connections: u32,
+
+    /// Database min connections
+    #[arg(long, default_value_t = 2)]
+    db_min_connections: u32,
+
+    /// Database idle timeout in seconds
+    #[arg(long, default_value_t = 300)]
+    db_idle_timeout: u64,
+
+    /// Path to TLS certificate (PEM)
+    #[arg(long)]
+    tls_cert: Option<String>,
+
+    /// Path to TLS private key (PEM)
+    #[arg(long)]
+    tls_key: Option<String>,
+
+    /// Register synthetic benchmark DAG
+    #[arg(long)]
+    benchmark: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Initialize DB schema
+    Db {
+        #[arg(long)]
+        migrate: bool,
+    },
+    /// Start a swarm worker node
+    Worker {
+        #[arg(long, default_value = "http://127.0.0.1:50051")]
+        controller: String,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        capacity: i32,
+        #[arg(long, value_delimiter = ',')]
+        labels: Option<Vec<String>>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
     // Initialize structured logging
-    let log_level = args.iter().position(|a| a == "--log-level")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str())
-        .unwrap_or("info");
-
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("vortex={}", log_level)));
-
-    let json_output = args.iter().any(|a| a == "--log-json");
+        .unwrap_or_else(|_| EnvFilter::new(format!("vortex={}", cli.log_level)));
 
     let file_appender = tracing_appender::rolling::daily("logs", "vortex.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // IMPORTANT: This guard must be held for the entire lifetime of main().
+    // Dropping it will cause buffered log lines to be lost.
+    let (non_blocking, _file_log_guard) = tracing_appender::non_blocking(file_appender);
 
-    if json_output {
+    if cli.log_json {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(fmt::layer().json())
@@ -59,40 +139,28 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    // 🗄️ DB MIGRATE MODE
-    if args.len() > 2 && args[1] == "db" && args[2] == "migrate" {
-        // SQLITE-2 FIX: PostgreSQL is the only supported backend.
-        // --database-url or DATABASE_URL env var is mandatory.
-        let url = args.iter().position(|a| a == "--database-url")
-            .and_then(|i| args.get(i + 1))
-            .map(|s| s.as_str())
-            .or_else(|| {
-                match std::env::var("DATABASE_URL") {
-                    Ok(v) => Some(Box::leak(v.into_boxed_str()) as &str),
-                    Err(_) => None,
-                }
-            })
-            .unwrap_or_else(|| {
-                eprintln!("❌ --database-url or DATABASE_URL env var is required (PostgreSQL only)");
-                std::process::exit(1);
-            });
-
-        info!("🗄️ Running PostgreSQL migrations ({})...", &url[..url.find('@').map(|i| i+1).unwrap_or(url.len())]);
-        let _db = db_postgres::PostgresDb::new(url, 1, 1, std::time::Duration::from_secs(30)).await?;
-        info!("✅ Database migrations applied successfully.");
-        return Ok(());
+    if let Some(Commands::Db { migrate }) = cli.command {
+        if migrate {
+            if let Some(db_url_migrate) = &cli.database_url {
+                let safe_url_end = db_url_migrate.find('@').map(|i| i + 1).unwrap_or(db_url_migrate.len());
+                info!("🗄️ Running PostgreSQL migrations ({})...", &db_url_migrate[..safe_url_end]);
+                let _db = db_postgres::PostgresDb::new(&db_url_migrate, 1, 1, std::time::Duration::from_secs(30)).await?;
+                info!("✅ Database migrations applied successfully.");
+                return Ok(());
+            } else {
+                anyhow::bail!("❌ --database-url or DATABASE_URL env var is required for DB migrate");
+            }
+        }
     }
 
     // 🐝 WORKER MODE
-    if args.len() > 1 && args[1] == "worker" {
-        let controller_addr = args.iter().position(|a| a == "--controller").and_then(|i| args.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| "http://127.0.0.1:50051".to_string());
-        let worker_id = args.iter().position(|a| a == "--id").and_then(|i| args.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
-        let capacity: i32 = args.iter().position(|a| a == "--capacity").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(4);
-        let labels: Vec<String> = args.iter().position(|a| a == "--labels").and_then(|i| args.get(i + 1)).map(|s| s.split(',').map(|l| l.trim().to_string()).collect()).unwrap_or_default();
+    if let Some(Commands::Worker { controller, id, capacity, labels }) = cli.command {
+        let worker_id = id.unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+        let worker_labels = labels.unwrap_or_default();
         info!("🌪️ VORTEX Swarm Worker v0.6.0");
-        return worker::run_worker(&controller_addr, &worker_id, capacity, labels).await;
+        return worker::run_worker(&controller, &worker_id, capacity, worker_labels).await;
     }
-
+    
     // 🌪️ CONTROLLER MODE
     info!("🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational");
 
@@ -103,23 +171,14 @@ async fn main() -> Result<()> {
     };
 
     // Phase 3: Initialize Database Backend (PostgreSQL only)
-    // SQLITE-2 FIX: SQLite removed. --database-url or DATABASE_URL env var is mandatory.
-    let db_url_owned: String = args.iter().position(|a| a == "--database-url")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("DATABASE_URL").ok())
-        .unwrap_or_else(|| {
-            eprintln!("❌ --database-url or DATABASE_URL env var is required. VORTEX requires PostgreSQL.");
-            std::process::exit(1);
-        });
+    let db_url_owned = cli.database_url
+        .ok_or_else(|| anyhow::anyhow!("❌ --database-url or DATABASE_URL env var is required. VORTEX requires PostgreSQL."))?;
 
-    let db_max_connections: u32 = args.iter().position(|a| a == "--db-max-connections").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(20);
-    let db_min_connections: u32 = args.iter().position(|a| a == "--db-min-connections").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(2);
-    let db_idle_timeout = std::time::Duration::from_secs(args.iter().position(|a| a == "--db-idle-timeout").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(300));
+    let db_idle_timeout = std::time::Duration::from_secs(cli.db_idle_timeout);
 
     info!("🗄️ Initializing PostgreSQL backend...");
     let db: Arc<dyn db_trait::DatabaseBackend> = Arc::new(
-        db_postgres::PostgresDb::new(&db_url_owned, db_max_connections, db_min_connections, db_idle_timeout).await?
+        db_postgres::PostgresDb::new(&db_url_owned, cli.db_max_connections, cli.db_min_connections, db_idle_timeout).await?
     );
     info!("✅ Database initialized.");
 
@@ -133,7 +192,9 @@ async fn main() -> Result<()> {
         warn!("⚠️ Recovery Mode: Found {} interrupted tasks from previous run.", interrupted.len());
         for (ti_id, dag_id, task_id) in interrupted {
             info!("  - Marking instance {} ({}/{}) as Failed", ti_id, dag_id, task_id);
-            let _ = db.update_task_state(&ti_id, "Failed").await;
+            if let Err(e) = db.update_task_state(&ti_id, "Failed").await {
+                error!("Failed to mark task {} as Failed: {}", ti_id, e);
+            }
         }
     }
 
@@ -167,13 +228,18 @@ async fn main() -> Result<()> {
     
     // ARCH-2: Use tokio::sync::Mutex to match AppState.dags type.
     let all_dags = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // Improvement 48: only register the synthetic benchmark DAG when --benchmark
+    // is explicitly passed. Avoids polluting production DAG lists.
+    if cli.benchmark {
+        let bench = create_benchmark_dag();
+        info!("🛠️ Registering benchmark DAG: {}", bench.id);
+        let mut map = all_dags.lock().await;
+        map.insert(bench.id.clone(), Arc::new(bench));
+    }
+
+    // Scan dags/ for Python and config DAG files
     {
         let mut map = all_dags.lock().await;
-        let bench = create_benchmark_dag();
-        info!("🛠️ Registering core DAG: {}", bench.id);
-        map.insert(bench.id.clone(), Arc::new(bench));
-
-        // Scan dags/
         let dags_dir = "dags";
         if std::path::Path::new(dags_dir).exists() {
             if let Ok(entries) = std::fs::read_dir(dags_dir) {
@@ -192,7 +258,9 @@ async fn main() -> Result<()> {
                                             map.insert(dag_id.clone(), Arc::new(dag));
                                             
                                             // Pillar 4: Force create version record for physical files
-                                            let _ = db.store_dag_version(&dag_id, path_str).await;
+                                            if let Err(e) = db.store_dag_version(&dag_id, path_str).await {
+                                                error!("Failed to store version for {}: {}", dag_id, e);
+                                            }
                                         }
                                     },
                                     Err(e) => {
@@ -208,7 +276,9 @@ async fn main() -> Result<()> {
                                             let dag_id = dag.id.clone();
                                             map.insert(dag_id.clone(), Arc::new(dag));
                                             
-                                            let _ = db.store_dag_version(&dag_id, path_str).await;
+                                            if let Err(e) = db.store_dag_version(&dag_id, path_str).await {
+                                                error!("Failed to store version for config DAG {}: {}", dag_id, e);
+                                            }
                                         }
                                     },
                                     Err(e) => {
@@ -225,47 +295,58 @@ async fn main() -> Result<()> {
     }
     info!("✅ Loaded DAGs.");
 
+
     // High Availability
-    let ha_mode = args.iter().any(|a| a == "--ha-mode");
+    let ha_mode = cli.ha_mode;
     let (leader_tx, leader_rx) = tokio::sync::watch::channel(!ha_mode);
 
     if ha_mode {
         let db_leader = Arc::clone(&db);
         tokio::spawn(async move {
             info!("🔒 HA Mode Enabled. Standing by for Leader Lock...");
+            // Bug 15 fix: loop continuously renewing the lease every 10s.
+            // The old code broke after first acquisition (advisory lock session-scoped).
+            // Now we use the leader_election table, which is connection-agnostic.
+            let mut is_leader = false;
             loop {
                 match db_leader.try_acquire_leader_lock().await {
                     Ok(true) => {
-                        info!("👑 Acquired HA Leader Lock. Promoting to Active.");
-                        let _ = leader_tx.send(true);
-                        break;
+                        if !is_leader {
+                            info!("👑 Acquired HA Leader Lock. Promoting to Active.");
+                            let _ = leader_tx.send(true);
+                            is_leader = true;
+                        }
+                        // Renew every 10s (lease expires in 30s, so 3× headroom)
                     }
                     Ok(false) => {
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        if is_leader {
+                            warn!("⚠️ Lost HA Leader Lock. Stepping down to Standby.");
+                            let _ = leader_tx.send(false);
+                            is_leader = false;
+                        }
                     }
                     Err(e) => {
-                        warn!("⚠️ DB error during leader lock acquisition: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        warn!("⚠️ DB error during leader lock renewal: {}", e);
                     }
                 }
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             }
         });
     }
 
     // Swarm
-    let swarm_enabled = args.iter().any(|a| a == "--swarm");
-    let swarm_port: u16 = args.iter().position(|a| a == "--swarm-port").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(50051);
+    let swarm_enabled = cli.swarm;
+    // Bug 27 fix: add --grpc-bind flag so gRPC can be restricted to localhost
+    // or a specific interface instead of always exposing on all interfaces.
+    let grpc_bind = cli.grpc_bind;
+    let swarm_port = cli.swarm_port;
     let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone(), Some(Arc::clone(&vortex_metrics))));
 
     if swarm_enabled {
         let grpc_state = Arc::clone(&swarm_state);
         let health_state = Arc::clone(&swarm_state);
-        let tls_cert_grpc = args.iter().position(|a| a == "--tls-cert")
-            .and_then(|i| args.get(i + 1))
-            .map(|s| s.to_string());
-        let tls_key_grpc = args.iter().position(|a| a == "--tls-key")
-            .and_then(|i| args.get(i + 1))
-            .map(|s| s.to_string());
+        let tls_cert_grpc = cli.tls_cert.clone();
+        let tls_key_grpc = cli.tls_key.clone();
 
         // Spawn gRPC server
         tokio::spawn(async move {
@@ -274,7 +355,7 @@ async fn main() -> Result<()> {
                 let key = std::fs::read(key_path).expect("Failed to read TLS key");
                 let identity = tonic::transport::Identity::from_pem(cert, key);
                 let tls_config = tonic::transport::ServerTlsConfig::new().identity(identity);
-                let addr = format!("0.0.0.0:{}", swarm_port).parse().unwrap();
+                let addr = format!("{}:{}", grpc_bind, swarm_port).parse().unwrap();
                 let server = swarm::create_grpc_server(grpc_state);
                 info!("🐝 Swarm Controller listening on {} (TLS)", addr);
                 let _ = tonic::transport::Server::builder()
@@ -282,7 +363,7 @@ async fn main() -> Result<()> {
                     .add_service(server)
                     .serve(addr).await;
             } else {
-                let addr = format!("0.0.0.0:{}", swarm_port).parse().unwrap();
+                let addr = format!("{}:{}", grpc_bind, swarm_port).parse().unwrap();
                 let server = swarm::create_grpc_server(grpc_state);
                 info!("🐝 Swarm Controller listening on {}", addr);
                 let _ = tonic::transport::Server::builder().add_service(server).serve(addr).await;
@@ -299,14 +380,13 @@ async fn main() -> Result<()> {
         });
     }
 
-    let (tx, mut rx) = mpsc::channel::<scheduler::ScheduleRequest>(32);
+    // Bug 16 fix: increased from 32 to 512 to prevent sender back-pressure under
+    // heavy cron or backfill loads. 512 is still bounded (prevents unbounded memory
+    // growth) but gives headroom for burst scheduling.
+    let (tx, mut rx) = mpsc::channel::<scheduler::ScheduleRequest>(512);
 
-    let tls_cert = args.iter().position(|a| a == "--tls-cert")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.to_string());
-    let tls_key = args.iter().position(|a| a == "--tls-key")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.to_string());
+    let tls_cert = cli.tls_cert;
+    let tls_key = cli.tls_key;
 
     // Web UI
     let db_web = Arc::clone(&db);
@@ -315,9 +395,13 @@ async fn main() -> Result<()> {
     let vault_web = vault.clone();
     let dags_web = Arc::clone(&all_dags);
     let metrics_web = Arc::clone(&vortex_metrics);
+    // Bug 26 fix: add --port CLI flag so the web port is configurable.
+    let web_port = cli.port;
     tokio::spawn(async move {
         let server = web::WebServer::new(db_web, tx_web, swarm_web, vault_web, dags_web, metrics_web);
-        server.run(3000, tls_cert, tls_key).await;
+        if let Err(e) = server.run(web_port, tls_cert, tls_key).await {
+            error!("Web server fatally exited: {}", e);
+        }
     });
 
     // Scheduler Loop
@@ -346,8 +430,12 @@ async fn main() -> Result<()> {
                     info!("🐝 Scheduler: Dispatching to SWARM mode.");
                     let dag_run_id = uuid::Uuid::new_v4().to_string();
                     let execution_date = req.execution_date.unwrap_or_else(|| Utc::now());
-                    let _ = db_sched.create_dag_run(&dag_run_id, &req.dag_id, execution_date, &req.triggered_by).await;
-                    let _ = db_sched.update_dag_run_state(&dag_run_id, "Running").await;
+                    if let Err(e) = db_sched.create_dag_run(&dag_run_id, &req.dag_id, execution_date, &req.triggered_by).await {
+                        error!("DB error creating DAG run: {}", e);
+                    }
+                    if let Err(e) = db_sched.update_dag_run_state(&dag_run_id, "Running").await {
+                        error!("DB error updating DAG run state: {}", e);
+                    }
                     
                     let mut pre_finished_tasks = std::collections::HashSet::new();
                     if let scheduler::RunType::RetryFromFailure = req.run_type {
@@ -408,7 +496,9 @@ async fn main() -> Result<()> {
                             if deg == 0 && !finished_tasks.contains(tid) {
                                 let task = dag_clone.tasks.get(tid).unwrap();
                                 let ti_id = uuid::Uuid::new_v4().to_string();
-                                let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, tid, "Queued", execution_date_clone, &run_id_clone).await;
+                                if let Err(e) = db_clone.create_task_instance(&ti_id, &dag_clone.id, tid, "Queued", execution_date_clone, &run_id_clone).await {
+                                    error!("DB error creating task instance {}: {}", tid, e);
+                                }
                                 
                                 metrics_clone.record_task_queued();
                                 swarm_clone.enqueue_task(swarm::PendingTask {
@@ -425,22 +515,26 @@ async fn main() -> Result<()> {
                                 let tx_mon = tx_done.clone();
                                 let tid_mon = tid.clone();
                                 tokio::spawn(async move {
-                                    // BUG-12 FIX: cap polling to 300 iterations (~10 min) to avoid infinite loop on DB failure
-                                    let mut attempts = 0u32;
+                                    // BUG-12 FIX: cap the TOTAL poll count (Ok + Err) to 300
+                                    // iterations (~10 min). The original code only capped the Err
+                                    // path, so a task stuck in Queued/Running looped indefinitely.
+                                    let mut total_polls = 0u32;
                                     loop {
+                                        total_polls += 1;
+                                        if total_polls >= 300 {
+                                            warn!("Monitor timed out polling task instance {} after {} polls — marking failed", ti_id, total_polls);
+                                            let _ = tx_mon.send((tid_mon, false)).await;
+                                            break;
+                                        }
                                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                                         match db_mon.get_task_instance_retry_info(&ti_id).await {
                                             Ok((_, state)) => {
                                                 if state == "Success" { let _ = tx_mon.send((tid_mon, true)).await; break; }
                                                 if state == "Failed"  { let _ = tx_mon.send((tid_mon, false)).await; break; }
+                                                // still Running/Queued — loop and decrement remaining budget
                                             }
                                             Err(_) => {
-                                                attempts += 1;
-                                                if attempts >= 300 {
-                                                    warn!("Monitor timed out polling task instance {} — marking failed", ti_id);
-                                                    let _ = tx_mon.send((tid_mon, false)).await;
-                                                    break;
-                                                }
+                                                // DB error counts against budget too
                                             }
                                         }
                                     }
@@ -462,16 +556,24 @@ async fn main() -> Result<()> {
                                             // BUG-4 FIX: skip downstream tasks if upstream failed
                                             if !success {
                                                 let skipped_ti = uuid::Uuid::new_v4().to_string();
-                                                let _ = db_clone.create_task_instance(&skipped_ti, &dag_clone.id, down, "Upstream_Failed", execution_date_clone, &run_id_clone).await;
-                                                let _ = db_clone.log_task_event(&skipped_ti, &dag_clone.id, down, &run_id_clone, "upstream_failed", Some("Upstream task failed"), None).await;
+                                                if let Err(e) = db_clone.create_task_instance(&skipped_ti, &dag_clone.id, down, "Upstream_Failed", execution_date_clone, &run_id_clone).await {
+                                                    error!("DB error writing upstream_failed instance: {}", e);
+                                                }
+                                                if let Err(e) = db_clone.log_task_event(&skipped_ti, &dag_clone.id, down, &run_id_clone, "upstream_failed", Some("Upstream task failed"), None).await {
+                                                    error!("DB error logging event: {}", e);
+                                                }
                                                 tasks_remaining -= 1;
                                                 continue;
                                             }
 
                                             let task = dag_clone.tasks.get(down).unwrap();
                                             let ti_id = uuid::Uuid::new_v4().to_string();
-                                            let _ = db_clone.create_task_instance(&ti_id, &dag_clone.id, down, "Queued", execution_date_clone, &run_id_clone).await;
-                                            let _ = db_clone.log_task_event(&ti_id, &dag_clone.id, down, &run_id_clone, "queued", None, None).await;
+                                            if let Err(e) = db_clone.create_task_instance(&ti_id, &dag_clone.id, down, "Queued", execution_date_clone, &run_id_clone).await {
+                                                error!("DB error writing queued instance: {}", e);
+                                            }
+                                            if let Err(e) = db_clone.log_task_event(&ti_id, &dag_clone.id, down, &run_id_clone, "queued", None, None).await {
+                                                error!("DB error logging event: {}", e);
+                                            }
                                             
                                             metrics_clone.record_task_queued();
                                             swarm_clone.enqueue_task(swarm::PendingTask {
@@ -487,9 +589,15 @@ async fn main() -> Result<()> {
                                             let tx_mon = tx_done.clone();
                                             let down_mon = down.clone();
                                             tokio::spawn(async move {
-                                                // BUG-12 FIX: cap polling to 300 iterations (~10 min)
-                                                let mut attempts = 0u32;
+                                                // BUG-12 FIX: same unified total_polls cap for downstream monitors
+                                                let mut total_polls = 0u32;
                                                 loop {
+                                                    total_polls += 1;
+                                                    if total_polls >= 300 {
+                                                        warn!("Monitor timed out polling downstream task instance {} after {} polls — marking failed", ti_id, total_polls);
+                                                        let _ = tx_mon.send((down_mon, false)).await;
+                                                        break;
+                                                    }
                                                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                                                     match db_mon.get_task_instance_retry_info(&ti_id).await {
                                                         Ok((_, state)) => {
@@ -497,12 +605,7 @@ async fn main() -> Result<()> {
                                                             if state == "Failed"  { let _ = tx_mon.send((down_mon, false)).await; break; }
                                                         }
                                                         Err(_) => {
-                                                            attempts += 1;
-                                                            if attempts >= 300 {
-                                                                warn!("Monitor timed out polling task instance {} — marking failed", ti_id);
-                                                                let _ = tx_mon.send((down_mon, false)).await;
-                                                                break;
-                                                            }
+                                                            // DB error counts against budget too
                                                         }
                                                     }
                                                 }
@@ -513,7 +616,9 @@ async fn main() -> Result<()> {
                             }
                         }
                         let final_state = if all_success { "Success" } else { "Failed" };
-                        let _ = db_clone.update_dag_run_state(&run_id_clone, final_state).await;
+                        if let Err(e) = db_clone.update_dag_run_state(&run_id_clone, final_state).await {
+                            error!("DB error updating DAG run final state: {}", e);
+                        }
                         metrics_clone.record_dag_run_complete(final_state);
                         info!("🏁 Swarm Orchestrator: DAG Run {} finished (Success: {})", run_id_clone, all_success);
                     });
@@ -545,41 +650,27 @@ async fn main() -> Result<()> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             
-            // Wait for DB to be responsive before doing work
-            if db_sla.get_all_users().await.is_err() {
-                continue; // Skip cycle if DB is unreachable
-            }
-
-            // We only care about runs that are currently "Running"
-            match db_sla.get_interrupted_tasks().await {
-                Ok(interrupted) => {
-                    // Extract unique running run IDs
-                    let mut running_run_ids = std::collections::HashSet::new();
-                    for (_, _, run_id) in &interrupted {
-                        running_run_ids.insert(run_id.clone());
+            // Query DAG runs that are currently "Running" and haven't already breached SLA
+            match db_sla.get_running_dag_runs().await {
+                Ok(running_runs) => {
+                    if running_runs.is_empty() {
+                        continue;
                     }
 
-                    for run_id in running_run_ids {
-                        // Quick lookup isn't in DB trait, so we scan recent dag runs (or better, make a specific query)
-                        // For simplicity, fetch the run by inspecting all DAGs for this run
-                        let _dags_guard = dags_sla.lock().await;
-                        for (dag_id, dag) in _dags_guard.iter() {
+                    // Snapshot the DAGs map to avoid holding the lock across DB queries
+                    let dags_snapshot: HashMap<String, Arc<scheduler::Dag>> = {
+                        let guard = dags_sla.lock().await;
+                        guard.clone()
+                    };
+
+                    for (run_id, dag_id, start_time) in &running_runs {
+                        if let Some(dag) = dags_snapshot.get(dag_id) {
                             if let Some(sla_secs) = dag.sla_seconds {
-                                // We'll borrow the paginated get_dag_runs to find this specific run
-                                if let Ok((runs, _)) = db_sla.get_dag_runs(dag_id, 100, 0).await {
-                                    if let Some(run_data) = runs.iter().find(|r| r["id"].as_str() == Some(&run_id)) {
-                                        let is_missed = run_data["sla_missed"].as_bool().unwrap_or(false);
-                                        if !is_missed {
-                                            if let Some(start_time_str) = run_data["start_time"].as_str() {
-                                                if let Ok(start_time) = chrono::DateTime::parse_from_rfc3339(start_time_str) {
-                                                    let elapsed = Utc::now().signed_duration_since(start_time.with_timezone(&Utc));
-                                                    if elapsed.num_seconds() > sla_secs as i64 {
-                                                        warn!("🔴 SLA BREACH: DAG Run {} for DAG {} exceeded {}s limit", run_id, dag_id, sla_secs);
-                                                        let _ = db_sla.mark_sla_missed(&run_id).await;
-                                                    }
-                                                }
-                                            }
-                                        }
+                                let elapsed = Utc::now().signed_duration_since(*start_time);
+                                if elapsed.num_seconds() > sla_secs as i64 {
+                                    warn!("🔴 SLA BREACH: DAG Run {} for DAG {} exceeded {}s limit", run_id, dag_id, sla_secs);
+                                    if let Err(e) = db_sla.mark_sla_missed(run_id).await {
+                                        error!("DB error marking SLA missed: {}", e);
                                     }
                                 }
                             }
@@ -615,7 +706,13 @@ async fn main() -> Result<()> {
                             if active_count >= max_active_runs { continue; }
                         }
                         
-                        let schedule_str = crate::scheduler::normalize_schedule(&schedule_expr);
+                        let schedule_str = match crate::scheduler::normalize_schedule(&schedule_expr) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("⚠️ Invalid schedule expression for DAG {}: {}", dag_id, e);
+                                continue;
+                            }
+                        };
                         if schedule_str.is_empty() { continue; }
                         
                         let schedule: cron::Schedule = match schedule_str.parse() {
@@ -636,9 +733,13 @@ async fn main() -> Result<()> {
                         
                         if should_run {
                             info!("⏰ Cron triggering DAG: {} (schedule: {})", dag_id, schedule_expr);
-                            let _ = db_cron.update_dag_last_run(&dag_id, now).await;
+                            if let Err(e) = db_cron.update_dag_last_run(&dag_id, now).await {
+                                error!("DB error updating DAG last run: {}", e);
+                            }
                             if let Some(next) = schedule.after(&now).next() {
-                                let _ = db_cron.update_dag_next_run(&dag_id, Some(next)).await;
+                                if let Err(e) = db_cron.update_dag_next_run(&dag_id, Some(next)).await {
+                                    error!("DB error updating DAG next run: {}", e);
+                                }
                             }
                             let _ = tx_cron.send(crate::scheduler::ScheduleRequest {
                                 dag_id: dag_id.clone(),
@@ -656,7 +757,56 @@ async fn main() -> Result<()> {
         }
     });
 
-    tokio::signal::ctrl_c().await?;
+    // Improvement 37: Graceful shutdown — on Ctrl+C (SIGINT) or SIGTERM, mark
+    // all Running task instances as Failed so they don't get stuck permanently,
+    // release the HA leader lock if held, then exit cleanly.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).unwrap_or_else(|_| {
+            panic!("Failed to install SIGTERM handler")
+        });
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("🛑 Received SIGINT — starting graceful shutdown...");
+            }
+            _ = sigterm.recv() => {
+                info!("🛑 Received SIGTERM — starting graceful shutdown...");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        info!("🛑 Received Ctrl+C — starting graceful shutdown...");
+    }
+
+    // Mark all stuck Running task instances as Failed
+    let db_shutdown = Arc::clone(&db);
+    match db_shutdown.get_interrupted_tasks().await {
+        Ok(tasks) => {
+            let count = tasks.len();
+            for (ti_id, _dag_id, _task_id) in tasks {
+                if let Err(e) = db_shutdown.update_task_state(&ti_id, "Failed").await {
+                    error!("DB error marking task Failed on shutdown: {}", e);
+                }
+            }
+            if count > 0 {
+                info!("🔴 Marked {} Running task instance(s) as Failed on shutdown.", count);
+            }
+        }
+        Err(e) => warn!("⚠️ Could not fetch running tasks during shutdown: {}", e),
+    }
+
+    // Release HA leader lock if we held it
+    if ha_mode {
+        if let Err(e) = db.release_leader_lock().await {
+            error!("Failed to release HA leader lock: {}", e);
+        }
+        info!("🔓 Released HA leader lock.");
+    }
+
+    info!("👋 VORTEX controller shut down cleanly.");
     Ok(())
 }
 

@@ -8,19 +8,24 @@ http://localhost:3000/api
 
 ## Authentication
 
-All endpoints (except `/api/login`) require an API key in the `Authorization` header:
+All endpoints (except `/api/login` and `/metrics`) require an API key via the `Authorization` header with the `Bearer` prefix:
 
 ```
-Authorization: <api_key>
+Authorization: Bearer <api_key>
 ```
 
-The API key is obtained via the login endpoint. The default admin key is `vortex_admin_key`.
+The API key is obtained via the login endpoint.
+
+### Global Constraints
+
+- **Payload Size Limits**: All endpoints have a strict `DefaultBodyLimit::max()` enforced at 10 MB. Any request surpassing this size will receive a `413 Payload Too Large` response.
+- **CORS Policies**: Cross-origin requests are naturally supported with wide permissibility, as VORTEX secures endpoints via stateless bearer tokens. Every response securely attaches `Content-Security-Policy`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff` headers.
 
 ### RBAC Roles
 
 | Role | Permissions |
 |------|------------|
-| `Admin` | Full access to all endpoints, including users, secrets, and audit logs |
+| `Admin` | Full access to all endpoints, including users, secrets, teams, and audit logs |
 | `Operator` | DAG management (trigger, pause, edit, upload). Cannot manage users, secrets, or audit logs. |
 | `Viewer` | Read-only access to DAGs, tasks, runs, and swarm status. |
 
@@ -37,11 +42,47 @@ The API key is obtained via the login endpoint. The default admin key is `vortex
 { "username": "admin", "password": "admin" }
 
 // Response (200)
-{ "api_key": "vortex_admin_key", "role": "Admin", "username": "admin" }
+{ "api_key": "vx_a1b2c3d4...", "role": "Admin", "username": "admin" }
 
 // Error (401)
 { "error": "Invalid credentials" }
+
+// Error (429 - After 10 failed login attempts within 60s)
+{ "error": "Too many failed login attempts. Try again later." }
 ```
+
+### System Health
+
+**`GET /health`** — No auth required
+
+Returns the system health along with VORTEX release version and PostgreSQL connectivity status. Used for Kubernetes liveness probes/load-balancer configurations.
+
+```json
+// Response (200)
+{ "status": "ok", "version": "v0.6.0", "db": "connected" }
+
+// Response (503)
+{ "status": "degraded", "version": "v0.6.0", "db": "disconnected" }
+```
+
+---
+
+## Pagination
+
+Most list endpoints return paginated responses:
+
+```json
+{
+  "data": [...],
+  "total": 42,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+**Query Parameters:**
+- `limit` (default: 50, max: 500)
+- `offset` (default: 0)
 
 ---
 
@@ -51,28 +92,38 @@ The API key is obtained via the login endpoint. The default admin key is `vortex
 
 **`GET /api/dags`**
 
+Supports pagination via `?limit=N&offset=N`.
+
 ```json
-// Response (200)
-[
-  {
-    "id": "parallel_benchmark",
-    "created_at": "2026-02-25T20:55:06Z",
-    "schedule_interval": null,
-    "last_run": null,
-    "is_paused": false,
-    "timezone": "UTC",
-    "max_active_runs": 1,
-    "catchup": false,
-    "next_run": null
-  }
-]
+// Response (200) — Paginated
+{
+  "data": [
+    {
+      "id": "parallel_benchmark",
+      "created_at": "2026-02-25T20:55:06Z",
+      "schedule_interval": null,
+      "last_run": null,
+      "is_paused": false,
+      "timezone": "UTC",
+      "max_active_runs": 1,
+      "catchup": false,
+      "next_run": null,
+      "team_id": null
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
 ```
+
+> **Note:** Non-admin users with a `team_id` will only see DAGs belonging to their team.
 
 ### Get DAG Tasks & Dependencies
 
 **`GET /api/dags/:id/tasks`**
 
-Returns tasks, current task instances, DAG metadata, and dependency edges.
+Supports pagination for instances via `?limit=N&offset=N`.
 
 ```json
 // Response (200)
@@ -85,6 +136,9 @@ Returns tasks, current task instances, DAG metadata, and dependency edges.
   "instances": [
     { "id": "uuid", "task_id": "t1", "state": "Success", "execution_date": "...", "run_id": "uuid", "stdout": "...", "stderr": "", "duration_ms": 42 }
   ],
+  "instances_total": 1,
+  "instances_limit": 50,
+  "instances_offset": 0,
   "dependencies": [["t1", "t2"], ["t1", "t3"]]
 }
 ```
@@ -93,13 +147,17 @@ Returns tasks, current task instances, DAG metadata, and dependency edges.
 
 **`GET /api/dags/:id/runs`**
 
+Supports pagination via `?limit=N&offset=N`.
+
 ```json
-// Response (200)
+// Response (200) — Paginated
 {
-  "dag_id": "parallel_benchmark",
-  "runs": [
+  "data": [
     { "id": "uuid", "dag_id": "parallel_benchmark", "state": "Success", "execution_date": "...", "start_time": "...", "end_time": "...", "triggered_by": "api" }
-  ]
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
 }
 ```
 
@@ -153,17 +211,22 @@ Re-runs only failed tasks from the last failed run, skipping previously successf
 
 ```bash
 curl -X POST http://localhost:3000/api/dags/upload \
-  -H "Authorization: vortex_admin_key" \
+  -H "Authorization: Bearer <api_key>" \
   -F "file=@dags/my_pipeline.py"
 ```
 
 ```json
-// Response (200) — Parsed DAG metadata
-{ "dag_id": "my_pipeline", "tasks": [...], "edges": [...] }
+// Response (200) — All parsed DAGs registered
+{ "dag_ids": ["my_pipeline", "another_dag"], "dag_count": 2 }
+
+// Single-DAG file (still works)
+{ "dag_ids": ["my_pipeline"], "dag_count": 1 }
 
 // Error (400)
 { "error": "Invalid DAG file: Could not extract dag_id from DAG file" }
 ```
+
+> **Note:** A single `.py` file may define multiple DAGs. All DAGs found in the file are registered. Previously, only the first DAG was registered and the rest were silently discarded (Bug #9).
 
 ### Validate DAG
 
@@ -203,10 +266,21 @@ Writes updated source to disk, re-parses with PyO3, and updates the in-memory DA
 
 ```json
 // Request
-{ "start_date": "2026-01-01", "end_date": "2026-02-01" }
+{ "start_date": "2026-01-01T00:00:00Z", "end_date": "2026-02-01T00:00:00Z" }
 
 // Response (200)
 { "message": "Backfill triggered" }
+```
+
+> **Note:** `start_date` and `end_date` must be RFC 3339 timestamps.
+
+### Get Backfill Progress
+
+**`GET /api/dags/:id/backfill/progress`**
+
+```json
+// Response (200)
+{ "dag_id": "example_dag", "progress": 0.75 }
 ```
 
 ---
@@ -227,6 +301,17 @@ Writes updated source to disk, re-parses with PyO3, and updates the in-memory DA
 }
 ```
 
+### Get Version Source Code
+
+**`GET /api/dags/:id/versions/:version/source`**
+
+Returns the source code for a specific DAG version.
+
+```json
+// Response (200)
+{ "version": 1, "source": "from vortex import DAG..." }
+```
+
 ### Rollback DAG Version
 
 **`POST /api/dags/:id/versions/:version/rollback`**
@@ -240,7 +325,7 @@ Overwrites the current DAG file with the source code of the requested version, t
 
 ---
 
-## Task Logs
+## Task Logs & Events
 
 ### Get Task Instance Logs
 
@@ -254,6 +339,178 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 // Error (404)
 { "error": "Log not found" }
+```
+
+### Get Task Instance Events
+
+**`GET /api/task-instances/:dag_id/:ti_id/events`**
+
+Returns lifecycle events for a specific task instance.
+
+```json
+// Response (200)
+[
+  { "event_type": "state_change", "from": "Queued", "to": "Running", "timestamp": "..." }
+]
+```
+
+---
+
+## XCom (Cross-Task Communication)
+
+### Push XCom Value
+
+**`POST /api/xcom/push`**
+
+```json
+// Request
+{ "dag_id": "my_dag", "task_id": "extract", "run_id": "uuid", "key": "row_count", "value": "42" }
+
+// Response (200)
+{ "status": "ok" }
+```
+
+### Pull XCom Value
+
+**`GET /api/xcom/pull?dag_id=my_dag&task_id=extract&run_id=uuid&key=row_count`**
+
+```json
+// Response (200)
+{ "value": "42" }
+
+// Not found (404)
+{ "value": null }
+```
+
+### List XCom Values for a Run
+
+**`GET /api/dags/:id/runs/:run_id/xcom`**
+
+Supports pagination via `?limit=N&offset=N`.
+
+```json
+// Response (200) — Paginated
+{
+  "data": [
+    { "dag_id": "my_dag", "task_id": "extract", "key": "row_count", "value": "42", "timestamp": "..." }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
+## Task Pools
+
+### List Pools
+
+**`GET /api/pools`**
+
+```json
+// Response (200)
+{ "pools": [ { "name": "db_connections", "slots": 10, "description": "Database connection pool" } ] }
+```
+
+### Create Pool
+
+**`POST /api/pools`**
+
+```json
+// Request
+{ "name": "db_connections", "slots": 10, "description": "Database connection pool" }
+
+// Response (200)
+{ "status": "created", "name": "db_connections" }
+```
+
+### Get Pool
+
+**`GET /api/pools/:name`**
+
+```json
+// Response (200)
+{ "name": "db_connections", "slots": 10, "description": "..." }
+
+// Not found (404)
+{ "error": "Pool not found" }
+```
+
+### Update Pool
+
+**`PUT /api/pools/:name`**
+
+```json
+// Request
+{ "slots": 20, "description": "Updated description" }
+
+// Response (200)
+{ "status": "updated", "name": "db_connections" }
+```
+
+### Delete Pool
+
+**`DELETE /api/pools/:name`**
+
+```json
+// Response (200)
+{ "status": "deleted", "name": "db_connections" }
+```
+
+---
+
+## Webhook Callbacks (Notifications)
+
+### Get DAG Callbacks
+
+**`GET /api/dags/:id/callbacks`**
+
+```json
+// Response (200)
+{ "dag_id": "my_dag", "config": { "on_success": [...], "on_failure": [...] } }
+
+// Not configured (404)
+{ "error": "No callbacks configured" }
+```
+
+### Set DAG Callbacks
+
+**`PUT /api/dags/:id/callbacks`**
+
+Configure notifications for DAG lifecycle events. Supports Webhook, Slack, and Email targets.
+
+```json
+// Request
+{
+  "config": {
+    "on_success": [
+      { "type": "Webhook", "config": { "url": "https://hooks.example.com/success", "headers": {} } }
+    ],
+    "on_failure": [
+      { "type": "Slack", "config": { "webhook_url": "https://hooks.slack.com/...", "channel": "#alerts" } }
+    ],
+    "on_retry": null,
+    "on_sla_miss": null
+  }
+}
+
+// Response (200)
+{ "status": "saved", "dag_id": "my_dag" }
+```
+
+**Supported notification targets:**
+- **Webhook** — `{ "type": "Webhook", "config": { "url": "...", "headers": {} } }`
+- **Slack** — `{ "type": "Slack", "config": { "webhook_url": "...", "channel": "..." } }`
+- **Email** — `{ "type": "Email", "config": { "smtp_host": "...", "smtp_port": 587, "from": "...", "to": ["..."], "username": "...", "password": "..." } }`
+
+### Delete DAG Callbacks
+
+**`DELETE /api/dags/:id/callbacks`**
+
+```json
+// Response (200)
+{ "status": "deleted", "dag_id": "my_dag" }
 ```
 
 ---
@@ -304,6 +561,8 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 **`GET /api/secrets`** — Admin only
 
+Returns secret names only (never values).
+
 ```json
 { "secrets": ["DB_PASSWORD", "API_TOKEN"] }
 ```
@@ -328,6 +587,8 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 { "message": "Secret deleted" }
 ```
 
+> **Note:** There is no endpoint to retrieve a secret value via the API. Secrets are only decrypted at task execution time and injected as environment variables.
+
 ---
 
 ## User & Team Management
@@ -337,10 +598,11 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 **`GET /api/teams`** — Admin only
 
 ```json
-[
-  { "id": "uuid-1", "name": "Data Engineering", "max_concurrent_tasks": 100, "max_dags": 10 },
-  { "id": "uuid-2", "name": "Analytics", "max_concurrent_tasks": 20, "max_dags": 5 }
-]
+{
+  "teams": [
+    { "id": "uuid-1", "name": "Data Engineering", "max_concurrent_tasks": 100, "max_dags": 10 }
+  ]
+}
 ```
 
 ### Create Team
@@ -349,20 +611,54 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 ```json
 // Request
-{ "name": "Data Engineering", "description": "Core data team", "max_concurrent_tasks": 100, "max_dags": 10 }
+{ "id": "team-de", "name": "Data Engineering", "description": "Core data team", "max_concurrent_tasks": 100, "max_dags": 10 }
 
 // Response (200)
-{ "message": "Team created", "team_id": "uuid-1" }
+{ "status": "created", "id": "team-de" }
+```
+
+### Get Team
+
+**`GET /api/teams/:id`** — Admin or team member
+
+```json
+// Response (200)
+{ "id": "team-de", "name": "Data Engineering", "description": "...", "max_concurrent_tasks": 100, "max_dags": 10 }
+```
+
+### Update Team
+
+**`PUT /api/teams/:id`** — Admin only
+
+```json
+// Request
+{ "name": "Data Engineering", "description": "Updated", "max_concurrent_tasks": 200, "max_dags": 20 }
+
+// Response (200)
+{ "status": "updated", "id": "team-de" }
+```
+
+### Delete Team
+
+**`DELETE /api/teams/:id`** — Admin only
+
+```json
+{ "status": "deleted", "id": "team-de" }
 ```
 
 ### Assign User to Team
 
-**`POST /api/teams/:id/users/:username`** — Admin only
+**`PUT /api/teams/:id/users/:username`** — Admin only
 
 ```json
+// Request
+{ "team_id": "team-de" }
+
 // Response (200)
 { "message": "User assigned to team" }
 ```
+
+> To unassign a user, pass `{ "team_id": "unassign" }`.
 
 ### List Users
 
@@ -370,7 +666,7 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 ```json
 [
-  { "username": "admin", "role": "Admin", "api_key": "vortex_admin_key" },
+  { "username": "admin", "role": "Admin", "api_key": "vx_..." },
   { "username": "operator1", "role": "Operator", "api_key": "vx_abc123..." }
 ]
 ```
@@ -410,9 +706,9 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 - `action` (optional filter)
 
 ```json
-// Response (200)
+// Response (200) — Paginated
 {
-  "logs": [
+  "data": [
     {
       "id": 42,
       "timestamp": "2026-02-28T17:35:00Z",
@@ -420,9 +716,10 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
       "action": "dag.trigger",
       "target_type": "dag",
       "target_id": "example_dag",
-      "metadata": { "run_type": "Full" }
+      "metadata": "{ \"run_type\": \"Full\" }"
     }
   ],
+  "total": 42,
   "limit": 50,
   "offset": 0
 }
@@ -457,7 +754,7 @@ Returns task execution timing data for a specific DAG.
 
 **`GET /api/analysis/calendar?days=30`**
 
-Returns scheduled runs (based on cron) and completed runs for the requested period.
+Returns scheduled runs (based on cron) and completed runs for the requested period. Maximum 90 days.
 
 ```json
 // Response (200)
@@ -473,15 +770,27 @@ Returns scheduled runs (based on cron) and completed runs for the requested peri
 
 ## Observability
 
+### Health Check
+
+**`GET /health`** — No authentication required
+
+Returns the controller status and database connectivity.
+
+```json
+{"status": "ok", "version": "0.6.0", "db": "connected"}
+```
+
+Returns `200 OK` when healthy. Returns `503 Service Unavailable` with `"status":"degraded"` when the database is unreachable. Use with load-balancer probes and Kubernetes readiness checks.
+
+---
+
 ### Prometheus Metrics
 
-**`GET /metrics`**
+**`GET /metrics`** — No authentication required
 
-Exposes internal engine metrics in Prometheus text exposition format. Includes metrics for DAG runs, tasks, queue depth, swarms, and scheduler health.
-No authentication is required for this endpoint so Prometheus servers can easily scrape it.
+Exposes internal engine metrics in Prometheus text exposition format.
 
 ```text
-// Response (200)
 # HELP vortex_dags_total Total number of registered DAGs
 # TYPE vortex_dags_total gauge
 vortex_dags_total 3

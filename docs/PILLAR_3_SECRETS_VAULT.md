@@ -2,24 +2,16 @@
 
 ## Overview
 
-The VORTEX Secrets Vault is a secure, encrypted storage system for managing sensitive data (database credentials, API keys, tokens, etc.) within distributed DAG workflows. Every secret is encrypted at rest using AES-256-GCM with unique nonces, ensuring that even if the database is compromised, secrets remain protected.
-
-### Why Encrypt Secrets at Rest?
-
-In distributed systems, secrets are often stored in databases, configuration files, or environment variables. Without encryption, a database breach exposes all secrets immediately. VORTEX encrypts secrets at rest to:
-
-- **Mitigate database breaches**: Encrypted values are useless without the encryption key
-- **Comply with security standards**: Meet GDPR, HIPAA, and SOC 2 requirements
-- **Protect against unauthorized access**: Only authorized processes with the encryption key can decrypt secrets
-- **Enable safe auditing**: Secret names are visible in logs; values are not
+The VORTEX Secrets Vault provides encrypted storage for sensitive data (database credentials, API keys, tokens, etc.) within distributed DAG workflows. Secrets are encrypted at rest using AES-256-GCM with unique nonces, ensuring that even if the database is compromised, secret values remain protected.
 
 ### Key Security Properties
 
 | Property | Implementation |
-|----------|-----------------|
+|----------|----------------|
 | **Encryption Algorithm** | AES-256-GCM (Authenticated Encryption with Associated Data) |
 | **Nonce Size** | 96 bits (12 bytes), randomly generated per encryption |
-| **Key Derivation** | VORTEX_SECRET_KEY environment variable (32 bytes for AES-256) |
+| **Key Source** | `VORTEX_SECRET_KEY` environment variable (32-character string) |
+| **Storage Format** | Base64-encoded (nonce + ciphertext) in a TEXT column |
 | **Integrity** | GCM authentication tag ensures ciphertext hasn't been modified |
 | **Freshness** | Unique nonce per secret prevents replay attacks |
 
@@ -32,370 +24,206 @@ In distributed systems, secrets are often stored in databases, configuration fil
 The `secrets` table stores all encrypted secrets:
 
 ```sql
-CREATE TABLE secrets (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    encrypted_value BLOB NOT NULL,
-    nonce BLOB NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS secrets (
+    key        TEXT        PRIMARY KEY,
+    value      TEXT        NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
 ```
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | TEXT | Unique identifier (UUID format, e.g., `secret_abc123...`) |
-| `name` | TEXT | Human-readable secret name (e.g., `db_password`, `slack_token`) |
-| `encrypted_value` | BLOB | AES-256-GCM encrypted secret value |
-| `nonce` | BLOB | 96-bit random nonce used during encryption |
-| `created_at` | TEXT | ISO 8601 timestamp of creation |
-| `updated_at` | TEXT | ISO 8601 timestamp of last update |
+| `key` | TEXT | Human-readable secret name (e.g., `DB_PASSWORD`, `SLACK_TOKEN`) |
+| `value` | TEXT | Base64-encoded string containing nonce (12 bytes) + AES-256-GCM ciphertext |
+| `updated_at` | TIMESTAMPTZ | Timestamp of last update |
 
 ### Encryption Mechanism
 
-When a secret is created or updated:
+When a secret is stored:
 
 1. **Generate a random 96-bit nonce** (12 bytes)
 2. **Encrypt the plaintext value** using AES-256-GCM with:
-   - Key: `VORTEX_SECRET_KEY` (32-byte hex string)
+   - Key: Raw bytes of `VORTEX_SECRET_KEY` (32 characters = 32 bytes = 256 bits)
    - Plaintext: User-provided secret value
    - Nonce: Randomly generated per operation
-3. **Store encrypted_value + nonce** in the database (plaintext never written)
-4. **Create authentication tag** (part of GCM, ensures integrity)
+3. **Combine nonce + ciphertext** into a single byte array
+4. **Base64-encode** the combined bytes and store as TEXT in the database
 
-### Key Derivation
+### Key Format
 
-VORTEX uses a single master key for all secrets:
+VORTEX uses the raw bytes of the `VORTEX_SECRET_KEY` string directly as the AES-256 key:
 
 ```rust
-// Environment variable: VORTEX_SECRET_KEY
-// Expected format: 32-byte hex string (64 characters)
-// Example: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-
-let key_bytes = hex::decode(std::env::var("VORTEX_SECRET_KEY"))?;
-assert_eq!(key_bytes.len(), 32); // AES-256 requires 32 bytes
+let key_str = env::var("VORTEX_SECRET_KEY")?;
+let key_bytes = key_str.as_bytes();  // Raw bytes, NOT hex-decoded
+assert_eq!(key_bytes.len(), 32);     // Must be exactly 32 characters
 ```
 
-**Important**: Rotate `VORTEX_SECRET_KEY` regularly (e.g., every 90 days). After rotation, re-encrypt all secrets with the new key.
+**Important:** The key must be exactly 32 characters (not 64 hex characters). Each character contributes one byte to the 256-bit key.
+
+```bash
+# Generate a valid key
+export VORTEX_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
+```
 
 ---
 
 ## API Reference
 
-### 1. Create Secret
+### 1. List Secret Keys
 
-**Endpoint:** `POST /api/secrets`
+**Endpoint:** `GET /api/secrets` — Admin only
 
-Create a new encrypted secret.
+Returns secret names only. Values are never exposed via the API.
 
-**Request Body:**
 ```json
-{
-  "name": "db_password",
-  "value": "my_super_secret_password"
-}
+// Response (200)
+{ "secrets": ["DB_PASSWORD", "SLACK_TOKEN", "API_KEY"] }
 ```
 
-**Response (201 Created):**
-```json
-{
-  "id": "secret_7c3f8b2a9d1e4c6f",
-  "name": "db_password",
-  "created_at": "2026-02-22T22:59:00Z",
-  "updated_at": "2026-02-22T22:59:00Z"
-}
-```
-
-**cURL Example:**
 ```bash
-curl -X POST http://localhost:8080/api/secrets \
+curl http://localhost:3000/api/secrets \
+  -H "Authorization: Bearer <api_key>"
+```
+
+### 2. Store Secret
+
+**Endpoint:** `POST /api/secrets` — Admin only
+
+Creates or updates an encrypted secret.
+
+```json
+// Request
+{ "key": "DB_PASSWORD", "value": "super_secret_123" }
+
+// Response (200)
+{ "message": "Secret stored successfully" }
+```
+
+```bash
+curl -X POST http://localhost:3000/api/secrets \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"name": "db_password", "value": "super_secret_123"}'
+  -H "Authorization: Bearer <api_key>" \
+  -d '{"key": "DB_PASSWORD", "value": "super_secret_123"}'
 ```
 
----
+### 3. Delete Secret
 
-### 2. Retrieve Secret
+**Endpoint:** `DELETE /api/secrets/:key` — Admin only
 
-**Endpoint:** `GET /api/secrets/{id}`
-
-Retrieve a secret by ID (decrypts and returns plaintext value).
-
-**Response (200 OK):**
-```json
-{
-  "id": "secret_7c3f8b2a9d1e4c6f",
-  "name": "db_password",
-  "value": "my_super_secret_password",
-  "created_at": "2026-02-22T22:59:00Z",
-  "updated_at": "2026-02-22T22:59:00Z"
-}
-```
-
-**cURL Example:**
 ```bash
-curl -X GET http://localhost:8080/api/secrets/secret_7c3f8b2a9d1e4c6f \
-  -H "Authorization: Bearer <token>"
+curl -X DELETE http://localhost:3000/api/secrets/DB_PASSWORD \
+  -H "Authorization: Bearer <api_key>"
 ```
 
----
-
-### 3. Update Secret
-
-**Endpoint:** `PUT /api/secrets/{id}`
-
-Update an existing secret (re-encrypts with a new nonce).
-
-**Request Body:**
-```json
-{
-  "value": "new_secret_password_456"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "id": "secret_7c3f8b2a9d1e4c6f",
-  "name": "db_password",
-  "created_at": "2026-02-22T22:59:00Z",
-  "updated_at": "2026-02-22T23:05:30Z"
-}
-```
-
----
-
-### 4. Delete Secret
-
-**Endpoint:** `DELETE /api/secrets/{id}`
-
-Permanently delete a secret.
-
-**Response (204 No Content)**
-
-**cURL Example:**
-```bash
-curl -X DELETE http://localhost:8080/api/secrets/secret_7c3f8b2a9d1e4c6f \
-  -H "Authorization: Bearer <token>"
-```
-
----
-
-### 5. List All Secrets
-
-**Endpoint:** `GET /api/secrets`
-
-List all secrets (returns metadata only; no values).
-
-**Response (200 OK):**
-```json
-{
-  "secrets": [
-    {
-      "id": "secret_7c3f8b2a9d1e4c6f",
-      "name": "db_password",
-      "created_at": "2026-02-22T22:59:00Z",
-      "updated_at": "2026-02-22T22:59:00Z"
-    },
-    {
-      "id": "secret_a1b2c3d4e5f6g7h8",
-      "name": "slack_api_token",
-      "created_at": "2026-02-20T10:30:00Z",
-      "updated_at": "2026-02-20T10:30:00Z"
-    }
-  ]
-}
-```
+> **Note:** There is no API endpoint to retrieve (decrypt) a secret value. Secrets are only decrypted internally at task execution time and injected as environment variables.
 
 ---
 
 ## Task Secret Injection
 
-### How Secrets Are Resolved During Task Dispatch
+### How Secrets Are Injected During Task Execution
 
-When a DAG includes a secret reference, VORTEX performs dynamic secret injection:
+When a task is dispatched to a worker:
 
-1. **DAG Definition** includes `secrets` list in task spec
-2. **Controller processes DAG**: Resolves secret names to secret IDs
-3. **Worker receives task**: Gets decrypted secret values
-4. **Secret injected as env var**: Available to container at runtime
+1. The controller fetches all secrets from the vault
+2. Secrets are decrypted using the `VORTEX_SECRET_KEY`
+3. Decrypted values are injected as environment variables into the task process
+4. The task can access secrets via `os.environ` (Python) or `$ENV_VAR` (Bash)
 
 ### Environment Variable Injection
 
-Secrets are injected with a `SECRET_` prefix (transformed to uppercase):
+Secrets are injected with their original key name as the environment variable:
 
-| Secret Name | Environment Variable |
-|------------|----------------------|
-| `db_password` | `$SECRET_DB_PASSWORD` |
-| `slack_token` | `$SECRET_SLACK_TOKEN` |
-| `api_key` | `$SECRET_API_KEY` |
-
-### Example: DAG with Secret References
-
-```yaml
-version: "1.0"
-name: data-pipeline
-
-secrets:
-  - name: db_password
-    id: secret_7c3f8b2a9d1e4c6f
-  - name: slack_token
-    id: secret_a1b2c3d4e5f6g7h8
-
-tasks:
-  - name: fetch_data
-    image: postgres-client:latest
-    command:
-      - psql
-      - -h
-      - db.example.com
-      - -U
-      - admin
-      - -w
-      - -c
-      - "SELECT * FROM users"
-    secrets:
-      - db_password  # Injected as $SECRET_DB_PASSWORD
-    environment:
-      PGPASSWORD: $SECRET_DB_PASSWORD
-
-  - name: notify_slack
-    image: python:3.13
-    command:
-      - python
-      - -c
-      - "import requests; requests.post(os.getenv('SLACK_WEBHOOK'), json={})"
-    secrets:
-      - slack_token  # Injected as $SECRET_SLACK_TOKEN
-    environment:
-      SLACK_WEBHOOK: $SECRET_SLACK_TOKEN
+```python
+# In a PythonOperator task
+import os
+db_password = os.environ.get("DB_PASSWORD")
 ```
-
-### Worker-Side Processing
-
-When a worker receives the task, the controller provides decrypted secrets:
-
-```json
-{
-  "task_id": "task_123abc",
-  "image": "postgres-client:latest",
-  "command": [...],
-  "secrets": {
-    "db_password": "my_super_secret_password",
-    "slack_token": "xoxb-token-here"
-  }
-}
-```
-
-The worker injects secrets as environment variables before executing the container:
 
 ```bash
-export SECRET_DB_PASSWORD="my_super_secret_password"
-export SECRET_SLACK_TOKEN="xoxb-token-here"
-docker run --env SECRET_DB_PASSWORD --env SECRET_SLACK_TOKEN postgres-client:latest
+# In a BashOperator task
+echo $DB_PASSWORD
 ```
+
+### Additional Environment Variables
+
+VORTEX also injects helper variables for tasks that need API access:
+
+| Variable | Description |
+|----------|-------------|
+| `VORTEX_BASE_URL` | Base URL of the VORTEX server (default: `http://localhost:3000`) |
+| `VORTEX_API_KEY` | Task-scoped API key (only if `VORTEX_TASK_API_KEY` is set on the server) |
+
+> **Security Note:** Tasks do NOT receive the admin API key. If tasks need API access, set the `VORTEX_TASK_API_KEY` environment variable on the server process with a scoped, limited-privilege key.
 
 ---
 
 ## Security Best Practices
 
-### 1. Rotate the Master Key Regularly
+### 1. Protect the Master Key
 
-- Rotate `VORTEX_SECRET_KEY` every 90 days
-- After rotation, re-encrypt all secrets with the new key:
-  ```bash
-  # Controller provides a rotate-keys endpoint (future enhancement)
-  curl -X POST http://localhost:8080/api/secrets/rotate-keys \
-    -H "Authorization: Bearer <admin-token>"
-  ```
+- Store `VORTEX_SECRET_KEY` securely (e.g., HashiCorp Vault, AWS Secrets Manager, systemd credentials)
+- Only the controller process should have access to the key
+- Rotate after any suspected compromise
 
-### 2. Use HTTPS for API Calls
+### 2. Use HTTPS
 
-- Always use TLS when communicating with the Secrets API
-- Disable plaintext HTTP in production
-- Example deployment:
-  ```bash
-  ./vortex --secrets-key $VORTEX_SECRET_KEY --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
-  ```
+- Always use TLS in production when communicating with the Secrets API
+- Configure with `--tls-cert` and `--tls-key` flags
 
 ### 3. Audit Secret Access
 
-- Log all secret access (retrieve, update, delete) with:
-  - User/client ID
-  - Timestamp
-  - Action (GET, PUT, DELETE)
-  - Secret name (NOT value)
-
-Example audit log:
-```
-[2026-02-22T22:59:00Z] user:alice SECRET_GET db_password status:success
-[2026-02-22T23:05:30Z] user:bob SECRET_PUT db_password status:success
-```
+All secret operations are logged to the audit log:
+- `secret.store` — When a secret is created or updated
+- `secret.delete` — When a secret is deleted
+- Secret names are logged; values are never logged
 
 ### 4. Never Log Secret Values
 
-- Secrets should never appear in logs, error messages, or stack traces
-- Use placeholder values in debugging:
-  ```rust
-  // ✗ Bad: println!("Secret value: {}", secret_value);
-  // ✓ Good: println!("Secret retrieved: {}", secret.name);
-  ```
+Secrets should never appear in logs, error messages, or stack traces. VORTEX enforces this at the API level by never returning decrypted values.
 
-### 5. Restrict Access to VORTEX_SECRET_KEY
+### 5. Use Scoped Task API Keys
 
-- Store `VORTEX_SECRET_KEY` in a secure vault (e.g., HashiCorp Vault, AWS Secrets Manager)
-- Only the controller process should have access
-- Rotate after any suspected compromise
-
-### 6. Use Read-Only Replicas
-
-- In production, only allow writes to the primary database
-- Read replicas can serve retrieve requests (no encryption key needed)
-- Separates read and write workloads for performance
+If tasks need VORTEX API access, use `VORTEX_TASK_API_KEY` with a dedicated, limited-privilege API key rather than the admin key.
 
 ---
 
 ## Troubleshooting
 
-### Error: "Invalid VORTEX_SECRET_KEY"
+### Error: "VORTEX_SECRET_KEY environment variable not set"
 
-**Cause**: The key is not a valid 32-byte hex string.
-
-**Solution**:
+**Solution:** Set the environment variable before starting the server:
 ```bash
-# Generate a new key
-openssl rand -hex 32
-# Output: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6
-export VORTEX_SECRET_KEY="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+export VORTEX_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
 ```
 
-### Error: "Decryption failed: authentication tag mismatch"
+### Error: "VORTEX_SECRET_KEY must be exactly 32 bytes"
 
-**Cause**: The ciphertext or nonce was corrupted, or the wrong key was used.
+**Cause:** The key is not exactly 32 characters long.
 
-**Solution**:
-- Check that `VORTEX_SECRET_KEY` matches the key used during encryption
-- Verify database integrity (check for bit flips or corruption)
-
-### Secret Values Not Injected
-
-**Cause**: Secret name doesn't match DAG reference or secret doesn't exist.
-
-**Solution**:
+**Solution:** Ensure the key is exactly 32 characters:
 ```bash
-# List all secrets to verify names
-curl http://localhost:8080/api/secrets
-
-# Check DAG task for correct secret references
-cat my_dag.yaml | grep -A 5 "secrets:"
+echo -n "$VORTEX_SECRET_KEY" | wc -c  # Should output 32
 ```
+
+### Error: "Secret Vault is not initialized"
+
+**Cause:** The server was started without `VORTEX_SECRET_KEY`. The vault is disabled (non-fatal).
+
+**Solution:** Set the environment variable and restart the server.
+
+### Error: "Decryption failure"
+
+**Cause:** The ciphertext was encrypted with a different key than the one currently set.
+
+**Solution:** Ensure `VORTEX_SECRET_KEY` matches the key used when the secret was stored.
 
 ---
 
 ## Related Documentation
 
-- [Pillar 4: Resilience](./PILLAR_4_RESILIENCE.md) — Task recovery when workers fail
-- [Architecture Overview](./ARCHITECTURE.md) — System design and data flow
 - [API Reference](./API_REFERENCE.md) — Complete endpoint documentation
 - [Deployment Guide](./DEPLOYMENT.md) — Setup and configuration
+- [Resilience](./PILLAR_4_RESILIENCE.md) — Task recovery when workers fail
+- [Architecture Overview](./ARCHITECTURE.md) — System design and data flow

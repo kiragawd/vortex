@@ -116,7 +116,32 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
             Err(e) => {
                 warn!("⚠️ Poll error: {}. Retrying...", e);
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                // Client will automatically try to reconnect on next call thanks to Tower/Tonic channel
+
+                // Bug 24 fix: gRPC channels reconnect transparently, but the
+                // controller's in-memory worker registry is lost on its restart.
+                // Re-register whenever we get back a NOT_FOUND or UNAUTHENTICATED
+                // status, so task polling resumes correctly without manual
+                // intervention. Other errors are treated as transient.
+                let code = e.code();
+                if code == tonic::Code::NotFound || code == tonic::Code::Unauthenticated || code == tonic::Code::Unavailable {
+                    warn!("🔄 Re-registering worker after controller loss...");
+                    match client.register_worker(WorkerInfo {
+                        worker_id: worker_id.to_string(),
+                        hostname: host.clone(),
+                        capacity,
+                        labels: labels.clone(),
+                    }).await {
+                        Ok(resp) => {
+                            let r = resp.into_inner();
+                            if r.accepted {
+                                info!("✅ Re-registered with controller: {}", r.message);
+                            } else {
+                                warn!("⚠️ Re-registration rejected: {}", r.message);
+                            }
+                        }
+                        Err(re) => warn!("⚠️ Re-registration also failed: {}", re),
+                    }
+                }
                 continue;
             }
         };

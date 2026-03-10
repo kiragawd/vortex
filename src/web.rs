@@ -7,6 +7,8 @@ use axum::{
     routing::{get, post, patch, delete, put},
     Json, Router,
 };
+// Bug 13 fix: import CorsLayer to allow cross-origin browser clients.
+use tower_http::cors::{CorsLayer, Any};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use crate::swarm::SwarmState;
@@ -61,7 +63,12 @@ pub struct AppState {
     pub xcom: Arc<XComStore>,
     pub pool_manager: Arc<PoolManager>,
     pub metrics: Arc<VortexMetrics>,
-    pub backfill_progress: Arc<std::sync::RwLock<HashMap<String, f32>>>,
+    // Bug 18 fix: use tokio::sync::RwLock so .write()/.read() are async-aware
+    // and do not block the Tokio worker thread when held across await points.
+    pub backfill_progress: Arc<tokio::sync::RwLock<HashMap<String, f32>>>,
+    // Bug 31 fix: simple in-memory rate-limiter for the login endpoint.
+    // Maps remote IP (or username as fallback) → (attempt_count, window_start).
+    pub login_attempts: Arc<tokio::sync::Mutex<HashMap<String, (u32, std::time::Instant)>>>,
 }
 
 pub struct WebServer {
@@ -78,7 +85,7 @@ impl WebServer {
         Self { db, tx, swarm, vault, dags, metrics }
     }
 
-    pub async fn run(self, port: u16, tls_cert: Option<String>, tls_key: Option<String>) {
+    pub async fn run(self, port: u16, tls_cert: Option<String>, tls_key: Option<String>) -> anyhow::Result<()> {
         let state = Arc::new(AppState {
             db: self.db.clone(),
             tx: self.tx,
@@ -88,7 +95,8 @@ impl WebServer {
             pool_manager: Arc::new(PoolManager::new(self.db.clone())),
             dags: self.dags,
             metrics: self.metrics,
-            backfill_progress: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            backfill_progress: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            login_attempts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         });
 
         let api_routes = Router::new()
@@ -144,18 +152,30 @@ impl WebServer {
             .route("/api/teams/:id/users/:username", put(assign_user_team_handler))
             .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+        // Bug 13 fix: apply CORS layer so browser clients from other origins can
+        // reach the API. Bearer-token auth makes a permissive policy safe here.
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
         let app = Router::new()
             .merge(api_routes)
             .route("/api/login", post(login))
             .route("/metrics", get(prometheus_metrics_handler_wrapper))
+            // Improvement 38: health check endpoint
+            .route("/health", get(health_handler))
             .fallback(static_handler)
             .layer(middleware::from_fn(request_id_middleware))
+            // Improvement 40: reject request bodies larger than 10 MB
+            .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
+            .layer(cors)
             .with_state(state);
 
         if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
                 .await
-                .expect("Failed to load TLS certificates");
+                .map_err(|e| anyhow::anyhow!("Failed to load TLS certificates from {} and {}: {}", cert_path, key_path, e))?;
             info!("🔒 Web UI running on https://localhost:{} (TLS)", port);
             axum_server::bind_rustls(
                 format!("0.0.0.0:{}", port).parse().unwrap(),
@@ -163,12 +183,15 @@ impl WebServer {
             )
             .serve(app.into_make_service())
             .await
-            .unwrap();
+            .map_err(|e| anyhow::anyhow!("Web server TLS bind failed: {}", e))?;
         } else {
-            let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
+                .map_err(|e| anyhow::anyhow!("Web server bind failed on port {}: {}", port, e))?;
             info!("🌐 Web UI running on http://localhost:{}", port);
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(listener, app).await
+                .map_err(|e| anyhow::anyhow!("Web server failed: {}", e))?;
         }
+        Ok(())
     }
 }
 
@@ -176,19 +199,29 @@ async fn request_id_middleware(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    use tracing::Instrument;
+
     let request_id = req.headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // Improvement 46: use .instrument() so the span is properly attached to
+    // the async future rather than using a sync `_enter` guard, which doesn't
+    // work correctly across .await suspension points.
     let span = tracing::info_span!("request", request_id = %request_id, method = %req.method(), path = %req.uri().path());
-    let _enter = span.enter();
+    let mut response = next.run(req).instrument(span).await;
 
-    let mut response = next.run(req).await;
-    response.headers_mut().insert(
-        "x-request-id",
-        request_id.parse().unwrap(),
+    response.headers_mut().insert("x-request-id", request_id.parse().unwrap());
+
+    // Improvement 43: security headers on every response
+    let headers = response.headers_mut();
+    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert(
+        "content-security-policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:".parse().unwrap(),
     );
     response
 }
@@ -270,24 +303,26 @@ async fn upload_dag(State(state): State<Arc<AppState>>, axum::extract::Extension
                         return (StatusCode::BAD_REQUEST, Json(json!({"error": "No distinct DAGs found in file"}))).into_response();
                     }
                     
-                    let dag = parsed_dags.into_iter().next().unwrap();
-                    let dag_id = dag.id.clone();
-                    let task_count = dag.tasks.len();
-                    
+                    // Bug 9 fix: register ALL DAGs from a multi-DAG file, not just the first one
+                    let mut registered_ids: Vec<String> = Vec::new();
                     {
-                        let mut dags = state.dags.lock().await;
-                        dags.insert(dag.id.clone(), Arc::new(dag.clone()));
+                        let mut dags_map = state.dags.lock().await;
+                        for dag in parsed_dags {
+                            let dag_id = dag.id.clone();
+                            let _ = state.db.register_dag(&dag).await;
+                            dags_map.insert(dag.id.clone(), Arc::new(dag));
+                            registered_ids.push(dag_id);
+                        }
                     }
                     
-                    let _ = state.db.register_dag(&dag).await;
-                    
-                    info!("🚀 DAG Uploaded: {} ({} tasks)", dag_id, task_count);
+                    let dag_count = registered_ids.len();
+                    info!("🚀 DAGs Uploaded from {}: {:?}", file_name, registered_ids);
                     let _ = state.db.log_audit_event(
-                        &auth_user.username, "dag.upload", "dag", &dag_id,
-                        &format!("{{\"file\":\"{}\"}}", file_name),
+                        &auth_user.username, "dag.upload", "dag", &registered_ids.join(","),
+                        &format!("{{\"file\":\"{}\",\"dag_count\":{}}}", file_name, dag_count),
                     ).await;
                     
-                    return Json(json!({ "dag_id": dag_id, "tasks": task_count })).into_response();
+                    return Json(json!({ "dag_ids": registered_ids, "dag_count": dag_count })).into_response();
                 },
                 Err(e) => {
                     let _ = fs::remove_file(&file_path);
@@ -341,8 +376,27 @@ struct LoginRequest {
 }
 
 async fn login(State(state): State<Arc<AppState>>, Json(body): Json<LoginRequest>) -> Response {
+    // Bug 31 fix: simple in-memory rate-limit — max 10 attempts per username per 60 seconds.
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        let now = std::time::Instant::now();
+        let entry = attempts.entry(body.username.clone()).or_insert((0, now));
+        // Reset window if it's been more than 60 seconds
+        if now.duration_since(entry.1).as_secs() >= 60 {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        if entry.0 > 10 {
+            return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+                "error": "Too many login attempts. Please wait 60 seconds."
+            }))).into_response();
+        }
+    }
+
     match state.db.validate_user(&body.username, &body.password).await {
         Ok(Some((api_key, role))) => {
+            // Successful login — reset the counter
+            state.login_attempts.lock().await.remove(&body.username);
             info!("🔑 User logged in: {} (Role: {})", body.username, role);
             let _ = state.db.log_audit_event(
                 &body.username, "auth.login", "user", &body.username, "{}",
@@ -442,15 +496,25 @@ async fn get_dags(
 
     match state.db.get_all_dags(limit, offset).await {
         Ok((dags, total)) => {
-            if let Some(user_team_id) = auth_user.team_id {
+            // Bug 14 fix: only Admin skips team filtering. Previously, non-admin
+            // users with team_id == None (no team assigned) would see ALL DAGs.
+            if auth_user.role == "Admin" {
+                // Admins see everything
+                Json(PaginatedResponse { data: dags, total, limit, offset })
+            } else if let Some(user_team_id) = auth_user.team_id {
+                // Operator / Viewer with a team — filter to their team only
                 let filtered: Vec<_> = dags.into_iter().filter(|d| {
                     d.get("team_id").and_then(|v| v.as_str()) == Some(&user_team_id)
                 }).collect();
-                // When filtering, the 'total' reflects the DB count, not strictly the filtered count,
-                // which is acceptable for this level.
-                Json(PaginatedResponse { data: filtered, total, limit, offset })
+                let filtered_total = filtered.len() as i64;
+                Json(PaginatedResponse { data: filtered, total: filtered_total, limit, offset })
             } else {
-                Json(PaginatedResponse { data: dags, total, limit, offset })
+                // Non-admin with no team assignment: only show DAGs with no team
+                let filtered: Vec<_> = dags.into_iter().filter(|d| {
+                    d.get("team_id").and_then(|v| v.as_str()).is_none()
+                }).collect();
+                let filtered_total = filtered.len() as i64;
+                Json(PaginatedResponse { data: filtered, total: filtered_total, limit, offset })
             }
         },
         Err(_) => Json(PaginatedResponse { data: vec![], total: 0, limit, offset }),
@@ -612,6 +676,28 @@ async fn update_dag_source(Path(id): Path<String>, State(state): State<Arc<AppSt
     };
 
     let path = version["file_path"].as_str().unwrap_or("");
+
+    // Bug 19 fix: validate the stored file_path is within the allowed dags/ directory.
+    // An attacker who manages to inject a path into dag_versions could otherwise write
+    // arbitrary files (e.g. ../../etc/cron.d/evil).
+    let allowed_base = std::path::Path::new("dags")
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from("dags"));
+    let target = std::path::Path::new(path);
+    let canonical_target = match target.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // File might not exist yet — resolve against cwd manually
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(target),
+                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Cannot resolve working directory"}))).into_response(),
+            }
+        }
+    };
+    if !canonical_target.starts_with(&allowed_base) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Path traversal detected: file_path is outside the dags/ directory"}))).into_response();
+    }
+
     if let Err(e) = fs::write(path, &body.source) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
     }
@@ -802,19 +888,20 @@ async fn unpause_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>,
                 if let Ok(last_run) = chrono::DateTime::parse_from_rfc3339(last_run_str) {
                     let last_run_utc = last_run.with_timezone(&chrono::Utc);
                     let now = chrono::Utc::now();
-                    
-                    let schedule_str = crate::scheduler::normalize_schedule(schedule_expr);
-                    if !schedule_str.is_empty() {
-                        if let Ok(schedule) = schedule_str.parse::<cron::Schedule>() {
-                            let iter: cron::ScheduleIterator<'_, chrono::Utc> = schedule.after(&last_run_utc);
-                            for dt in iter {
-                                if dt > now { break; }
-                                let _ = state.tx.send(ScheduleRequest {
-                                    dag_id: id.clone(),
-                                    triggered_by: "catchup".to_string(),
-                                    run_type: RunType::Full,
-                                    execution_date: Some(dt),
-                                }).await;
+
+                    if let Ok(schedule_str) = crate::scheduler::normalize_schedule(schedule_expr) {
+                        if !schedule_str.is_empty() {
+                            if let Ok(schedule) = schedule_str.parse::<cron::Schedule>() {
+                                let now = chrono::Utc::now();
+                                for dt in schedule.after(&last_run_utc) {
+                                    if dt > now { break; }
+                                    let _ = state.tx.send(ScheduleRequest {
+                                        dag_id: id.clone(),
+                                        triggered_by: "catchup".to_string(),
+                                        run_type: RunType::Full,
+                                        execution_date: Some(dt),
+                                    }).await;
+                                }
                             }
                         }
                     }
@@ -868,7 +955,12 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
         .unwrap_or_else(|_| chrono::Utc::now());
 
     let schedule_expr = dag_meta.get("schedule_interval").and_then(|v| v.as_str()).unwrap_or("");
-    let schedule_str = crate::scheduler::normalize_schedule(schedule_expr);
+    let schedule_str = match crate::scheduler::normalize_schedule(schedule_expr) {
+        Ok(s) => s,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid schedule: {}", e)}))).into_response();
+        }
+    };
 
     let mut intervals = Vec::new();
     if !schedule_str.is_empty() {
@@ -891,9 +983,7 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
 
     let _ = state.db.log_audit_event(&auth_user.username, "dag.backfill", "dag", &id, &format!("{{\"start\":\"{}\",\"end\":\"{}\"}}", start, end)).await;
     
-    if let Ok(mut prog) = state.backfill_progress.write() {
-        prog.insert(id.clone(), 0.0);
-    }
+    state.backfill_progress.write().await.insert(id.clone(), 0.0);
 
     // BUG-11 FIX: Spawn the backfill loop in the background so the handler
     // returns immediately. Without this, progress always reached 1.0 before
@@ -905,9 +995,7 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
 
     tokio::spawn(async move {
         let total_f = total as f32;
-        if let Ok(mut prog) = backfill_progress.write() {
-            prog.insert(dag_id_bg.clone(), 0.0);
-        }
+        backfill_progress.write().await.insert(dag_id_bg.clone(), 0.0);
         for (i, dt) in intervals.into_iter().enumerate() {
             let _ = tx.send(ScheduleRequest {
                 dag_id: dag_id_bg.clone(),
@@ -915,27 +1003,37 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
                 run_type: RunType::Full,
                 execution_date: Some(dt),
             }).await;
-            if let Ok(mut prog) = backfill_progress.write() {
-                prog.insert(dag_id_bg.clone(), (i + 1) as f32 / total_f);
-            }
+            backfill_progress.write().await.insert(dag_id_bg.clone(), (i + 1) as f32 / total_f);
             // Small yield so we don't starve other tasks while dispatching
             tokio::task::yield_now().await;
         }
-        if let Ok(mut prog) = backfill_progress.write() {
-            prog.insert(dag_id_bg.clone(), 1.0);
-        }
+        backfill_progress.write().await.insert(dag_id_bg.clone(), 1.0);
+        // Improvement 44: evict completed entry after 60 s so the HashMap
+        // doesn't grow forever (entries were previously kept indefinitely).
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        backfill_progress.write().await.remove(&dag_id_bg);
     });
 
     Json(json!({"message": "Backfill triggered", "start": start, "end": end, "intervals_queued": total})).into_response()
 }
 
 async fn get_backfill_progress(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let progress = if let Ok(prog) = state.backfill_progress.read() {
-        *prog.get(&id).unwrap_or(&0.0)
-    } else {
-        0.0
-    };
+    let progress = *state.backfill_progress.read().await.get(&id).unwrap_or(&0.0);
     Json(json!({"dag_id": id, "progress": progress})).into_response()
+}
+
+/// Improvement 38/42: Health check endpoint — verifies DB connectivity and
+/// returns a lightweight JSON response. Used by load-balancers and monitoring.
+async fn health_handler(State(state): State<Arc<AppState>>) -> Response {
+    // Improvement 42: use ping() trait method to verify DB connectivity.
+    let db_ok = state.db.ping().await;
+    let status = if db_ok { "ok" } else { "degraded" };
+    let code   = if db_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    (code, Json(json!({
+        "status":  status,
+        "version": env!("CARGO_PKG_VERSION"),
+        "db":      if db_ok { "connected" } else { "unreachable" },
+    }))).into_response()
 }
 async fn swarm_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"enabled": state.swarm.enabled, "active_workers": state.swarm.active_worker_count().await, "queue_depth": state.swarm.queue_depth().await}))

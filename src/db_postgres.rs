@@ -16,9 +16,16 @@ use crate::db_trait::DatabaseBackend;
 
 pub struct PostgresDb {
     pool: PgPool,
+    /// Unique identifier for this controller instance, used as the HA leader lock owner.
+    /// Bug 15 fix: we need node_id to identify who holds the leader_election row.
+    node_id: String,
 }
 
 impl PostgresDb {
+    /// Improvement 42: expose the inner connection pool so callers (e.g. health
+    /// check handler) can run lightweight queries without the full trait.
+    pub fn pool(&self) -> &PgPool { &self.pool }
+
     /// Create a new `PostgresDb`, connect to Postgres and run schema migrations.
     pub async fn new(
         url: &str,
@@ -34,7 +41,10 @@ impl PostgresDb {
             .await
             .context("Failed to connect to PostgreSQL")?;
 
-        let db = Self { pool };
+        let node_id = std::env::var("VORTEX_NODE_ID")
+            .unwrap_or_else(|_| format!("node-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+
+        let db = Self { pool, node_id };
         db.init().await?;
         Ok(db)
     }
@@ -778,8 +788,9 @@ impl DatabaseBackend for PostgresDb {
                     t.retry_delay_secs
              FROM task_instances ti
              JOIN tasks    t  ON ti.task_id = t.id AND ti.dag_id = t.dag_id
-             JOIN dag_runs dr ON ti.dag_id  = dr.dag_id
-                              AND ti.execution_date = dr.execution_date
+             -- Bug 34 fix: JOIN on run_id (unique per run), not (dag_id, execution_date).
+             -- Re-triggered runs share dag_id+execution_date, causing duplicate rows.
+             JOIN dag_runs dr ON ti.run_id = dr.id
              WHERE ti.id = $1",
         )
         .bind(ti_id)
@@ -924,6 +935,28 @@ impl DatabaseBackend for PostgresDb {
             .await
             .context("mark_sla_missed")?;
         Ok(())
+    }
+
+    async fn get_running_dag_runs(&self) -> Result<Vec<(String, String, DateTime<Utc>)>> {
+        let rows = sqlx::query(
+            "SELECT id, dag_id, start_time FROM dag_runs
+             WHERE state = 'Running' AND sla_missed = FALSE AND start_time IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("get_running_dag_runs")?;
+
+        use sqlx::Row;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("id"),
+                    r.get::<String, _>("dag_id"),
+                    r.get::<DateTime<Utc>, _>("start_time"),
+                )
+            })
+            .collect())
     }
 
     // ── User management ───────────────────────────────────────────────────────
@@ -1177,8 +1210,9 @@ impl DatabaseBackend for PostgresDb {
                     t.retry_delay_secs
              FROM task_instances ti
              JOIN tasks    t  ON ti.task_id = t.id AND ti.dag_id = t.dag_id
-             JOIN dag_runs dr ON ti.dag_id  = dr.dag_id
-                              AND ti.execution_date = dr.execution_date
+             -- Bug 32 fix: JOIN on run_id (unique per run), not (dag_id, execution_date).
+             -- Re-triggered runs share dag_id+execution_date, causing duplicate rows.
+             JOIN dag_runs dr ON ti.run_id = dr.id
              WHERE ti.worker_id = $1 AND ti.state = 'Queued'",
         )
         .bind(worker_id)
@@ -1220,28 +1254,26 @@ impl DatabaseBackend for PostgresDb {
     // ── DAG versioning ────────────────────────────────────────────────────────
 
     async fn store_dag_version(&self, dag_id: &str, file_path: &str) -> Result<i64> {
-        // Compute the next version number atomically
+        // Bug 23 fix: merge the SELECT MAX(version)+1 and the INSERT into a single
+        // statement so two concurrent callers cannot compute the same version number.
+        // Previously this was two round-trips (SELECT then INSERT), giving a TOCTOU
+        // race where concurrent writes could produce duplicate version numbers.
         let next_version: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM dag_versions WHERE dag_id = $1",
+            "INSERT INTO dag_versions (id, dag_id, version, file_path, created_at)
+             SELECT
+                 $1 || '-' || (COALESCE(MAX(version), 0) + 1)::text,
+                 $1,
+                 COALESCE(MAX(version), 0) + 1,
+                 $2,
+                 NOW()
+             FROM dag_versions WHERE dag_id = $1
+             RETURNING version",
         )
         .bind(dag_id)
+        .bind(file_path)
         .fetch_one(&self.pool)
         .await
-        .context("store_dag_version: compute version")?;
-
-        let id = format!("{}-{}", dag_id, next_version);
-        sqlx::query(
-            "INSERT INTO dag_versions (id, dag_id, version, file_path, created_at)
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(&id)
-        .bind(dag_id)
-        .bind(next_version)
-        .bind(file_path)
-        .bind(Utc::now().to_rfc3339())
-        .execute(&self.pool)
-        .await
-        .context("store_dag_version: insert")?;
+        .context("store_dag_version: atomic insert")?;
 
         Ok(next_version)
     }
@@ -1446,10 +1478,13 @@ impl DatabaseBackend for PostgresDb {
         action: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
         use sqlx::Row;
+        // Improvement 45: include COUNT(*) OVER() so callers get total row count
+        // for pagination without issuing a second query.
         let rows = match (actor, action) {
             (Some(a), Some(act)) => {
                 sqlx::query(
-                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata
+                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata,
+                            COUNT(*) OVER() AS total_count
                      FROM audit_log WHERE actor=$1 AND action=$2
                      ORDER BY timestamp DESC LIMIT $3 OFFSET $4",
                 )
@@ -1458,7 +1493,8 @@ impl DatabaseBackend for PostgresDb {
             }
             (Some(a), None) => {
                 sqlx::query(
-                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata
+                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata,
+                            COUNT(*) OVER() AS total_count
                      FROM audit_log WHERE actor=$1
                      ORDER BY timestamp DESC LIMIT $2 OFFSET $3",
                 )
@@ -1467,7 +1503,8 @@ impl DatabaseBackend for PostgresDb {
             }
             (None, Some(act)) => {
                 sqlx::query(
-                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata
+                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata,
+                            COUNT(*) OVER() AS total_count
                      FROM audit_log WHERE action=$1
                      ORDER BY timestamp DESC LIMIT $2 OFFSET $3",
                 )
@@ -1476,7 +1513,8 @@ impl DatabaseBackend for PostgresDb {
             }
             (None, None) => {
                 sqlx::query(
-                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata
+                    "SELECT id, timestamp, actor, action, target_type, target_id, metadata,
+                            COUNT(*) OVER() AS total_count
                      FROM audit_log ORDER BY timestamp DESC LIMIT $1 OFFSET $2",
                 )
                 .bind(limit).bind(offset)
@@ -1493,6 +1531,8 @@ impl DatabaseBackend for PostgresDb {
             "target_id":   r.get::<String, _>("target_id"),
             "metadata":    serde_json::from_str::<serde_json::Value>(&r.get::<String, _>("metadata"))
                                .unwrap_or(serde_json::json!({})),
+            // Improvement 45: total matching rows for pagination
+            "total_count": r.get::<i64, _>("total_count"),
         })).collect())
     }
 
@@ -1648,18 +1688,44 @@ impl DatabaseBackend for PostgresDb {
     }
 
     // ── High Availability (HA) Advisory Locks ─────────────────────────────────
+    //
+    // Bug 15 fix: replaced pg_try_advisory_lock (session-scoped) with a
+    // heartbeat-based leader_election table. With a connection pool, the session
+    // holding a pg_advisory_lock can be recycled at any time, silently releasing
+    // the lock and causing split-brain (two leaders at once).
+    //
+    // The leader_election table has a single row (lock_key = 1). The holder must
+    // renew their lease every ~10s. An expired lease can be stolen by another node.
 
     async fn try_acquire_leader_lock(&self) -> Result<bool> {
-        // 123456789 is the arbitrary 64-bit key used exclusively for the VORTEX HA controller lock.
-        let (locked,): (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock(123456789)")
-            .fetch_one(&self.pool)
-            .await
-            .context("try_acquire_leader_lock")?;
-        Ok(locked)
+        let expires = Utc::now() + chrono::Duration::seconds(30);
+        // Upsert the single leader row:
+        //  - Insert if the table is empty
+        //  - Update if the existing lease has expired OR if we already hold it
+        //  - Return the node_id that ends up in the row after the upsert
+        let row: Option<(String,)> = sqlx::query_as(
+            "INSERT INTO leader_election (lock_key, node_id, expires_at)
+             VALUES (1, $1, $2)
+             ON CONFLICT (lock_key) DO UPDATE
+               SET node_id    = EXCLUDED.node_id,
+                   expires_at = EXCLUDED.expires_at
+             WHERE leader_election.expires_at < NOW()   -- steal expired lease
+                OR leader_election.node_id  = $1        -- or renew our own lease
+             RETURNING node_id",
+        )
+        .bind(&self.node_id)
+        .bind(expires)
+        .fetch_optional(&self.pool)
+        .await
+        .context("try_acquire_leader_lock")?;
+
+        // We hold the lock iff we got a row back (the upsert succeeded)
+        Ok(row.is_some())
     }
 
     async fn release_leader_lock(&self) -> Result<()> {
-        sqlx::query("SELECT pg_advisory_unlock(123456789)")
+        sqlx::query("DELETE FROM leader_election WHERE node_id = $1")
+            .bind(&self.node_id)
             .execute(&self.pool)
             .await
             .context("release_leader_lock")?;
@@ -1667,21 +1733,60 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool> {
-        let result = sqlx::query(
+        // Use a transaction with row-level locking to prevent TOCTOU race conditions.
+        // Lock the pool row first, then check the count and insert atomically.
+        let mut tx = self.pool.begin().await.context("acquire_pool_slot: begin tx")?;
+
+        // Lock the pool row to serialize concurrent slot acquisitions
+        let pool_row = sqlx::query(
+            "SELECT slots FROM pools WHERE name = $1 FOR UPDATE"
+        )
+        .bind(pool_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("acquire_pool_slot: lock pool row")?;
+
+        let max_slots: i32 = match pool_row {
+            Some(row) => {
+                use sqlx::Row;
+                row.get("slots")
+            }
+            None => {
+                tx.rollback().await.ok();
+                return Err(anyhow::anyhow!("Pool '{}' not found", pool_name));
+            }
+        };
+
+        // Count current occupied slots (inside the transaction, after locking the pool row)
+        let occupied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pool_slots WHERE pool_name = $1"
+        )
+        .bind(pool_name)
+        .fetch_one(&mut *tx)
+        .await
+        .context("acquire_pool_slot: count slots")?;
+
+        if occupied >= max_slots as i64 {
+            tx.rollback().await.ok();
+            return Ok(false);
+        }
+
+        // Insert the slot claim
+        sqlx::query(
             "INSERT INTO pool_slots (id, pool_name, task_instance_id, acquired_at)
-             SELECT $1, $2, $3, $4
-             WHERE (SELECT COUNT(*) FROM pool_slots WHERE pool_name = $2) < (SELECT slots FROM pools WHERE name = $2)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(pool_name)
         .bind(task_instance_id)
         .bind(Utc::now())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
-        .context("acquire_pool_slot")?;
+        .context("acquire_pool_slot: insert slot")?;
 
-        Ok(result.rows_affected() > 0)
+        tx.commit().await.context("acquire_pool_slot: commit")?;
+        Ok(true)
     }
 
     async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()> {
@@ -1701,5 +1806,13 @@ impl DatabaseBackend for PostgresDb {
         ti_id: &str,
     ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>> {
         self.get_task_instance_details(ti_id).await
+    }
+
+    /// Improvement 42: lightweight DB connectivity check used by GET /health.
+    async fn ping(&self) -> bool {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .is_ok()
     }
 }

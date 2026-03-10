@@ -2,7 +2,10 @@ use tracing::{info, warn, error, debug};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+// Bug 11 fix: use tokio::sync::Mutex instead of std::sync::Mutex to avoid
+// blocking tokio worker threads when acquiring the lock across async boundaries.
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use crate::db_trait::DatabaseBackend;
 use crate::metrics::VortexMetrics;
@@ -175,24 +178,45 @@ pub struct ScheduleRequest {
     pub execution_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub fn normalize_schedule(expr: &str) -> String {
-    match expr.trim() {
+/// Normalise a schedule expression and validate it is a parseable cron.
+///
+/// Returns `Ok(expanded)` on success or `Err(msg)` if the expression is
+/// syntactically invalid. Callers should reject DAG registration when this
+/// returns `Err`.
+///
+/// Bug 22 fix: the previous implementation silently returned invalid strings
+/// unchanged, so garbage like `"every day"` would be stored and then panic/crash
+/// at runtime when the cron parser tried to use it.
+pub fn normalize_schedule(expr: &str) -> Result<String, String> {
+    let expanded = match expr.trim() {
         "@yearly" | "@annually" => "0 0 0 1 1 * *".to_string(),
-        "@monthly" => "0 0 0 1 * * *".to_string(),
-        "@weekly" => "0 0 0 * * 0 *".to_string(),
-        "@daily" | "@midnight" => "0 0 0 * * * *".to_string(),
-        "@hourly" => "0 0 * * * * *".to_string(),
-        "@once" => "".to_string(),
+        "@monthly"              => "0 0 0 1 * * *".to_string(),
+        "@weekly"               => "0 0 0 * * 1 *".to_string(),
+        "@daily" | "@midnight"  => "0 0 0 * * * *".to_string(),
+        "@hourly"               => "0 0 * * * * *".to_string(),
+        // @once means "run once on first trigger, never re-schedule" — represented
+        // as an empty string (scheduler checks for empty and skips re-queuing).
+        "@once"  => return Ok(String::new()),
         other => {
             let parts: Vec<&str> = other.split_whitespace().collect();
             match parts.len() {
-                5 => format!("0 {} *", other),
-                6 => format!("0 {}", other),
-                7 => other.to_string(),
-                _ => other.to_string(),
+                5 => format!("0 {} *", other),   // 5-field → prepend seconds, append year
+                6 => format!("0 {}", other),      // 6-field → prepend seconds
+                7 => other.to_string(),            // 7-field already canonical
+                _ => return Err(format!(
+                    "Invalid schedule expression '{}': expected @alias, 5-, 6-, or 7-field cron",
+                    other
+                )),
             }
         }
+    };
+
+    // Validate the expanded expression is actually parseable.
+    if let Err(e) = expanded.parse::<cron::Schedule>() {
+        return Err(format!("Invalid cron expression '{}': {}", expanded, e));
     }
+
+    Ok(expanded)
 }
 
 pub struct Scheduler {
@@ -284,6 +308,8 @@ impl Scheduler {
             }
         }
 
+        // Bug 11 fix: use tokio::sync::Mutex so .lock() is async-aware and
+        // will yield to the runtime instead of blocking the worker thread.
         let in_degree = Arc::new(Mutex::new(in_degree));
         let adj = Arc::new(adj);
         let dag = Arc::clone(&self.dag);
@@ -296,7 +322,7 @@ impl Scheduler {
 
         // Initial tasks with zero dependencies
         {
-            let in_degree_guard = in_degree.lock().unwrap();
+            let in_degree_guard = in_degree.lock().await;
             for (task_id, &degree) in in_degree_guard.iter() {
                 if degree == 0 {
                     let tx_clone = tx.clone();
@@ -323,7 +349,7 @@ impl Scheduler {
                 if let Some(downstream_tasks) = adj.get(&finished_task_id) {
                     for down in downstream_tasks {
                         let degree = {
-                            let mut in_degree_guard = in_degree.lock().unwrap();
+                            let mut in_degree_guard = in_degree.lock().await;
                             let deg = match in_degree_guard.get_mut(down) {
                                 Some(d) => d,
                                 None => {
@@ -338,10 +364,20 @@ impl Scheduler {
                         if degree == 0 {
                             // BUG-4 FIX applied to local scheduler: skip downstream tasks if upstream failed
                             if !success {
+                                // Bug 25 fix: send (down, false) back on the channel so the
+                                // receive loop decrements tasks_remaining and propagates the
+                                // failure to *this* task's own downstream tasks.
+                                // The old code manually decremented tasks_remaining here and
+                                // used `continue` — so grandchildren (B->C when A->B->C fails)
+                                // never had their in_degree decremented. The DAG would hang.
                                 let skipped_ti = Uuid::new_v4().to_string();
-                                let _ = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await;
-                                let _ = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await;
-                                tasks_remaining -= 1;
+                                if let Err(e) = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await {
+                                    error!("DB error creating upstream_failed instance: {}", e);
+                                }
+                                if let Err(e) = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await {
+                                    error!("DB error logging event: {}", e);
+                                }
+                                let _ = tx.send((down.clone(), false)).await;
                                 continue;
                             }
 
@@ -393,7 +429,9 @@ impl Scheduler {
         Ok(())
     }
 
-    #[async_recursion::async_recursion]
+    // Bug 10 fix: removed `#[async_recursion]` attribute. Retries now loop
+    // inside this function, reusing the same `ti_id` instead of spawning a
+    // recursive call that creates a fresh UUID (and thus retry_count = 0).
     async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<VortexMetrics>>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
         let task = match dag.tasks.get(&task_id) {
             Some(t) => t,
@@ -410,196 +448,215 @@ impl Scheduler {
         if let Err(e) = db.create_task_instance(&ti_id, &dag.id, &task_id, "Queued", execution_date, &run_id).await {
             error!("Failed to create task instance in DB: {}", e);
         } else {
-            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "queued", None, None).await;
+            if let Err(e) = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "queued", None, None).await {
+                error!("DB error logging queued event: {}", e);
+            }
         }
 
         if let Some(m) = &metrics { m.record_task_queued(); }
 
-        debug!("⏳ Executing: {} (ID: {})", task.name, task.id);
-        
-        // Update to Running
-        if let Err(e) = db.update_task_state(&ti_id, "Running").await {
-            error!("Failed to update task state to Running: {}", e);
-        } else {
-            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "started", None, None).await;
-        }
-        
-        if let Some(m) = &metrics { m.record_task_start(); }
+        // Bug 10 fix: retry loop — keeps the same ti_id across attempts.
+        // The old code called execute_task recursively, generating a new UUID
+        // each time, so retry_count was always 0 and retries ran indefinitely.
+        let mut attempt = 0;
+        let max_retries = task.max_retries;
+        let retry_delay_secs = task.retry_delay_secs as u64;
+        let mut final_success = false;
 
-        // Prepare environment variables (secrets + XCom context)
-        let mut env_vars = HashMap::new();
-        env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
-        env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
-        env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
-
-        let ds = execution_date.format("%Y-%m-%d").to_string();
-        let ts = execution_date.to_rfc3339();
-        
-        let mut templated_command = task.command.clone();
-        templated_command = templated_command.replace("{{ ds }}", &ds)
-            .replace("{ds}", &ds)
-            .replace("{{ execution_date }}", &ts)
-            .replace("{execution_date}", &ts);
-
-        let start = Utc::now();
-        
-        // Use TaskExecutor for real execution with log capture
-        let result = match task.task_type.as_str() {
-            "python" => {
-                crate::executor::TaskExecutor::execute_python(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
-            },
-            "sensor" => {
-                // Parse sensor config and run sensor loop
-                match serde_json::from_value::<crate::sensors::SensorConfig>(task.config.clone()) {
-                    Ok(sensor_config) => {
-                        let sensor_result = crate::sensors::run_sensor_loop(&sensor_config, &db).await;
-                        match sensor_result {
-                            crate::sensors::SensorResult::ConditionMet => {
-                                crate::executor::ExecutionResult {
-                                    task_id: task.id.clone(),
-                                    success: true,
-                                    exit_code: 0,
-                                    stdout: "Sensor condition met".to_string(),
-                                    stderr: String::new(),
-                                    duration_ms: 0,
-                                }
-                            }
-                            crate::sensors::SensorResult::TimedOut => {
-                                crate::executor::ExecutionResult {
-                                    task_id: task.id.clone(),
-                                    success: false,
-                                    exit_code: -3,
-                                    stdout: String::new(),
-                                    stderr: "Sensor timed out".to_string(),
-                                    duration_ms: 0,
-                                }
-                            }
-                            crate::sensors::SensorResult::Failed(msg) => {
-                                crate::executor::ExecutionResult {
-                                    task_id: task.id.clone(),
-                                    success: false,
-                                    exit_code: -4,
-                                    stdout: String::new(),
-                                    stderr: format!("Sensor failed: {}", msg),
-                                    duration_ms: 0,
-                                }
-                            }
-                            crate::sensors::SensorResult::Waiting => {
-                                crate::executor::ExecutionResult {
-                                    task_id: task.id.clone(),
-                                    success: false,
-                                    exit_code: -5,
-                                    stdout: String::new(),
-                                    stderr: "Sensor still waiting (should not reach here)".to_string(),
-                                    duration_ms: 0,
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        crate::executor::ExecutionResult {
-                            task_id: task.id.clone(),
-                            success: false,
-                            exit_code: -6,
-                            stdout: String::new(),
-                            stderr: format!("Failed to parse sensor config: {}", e),
-                            duration_ms: 0,
-                        }
-                    }
-                }
-            },
-            "bash" => {
-                crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
-            },
-            other => {
-                // BUG-1 FIX: Use the global plugin registry, not a new empty one.
-                if let Some(plugin) = crate::executor::get_plugin(other) {
-                    let ctx = crate::executor::TaskContext {
-                        task_id: task.id.clone(),
-                        command: templated_command.clone(),
-                        config: task.config.clone(),
-                        env_vars,
-                    };
-                    plugin.execute(&ctx).await.unwrap_or_else(|e| {
-                        crate::executor::ExecutionResult {
-                            task_id: task.id.clone(),
-                            success: false,
-                            exit_code: -1,
-                            stdout: String::new(),
-                            stderr: format!("Plugin Execution Error: {}", e),
-                            duration_ms: 0,
-                        }
-                    })
-                } else {
-                    crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
-                }
-            }
-        };
-
-        let duration = result.duration_ms;
-
-        // Prepare log directory
-        let log_dir = format!("logs/{}/{}/", dag.id, task_id);
-        let log_file_name = format!("{}.log", execution_date.format("%Y-%m-%d"));
-        let log_path = PathBuf::from(&log_dir).join(&log_file_name);
-
-        if let Err(e) = fs::create_dir_all(&log_dir) {
-            error!("Failed to create log directory {}: {}", log_dir, e);
-        }
-
-        let log_content = format!(
-            "--- EXECUTION START: {} ---\nSTDOUT:\n{}\nSTDERR:\n{}\n--- EXECUTION END ({}ms) ---\n",
-            start, result.stdout, result.stderr, duration
-        );
-
-        if let Err(e) = fs::write(&log_path, log_content) {
-            error!("Failed to write logs to {}: {}", log_path.display(), e);
-        }
-
-        // Also update stdout/stderr in DB for the API to find
-        let _ = db.update_task_logs(&ti_id, &result.stdout, &result.stderr).await;
-
-        if result.success {
-            info!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
-            let _ = db.update_task_state(&ti_id, "Success").await;
-            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "success", None, None).await;
-            if let Some(m) = &metrics { m.record_task_success(duration as f64 / 1000.0); }
-        } else {
-            // Check for retries
-            if let Ok((retry_count, _)) = db.get_task_instance_retry_info(&ti_id).await {
-                if retry_count < task.max_retries {
-                    warn!("  └─ RETRY: {} (Attempt {}/{}) after {}s delay", 
-                        task_id, retry_count + 1, task.max_retries, task.retry_delay_secs);
-                    let _ = db.increment_task_retry_count(&ti_id).await;
-                    let _ = db.update_task_state(&ti_id, "Queued").await;
-                    let msg = format!("Attempt {}/{} after {}s delay", retry_count + 1, task.max_retries, task.retry_delay_secs);
-                    let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "retry", Some(&msg), None).await;
-                    if let Some(m) = &metrics { m.record_task_queued(); }
-                    
-                    // Delay and re-execute
-                    let dag_clone = Arc::clone(&dag);
-                    let db_clone = Arc::clone(&db);
-                    let metrics_clone = metrics.clone();
-                    let task_id_clone = task_id.clone();
-                    let tx_clone = tx.clone();
-                    let run_id_inner = run_id.clone();
-                    let delay = task.retry_delay_secs as u64;
-                    
-                    tokio::spawn(async move {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-                        Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id_inner).await;
-                    });
-                    return; // Don't report finished yet
+        loop {
+            debug!("⏳ Executing: {} (ID: {}, attempt: {})", task.name, task.id, attempt);
+            
+            // Update to Running
+            if let Err(e) = db.update_task_state(&ti_id, "Running").await {
+                error!("Failed to update task state to Running: {}", e);
+            } else {
+                if let Err(e) = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "started", None, None).await {
+                    error!("DB error logging started event: {}", e);
                 }
             }
             
-            error!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
-            let _ = db.update_task_state(&ti_id, "Failed").await;
-            let _ = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "failed", Some("Error in logs"), None).await;
-            if let Some(m) = &metrics { m.record_task_failure(duration as f64 / 1000.0); }
+            if let Some(m) = &metrics { m.record_task_start(); }
+
+            // Prepare environment variables (secrets + XCom context)
+            let mut env_vars = HashMap::new();
+            env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
+            env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
+            env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
+
+            let ds = execution_date.format("%Y-%m-%d").to_string();
+            let ts = execution_date.to_rfc3339();
+            
+            let mut templated_command = task.command.clone();
+            templated_command = templated_command.replace("{{ ds }}", &ds)
+                .replace("{ds}", &ds)
+                .replace("{{ execution_date }}", &ts)
+                .replace("{execution_date}", &ts);
+
+            let start = Utc::now();
+            
+            // Use TaskExecutor for real execution with log capture
+            let result = match task.task_type.as_str() {
+                "python" => {
+                    crate::executor::TaskExecutor::execute_python(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
+                },
+                "sensor" => {
+                    // Parse sensor config and run sensor loop
+                    match serde_json::from_value::<crate::sensors::SensorConfig>(task.config.clone()) {
+                        Ok(sensor_config) => {
+                            let sensor_result = crate::sensors::run_sensor_loop(&sensor_config, &db).await;
+                            match sensor_result {
+                                crate::sensors::SensorResult::ConditionMet => {
+                                    crate::executor::ExecutionResult {
+                                        task_id: task.id.clone(),
+                                        success: true,
+                                        exit_code: 0,
+                                        stdout: "Sensor condition met".to_string(),
+                                        stderr: String::new(),
+                                        duration_ms: 0,
+                                    }
+                                }
+                                crate::sensors::SensorResult::TimedOut => {
+                                    crate::executor::ExecutionResult {
+                                        task_id: task.id.clone(),
+                                        success: false,
+                                        exit_code: -3,
+                                        stdout: String::new(),
+                                        stderr: "Sensor timed out".to_string(),
+                                        duration_ms: 0,
+                                    }
+                                }
+                                crate::sensors::SensorResult::Failed(msg) => {
+                                    crate::executor::ExecutionResult {
+                                        task_id: task.id.clone(),
+                                        success: false,
+                                        exit_code: -4,
+                                        stdout: String::new(),
+                                        stderr: format!("Sensor failed: {}", msg),
+                                        duration_ms: 0,
+                                    }
+                                }
+                                crate::sensors::SensorResult::Waiting => {
+                                    crate::executor::ExecutionResult {
+                                        task_id: task.id.clone(),
+                                        success: false,
+                                        exit_code: -5,
+                                        stdout: String::new(),
+                                        stderr: "Sensor still waiting (should not reach here)".to_string(),
+                                        duration_ms: 0,
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            crate::executor::ExecutionResult {
+                                task_id: task.id.clone(),
+                                success: false,
+                                exit_code: -6,
+                                stdout: String::new(),
+                                stderr: format!("Failed to parse sensor config: {}", e),
+                                duration_ms: 0,
+                            }
+                        }
+                    }
+                },
+                "bash" => {
+                    crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
+                },
+                other => {
+                    // BUG-1 FIX: Use the global plugin registry, not a new empty one.
+                    if let Some(plugin) = crate::executor::get_plugin(other) {
+                        let ctx = crate::executor::TaskContext {
+                            task_id: task.id.clone(),
+                            command: templated_command.clone(),
+                            config: task.config.clone(),
+                            env_vars,
+                        };
+                        plugin.execute(&ctx).await.unwrap_or_else(|e| {
+                            crate::executor::ExecutionResult {
+                                task_id: task.id.clone(),
+                                success: false,
+                                exit_code: -1,
+                                stdout: String::new(),
+                                stderr: format!("Plugin Execution Error: {}", e),
+                                duration_ms: 0,
+                            }
+                        })
+                    } else {
+                        crate::executor::TaskExecutor::execute_bash(&task.id, &templated_command, env_vars, task.execution_timeout.map(|t| t as u64)).await
+                    }
+                }
+            };
+
+            let duration = result.duration_ms;
+
+            // Prepare log directory
+            let log_dir = format!("logs/{}/{}/", dag.id, task_id);
+            let log_file_name = format!("{}.log", execution_date.format("%Y-%m-%d"));
+            let log_path = PathBuf::from(&log_dir).join(&log_file_name);
+
+            if let Err(e) = fs::create_dir_all(&log_dir) {
+                error!("Failed to create log directory {}: {}", log_dir, e);
+            }
+
+            let log_content = format!(
+                "--- EXECUTION START: {} ---\nSTDOUT:\n{}\nSTDERR:\n{}\n--- EXECUTION END ({}ms) ---\n",
+                start, result.stdout, result.stderr, duration
+            );
+
+            if let Err(e) = fs::write(&log_path, log_content) {
+                error!("Failed to write logs to {}: {}", log_path.display(), e);
+            }
+
+            // Also update stdout/stderr in DB for the API to find
+            if let Err(e) = db.update_task_logs(&ti_id, &result.stdout, &result.stderr).await {
+                error!("DB error updating task logs: {}", e);
+            }
+
+            if result.success {
+                info!("  └─ SUCCESS: {} ({}ms)", task_id, duration);
+                if let Err(e) = db.update_task_state(&ti_id, "Success").await {
+                    error!("DB error updating task state to Success: {}", e);
+                }
+                if let Err(e) = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "success", None, None).await {
+                    error!("DB error logging success event: {}", e);
+                }
+                if let Some(m) = &metrics { m.record_task_success(duration as f64 / 1000.0); }
+                final_success = true;
+                break; // Exit the retry loop on success
+            } else if attempt < max_retries {
+                // Bug 10 fix: retry by incrementing `attempt` and looping, so we reuse
+                // the existing ti_id. The old code called execute_task recursively,
+                // which created a new task instance with retry_count = 0 each time.
+                attempt += 1;
+                warn!("  └─ RETRY: {} (Attempt {}/{}) after {}s delay", 
+                    task_id, attempt, max_retries, retry_delay_secs);
+                if let Err(e) = db.increment_task_retry_count(&ti_id).await {
+                    error!("DB error incrementing retry count: {}", e);
+                }
+                if let Err(e) = db.update_task_state(&ti_id, "Queued").await {
+                    error!("DB error updating task state to Queued: {}", e);
+                }
+                let msg = format!("Attempt {}/{} after {}s delay", attempt, max_retries, retry_delay_secs);
+                if let Err(e) = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "retry", Some(&msg), None).await {
+                    error!("DB error logging retry event: {}", e);
+                }
+                if let Some(m) = &metrics { m.record_task_queued(); }
+                tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
+                // Loop back to retry
+            } else {
+                error!("  └─ FAILED: {} ({}ms) Error in logs.", task_id, duration);
+                if let Err(e) = db.update_task_state(&ti_id, "Failed").await {
+                    error!("DB error updating task state to Failed: {}", e);
+                }
+                if let Err(e) = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "failed", Some("Error in logs"), None).await {
+                    error!("DB error logging failed event: {}", e);
+                }
+                if let Some(m) = &metrics { m.record_task_failure(duration as f64 / 1000.0); }
+                break; // Exit the retry loop after final failure
+            }
         }
 
-        let _ = tx.send((task_id, result.success)).await;
+        let _ = tx.send((task_id, final_success)).await;
     }
 }
 
@@ -609,9 +666,10 @@ mod tests {
 
     #[test]
     fn test_normalize_schedule() {
-        assert_eq!(normalize_schedule("@daily"), "0 0 0 * * * *");
-        assert_eq!(normalize_schedule("@weekly"), "0 0 0 * * 0 *");
-        assert_eq!(normalize_schedule("*/5 * * * *"), "0 */5 * * * *");
+        assert_eq!(normalize_schedule("@daily").unwrap(), "0 0 0 * * * *");
+        assert_eq!(normalize_schedule("@weekly").unwrap(), "0 0 0 * * 1 *");
+        assert_eq!(normalize_schedule("*/5 * * * *").unwrap(), "0 */5 * * * * *");
+        assert!(normalize_schedule("every day").is_err(), "should reject invalid expression");
     }
 
     #[test]

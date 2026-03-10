@@ -148,6 +148,10 @@ impl ApiClient {
     async fn post(&self, path: &str, body: serde_json::Value) -> reqwest::Result<reqwest::Response> {
         self.client.post(format!("{}{}", self.base_url, path)).json(&body).send().await
     }
+
+    async fn patch(&self, path: &str) -> reqwest::Result<reqwest::Response> {
+        self.client.patch(format!("{}{}", self.base_url, path)).send().await
+    }
 }
 
 #[tokio::main]
@@ -163,11 +167,14 @@ async fn main() {
                         if res.status().is_success() {
                             let text = res.text().await.unwrap_or_default();
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if let Some(dags) = json.as_array() {
+                                // Bug 8 fix: server returns PaginatedResponse { data: [...], total, limit, offset }
+                                let dags_array = json["data"].as_array().or_else(|| json.as_array());
+                                if let Some(dags) = dags_array {
                                     use cli_table::{Cell, Style, Table};
                                     let mut table = Vec::new();
                                     for dag in dags {
-                                        let id = dag["dag_id"].as_str().unwrap_or("?");
+                                        // Bug 8 fix: server returns "id", not "dag_id"
+                                        let id = dag["id"].as_str().unwrap_or("?");
                                         let schedule = dag["schedule_interval"].as_str().unwrap_or("None");
                                         let paused = dag["is_paused"].as_bool().unwrap_or(false);
                                         let dynamic = dag["is_dynamic"].as_bool().unwrap_or(false);
@@ -274,7 +281,8 @@ async fn main() {
                 }
             }
             DagsAction::Pause { id } => {
-                match api.post(&format!("/api/dags/{}/config", id), json!({"is_paused": true})).await {
+                // Bug 7 fix: server defines PATCH /api/dags/:id/pause, not POST /api/dags/:id/config
+                match api.patch(&format!("/api/dags/{}/pause", id)).await {
                     Ok(res) => {
                         if res.status().is_success() {
                             println!("DAG {} paused.", id);
@@ -292,7 +300,8 @@ async fn main() {
                 }
             }
             DagsAction::Unpause { id } => {
-                match api.post(&format!("/api/dags/{}/config", id), json!({"is_paused": false})).await {
+                // Bug 7 fix: server defines PATCH /api/dags/:id/unpause, not POST /api/dags/:id/config
+                match api.patch(&format!("/api/dags/{}/unpause", id)).await {
                     Ok(res) => {
                         if res.status().is_success() {
                             println!("DAG {} unpaused.", id);

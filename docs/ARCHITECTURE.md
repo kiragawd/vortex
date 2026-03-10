@@ -15,7 +15,7 @@ The main process that runs the scheduler, API server, and Swarm coordinator:
 - **Health check loop** (every 15 seconds) — detects stale workers, requeues tasks
 - **Recovery on startup** — marks interrupted `Running` tasks as `Failed`
 
-**Implementation:** Rust + Tokio async runtime. All state persisted to a unified `DatabaseBackend` (PostgreSQL or SQLite).
+**Implementation:** Rust + Tokio async runtime. All state persisted to PostgreSQL via a unified `DatabaseBackend` trait (`Arc<dyn DatabaseBackend>`).
 
 ### 2. Workers (Task Executors)
 
@@ -23,16 +23,16 @@ Distributed worker processes that connect to the controller via gRPC:
 
 - **Register** with controller on startup (hostname, capacity, labels)
 - **Poll** for tasks based on available capacity
-- **Execute tasks** directly via `sh -c` (bash), `python3` (python), or custom **Plugins** (HTTP, S3, etc.)
+- **Execute tasks** directly via `sh -c` (bash), `python3` (python), or custom **Plugins** (HTTP, etc.)
 - **Send heartbeats** every 15 seconds
 - **Report results** (stdout, stderr, duration, success/failure) back to controller
 - **Secrets injection** — decrypted secrets are passed as environment variables
 
 **Implementation:** Same Rust binary, different CLI subcommand (`vortex worker`).
 
-### 3. Database (Relational)
+### 3. Database (PostgreSQL)
 
-VORTEX uses a unified trait abstraction (`Arc<dyn DatabaseBackend>`) supporting both PostgreSQL (Production) and SQLite (Development).
+VORTEX uses PostgreSQL as its primary (and only production) database, accessed through a unified trait abstraction (`Arc<dyn DatabaseBackend>`).
 
 | Table | Purpose |
 |-------|---------|
@@ -46,6 +46,10 @@ VORTEX uses a unified trait abstraction (`Arc<dyn DatabaseBackend>`) supporting 
 | `users` | RBAC accounts with API keys and team IDs |
 | `teams` | Multi-tenancy isolation with resource quotas |
 | `secrets` | AES-256-GCM encrypted key-value pairs |
+| `task_xcom` | Cross-task communication key-value store |
+| `pools` | Concurrency-limiting resource pools |
+| `pool_slots` | Active slot allocations for pools |
+| `dag_callbacks` | Per-DAG webhook/notification configuration |
 
 ### 4. Web Dashboard
 
@@ -54,7 +58,7 @@ Single-page application embedded in the binary via `rust-embed`:
 - **Technology:** Vanilla JavaScript + Tailwind CSS + D3.js + Dagre-D3
 - **Features:** Visual DAG graphs, Gantt timelines, calendar views, rollbacks, secret/user/team management
 - **Auth:** Login form → API key stored in `localStorage`
-- **RBAC:** Admin sees all; Operator sees team-isolated DAGs; Viewer is read-only
+- **RBAC:** Admin sees all DAGs; Operator/Viewer with a `team_id` sees only their team's DAGs; Operator/Viewer with no team sees only unassigned DAGs (Bug #14 fix)
 - **Auto-refresh:** 5-second polling for DAG status and Swarm health
 
 ---
@@ -111,6 +115,8 @@ When `--swarm` is enabled and workers are connected:
 
 When `--swarm` is not enabled or no workers are connected, the controller uses the built-in `Scheduler` which executes tasks locally using Tokio spawn with the `TaskExecutor`.
 
+> **Concurrency note:** The in-degree map used for dependency orchestration is protected by a `tokio::sync::Mutex` (not `std::sync::Mutex`). This is intentional — the `Mutex` guard is held briefly across `.await` points when decrementing in-degrees, and using a sync mutex here would block the Tokio worker thread. All scheduler lock acquisitions use `.lock().await`.
+
 ---
 
 ## Failure Scenarios
@@ -133,7 +139,7 @@ T+80s   Task completes successfully
 ### Controller Crash
 
 Workers continue executing current tasks independently. On controller restart:
-- SQLite state is fully recovered
+- PostgreSQL state is fully recovered
 - `Running` tasks with no heartbeat are marked `Failed`
 - Workers re-register on next heartbeat
 
@@ -141,11 +147,14 @@ Workers continue executing current tasks independently. On controller restart:
 
 ```
 T+0s    Task fails (exit code != 0)
-T+0s    Controller checks retry_count < max_retries
-T+Ns    After retry_delay_secs, task re-enqueued (state=Queued)
-T+Ns    Worker picks up and re-executes
+T+0s    Controller checks attempt < max_retries (local counter inside execute_task)
+T+Ns    After retry_delay_secs, task re-executes using the same task_instance ID (state resets Queued→Running)
+        retry_count column incremented in DB on each attempt
         Repeat until success or max_retries exhausted
+T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 ```
+
+> **Note:** Retries are a tight in-process loop inside `execute_task`. The same `ti_id` UUID is reused across all retry attempts so the DB always shows a single task instance per task per DAG run.
 
 ---
 
@@ -154,10 +163,10 @@ T+Ns    Worker picks up and re-executes
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | **Runtime** | Rust + Tokio | Async concurrency, memory safety, no GC |
-| **Database** | SQLite (rusqlite) | Zero-config, ACID, single-file |
+| **Database** | PostgreSQL (SQLx) | ACID, production-grade, advisory locks for HA |
 | **Web API** | Axum | Lightweight, tower middleware, async |
 | **gRPC** | Tonic + Prost | Type-safe Protobuf, streaming |
-| **Python Bridge** | PyO3 | Native CPython embedding |
+| **Python Bridge** | PyO3 | Native CPython embedding (Requires trusted DAG files; AST sandboxing planned) |
 | **Encryption** | AES-256-GCM (aes-gcm) | NIST-approved, authenticated encryption |
 | **Dashboard** | Vanilla JS + Tailwind + D3 + Dagre | No build step, embedded via rust-embed |
 | **Task Execution** | Direct process spawn | `sh -c` for bash, `python3` for python |
@@ -167,7 +176,9 @@ T+Ns    Worker picks up and re-executes
 ## Related Documentation
 
 - [API Reference](./API_REFERENCE.md) — Complete REST API documentation
+- [CLI Reference](./CLI_REFERENCE.md) — CLI command reference
 - [Deployment Guide](./DEPLOYMENT.md) — Build, configure, and run
 - [Python Integration](./PHASE_2_PYTHON_INTEGRATION.md) — DAG authoring
 - [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Encrypted secrets
 - [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery
+- [High Availability](./high-availability.md) — HA deployment with leader election

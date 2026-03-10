@@ -63,3 +63,23 @@ cp target/release/libmy_custom_plugin.dylib /path/to/vortex/plugins/
 ```
 
 When you start VORTEX, it will automatically scan the `plugins/` directory, load the shared library, and register `my_custom_task` as an official executor. You can now use this task type in your Python DAG definitions.
+
+## ⚠️ Security Warning
+
+Plugin loading uses `unsafe` Rust to dynamically load shared libraries. There is **no sandboxing** — plugins have full process memory access and system call permissions. Always follow these rules:
+
+- **Only load plugins from trusted, verified sources.** A malicious plugin can exfiltrate secrets, modify data, or crash the process.
+- **Load plugins at startup only**, before the server begins serving requests. The `load_plugin` function must not be called concurrently with any `get_plugin` call (convention-enforced, not type-enforced).
+- Future work: migrate plugins to subprocess isolation with restricted capabilities.
+
+## Built-in Task Types
+
+Before writing a plugin, check if your use case is covered by built-in task types:
+
+| Type | Description |
+|------|-------------|
+| `bash` | Execute shell commands via `sh -c` |
+| `python` | Execute Python scripts via `python3` |
+| `http` | Make HTTP requests with configurable method, URL, headers, and body |
+
+Plugins are useful for custom integrations (database operators, cloud service operators, etc.) that aren't covered by the built-in types.

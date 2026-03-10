@@ -184,6 +184,10 @@ pub trait DatabaseBackend: Send + Sync {
     /// Set the SLA breached flag for a DAG run.
     async fn mark_sla_missed(&self, run_id: &str) -> Result<()>;
 
+    /// Return all DAG runs currently in 'Running' state.
+    /// Each entry: (run_id, dag_id, start_time)
+    async fn get_running_dag_runs(&self) -> Result<Vec<(String, String, DateTime<Utc>)>>;
+
     // ── User management ───────────────────────────────────────────────────────
 
     /// Create a new user with a bcrypt-hashed password.
@@ -364,4 +368,10 @@ pub trait DatabaseBackend: Send + Sync {
 
     async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool>;
     async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
+
+    // ── Health ────────────────────────────────────────────────────────────────
+
+    /// Improvement 42: Lightweight connectivity check \u2014 returns true if the
+    /// database is reachable.
+    async fn ping(&self) -> bool;
 }

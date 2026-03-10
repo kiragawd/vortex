@@ -37,6 +37,7 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         locals.set_item("execution_date", "1970-01-01T00:00:00Z")?;
         
         debug!("🐍 PyO3: Executing Python code...");
+        tracing::warn!("⚠️ SECURITY WARNING: Executing Python DAG file {} via PyO3 without sandboxing. Ensure DAG files are trusted.", file_path);
         // Use the same dict for globals and locals to support typical script behavior
         let py_code = std::ffi::CString::new(code.as_str())
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid CString: {}", e)))?;

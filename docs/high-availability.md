@@ -33,9 +33,23 @@ vortex server --ha-mode --database-url "$DATABASE_URL"
 
 ### How it Works
 
-1.  **Lock Acquisition:** Upon startup, the controller attempts to acquire a global, mutually-exclusive advisory lock on the Postgres database (`pg_try_advisory_lock(...)`).
-2.  **Leader Role:** The instance that acquires the lock becomes the **Active Leader**, running the scheduler loops, SLA monitors, and the API.
-3.  **Standby Role:** Any instance that fails to acquire the lock enters **Standby Mode**. In this mode, it routinely polls the database every 5 seconds, waiting for the lock to become free.
-4.  **Failover:** If the Active Leader crashes, its database connection drops. Postgres automatically releases the advisory lock. Within 5 seconds, one of the Standby nodes will acquire the lock, promote itself to Leader, and resume scheduling pipeline execution exactly where the previous leader left off.
+1. **Leader Lease Acquisition:** Upon startup, the controller attempts to insert a row into the `leader_election` table (`lock_key = 1`, `node_id`, `expires_at = NOW() + 30s`). This succeeds only if there is no unexpired row owned by another node.
+2. **Leader Role:** The instance that wins the upsert becomes the **Active Leader**, running the scheduler loops, SLA monitors, and the API.
+3. **Lease Renewal:** The Active Leader renews its lease every **10 seconds** (3× headroom before the 30s expiry). This renewal is connection-agnostic — any pool connection can execute the UPDATE, unlike session-scoped advisory locks.
+4. **Standby Role:** Instances that don't hold the lease continuously retry every 10 seconds. They wait for the in-memory `leader_rx` watch channel to signal `true` before starting background loops.
+5. **Failover:** If the Active Leader crashes or stops renewing, its lease expires within 30 seconds. The next Standby to retry will upsert the row, acquire the lease, and promote itself to Leader.
+6. **Stepdown:** If a running leader loses the lease in a race (very rare), it detects `try_acquire_leader_lock()` returning `false` and calls `leader_tx.send(false)` to step down gracefully.
 
-> **Note:** Even in Standby mode, instances can still safely route and respond to read-only API requests if placed behind a load balancer, as the state resides in Postgres.
+### Node Identity
+
+Each controller instance is identified by a `node_id`. Set this explicitly:
+
+```bash
+export VORTEX_NODE_ID="controller-primary"
+vortex server --ha-mode --database-url "$DATABASE_URL"
+```
+
+If not set, a random ID is generated at startup (e.g., `node-a1b2c3d4`). In Kubernetes, a good value is the pod name (`$POD_NAME`).
+
+> **Note:** The previous implementation used `pg_try_advisory_lock`, which is session-scoped and can be silently released by connection pool recycling, causing split-brain. This has been fixed (Bug #15) with the `leader_election` table approach.
+

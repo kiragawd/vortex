@@ -1,6 +1,6 @@
 # Python Integration in VORTEX
 
-VORTEX now supports defining DAGs using Python, similar to Apache Airflow. This allows users to leverage Python's flexibility while benefiting from VORTEX's high-performance Rust core.
+VORTEX supports defining DAGs using Python, similar to Apache Airflow. This allows users to leverage Python's flexibility while benefiting from VORTEX's high-performance Rust core.
 
 ## Overview
 
@@ -24,8 +24,8 @@ You can upload DAGs programmatically using the `/api/dags/upload` endpoint.
 
 ```bash
 # Upload a DAG file using curl
-curl -X POST http://localhost:8080/api/dags/upload \
-  -H "Authorization: Bearer vortex_admin_key" \
+curl -X POST http://localhost:3000/api/dags/upload \
+  -H "Authorization: Bearer <api_key>" \
   -F "file=@my_dag.py"
 ```
 
@@ -34,6 +34,7 @@ Every time a DAG file is uploaded, VORTEX creates a new version in the `dag_vers
 - **Incremental Versioning:** Each upload for the same `dag_id` increments the version number.
 - **Storage:** Files are stored in the `dags/` directory with their original names (overwriting the active file but tracked in the DB version history).
 - **Metadata Tracking:** VORTEX tracks the creator, upload time, and file path for every version.
+- **Rollback:** Use the API or Dashboard to rollback to any previous version.
 
 ## Supported Operators
 
@@ -171,8 +172,8 @@ VORTEX workers handle the execution of both Bash and Python tasks using an isola
 When a `BashOperator` task is received, the worker spawns a subprocess:
 - **Command:** `sh -c "{bash_command}"`
 - **Isolation:** Each command runs in its own process.
-- **Secrets:** All associated secrets for the task are injected as environment variables.
-- **Timeout:** Tasks are automatically timed out after 300 seconds (configurable).
+- **Secrets:** All associated secrets are injected as environment variables.
+- **Timeout:** Tasks are automatically timed out after 300 seconds (default, configurable per-task).
 - **Result:** Captures stdout, stderr, exit code, and execution duration.
 
 ### PythonOperator Execution
@@ -184,37 +185,15 @@ When a `PythonOperator` task is received:
 - **Result:** Captures all print statements (stdout), exceptions (stderr), and duration.
 
 ### Secret Injection
-Secrets are securely fetched from the VORTEX vault and injected only at the moment of execution.
 
-```rust
-// Example of secret injection in Rust
-cmd.envs(env_vars); // Inject secrets as environment variables
-```
+Secrets are securely fetched from the VORTEX vault and injected as environment variables at execution time. Additionally, the following helper variables are injected:
 
-## End-to-End Execution Flow
+| Variable | Description |
+|----------|-------------|
+| `VORTEX_BASE_URL` | Base URL of the VORTEX server (default: `http://localhost:3000`) |
+| `VORTEX_API_KEY` | Task-scoped API key (only if `VORTEX_TASK_API_KEY` is configured on the server) |
 
-1.  **DAG Submission:** A user uploads a `.py` file via the Web UI or API.
-2.  **Scheduling:** The VORTEX Scheduler identifies tasks ready to run based on dependencies and triggers.
-3.  **Task Queuing:** Ready tasks are enqueued into the Swarm task queue with their type (`bash` or `python`) and configuration.
-4.  **Worker Polling:** An active worker polls the Swarm Controller for available tasks.
-5.  **Execution:**
-    - The worker receives the task, fetches required secrets from the vault (via the controller).
-    - It routes the task to the appropriate executor based on type.
-    - Secrets are injected as environment variables.
-6.  **Result Reporting:** The worker reports stdout, stderr, and exit code back to the Controller.
-7.  **DB Update:** the Controller stores the results and updates the `task_instances` table.
-
-## Monitoring
-
-The VORTEX Dashboard provides real-time monitoring of task execution:
--   **Live Logs:** Click "View Logs" on any task instance to see real-time stdout and stderr.
--   **Status Badges:** Color-coded badges indicate task state:
-    -   ✅ **Success** (Green)
-    -   ❌ **Failed** (Red)
-    -   🔄 **Running** (Blue)
-    -   ⏳ **Queued** (Gray)
--   **Execution Duration:** Precise duration tracking (e.g., "2.3s") for performance analysis.
--   **Auto-Refresh:** The DAG detail view automatically refreshes every 10 seconds to show the latest task states.
+> **Security:** Tasks do NOT receive the admin API key. See [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) for details.
 
 ## Retry Configuration
 
@@ -233,9 +212,19 @@ task = BashOperator(
 -   **retry_delay_secs:** Delay between retries in seconds (default: 30).
 -   **Retry Tracking:** The `retry_count` is tracked in the database and visible in the UI logs.
 
-## Testing
+## Monitoring
 
-VORTEX includes a comprehensive integration test suite to verify the full end-to-end pipeline: **DAG Upload → Parsing → Scheduling → Execution → Monitoring.**
+The VORTEX Dashboard provides real-time monitoring of task execution:
+-   **Live Logs:** Click "View Logs" on any task instance to see stdout and stderr.
+-   **Status Badges:** Color-coded badges indicate task state:
+    -   ✅ **Success** (Green)
+    -   ❌ **Failed** (Red)
+    -   🔄 **Running** (Blue)
+    -   ⏳ **Queued** (Gray)
+-   **Execution Duration:** Precise duration tracking (e.g., "2.3s") for performance analysis.
+-   **Auto-Refresh:** The DAG detail view automatically refreshes to show the latest task states.
+
+## Testing
 
 ### Running Integration Tests
 
@@ -243,7 +232,7 @@ Ensure the VORTEX server is running (defaulting to `http://localhost:3000`):
 
 ```bash
 # In one terminal, start VORTEX
-cargo run -- server
+cargo run -- server --database-url "postgres://..."
 
 # In another terminal, run the integration test
 python3 tests/integration_full.py
@@ -252,45 +241,15 @@ python3 tests/integration_full.py
 ### Test Coverage
 
 The integration suite (`tests/integration_full.py`) covers:
-1.  **Full Pipeline:**
-    - Multipart DAG upload via API.
-    - Registry validation.
-    - Manual trigger.
-    - Multi-task dependency execution (Bash & Python).
-    - Secret injection from the vault into task environment variables.
-    - Log capturing and state assertion.
-2.  **Error Handling & Retries:**
-    - Verifies that failing tasks are retried the correct number of times.
-    - Ensures failure tracebacks are correctly captured in logs.
+1.  **Full Pipeline:** DAG upload → Registry validation → Trigger → Multi-task dependency execution → Log capture
+2.  **Secret Injection:** Verifying secrets are accessible as environment variables in tasks
+3.  **Error Handling & Retries:** Verifying failing tasks are retried correctly
 
-### Example Test Log
+---
 
-```text
---- Testing Full Pipeline ---
-Creating secret...
-Uploading complex DAG...
-DAG uploaded: integration_test_dag
-Validating DAG registry...
-Triggering DAG run for integration_test_dag...
-Monitoring DAG run status...
-Current task states: ['Queued', 'Queued', 'Queued']
-Current task states: ['Success', 'Queued', 'Queued']
-Current task states: ['Success', 'Success', 'Queued']
-Current task states: ['Success', 'Success', 'Success']
-All tasks succeeded!
-Task 1 logs verified.
-Task 2 logs verified.
-Task 3 (Secret Injection) verified.
-Full pipeline test PASSED.
+## Related Documentation
 
---- Testing Error Handling & Retries ---
-Uploading retry test DAG...
-Triggering retry test for retry_test_dag...
-Monitoring retries (expecting 3 attempts total)...
-Task state: Failed, Retry count: 1
-Task state: Failed, Retry count: 2
-Retries verified in logs.
-Error handling and retries test PASSED.
-
-✅ ALL INTEGRATION TESTS PASSED!
-```
+- [API Reference](./API_REFERENCE.md) — Complete endpoint documentation
+- [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Encrypted secret management
+- [Architecture Overview](./ARCHITECTURE.md) — System design and data flow
+- [Deployment Guide](./DEPLOYMENT.md) — Setup and configuration

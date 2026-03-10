@@ -235,19 +235,20 @@ pub async fn check_external_task_sensor(
     }
 }
 
-use std::collections::HashMap;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use tokio::sync::Mutex as AsyncMutex;
 use sqlx::PgPool;
 use once_cell::sync::Lazy;
 
-static SQL_POOL_CACHE: Lazy<AsyncMutex<HashMap<String, PgPool>>> = Lazy::new(|| AsyncMutex::new(HashMap::new()));
+static SQL_POOL_CACHE: Lazy<AsyncMutex<LruCache<String, PgPool>>> = Lazy::new(|| AsyncMutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())));
 
 /// Returns `true` when the SQL `query` returns at least one row.
 ///
 /// `connection_string` must be a PostgreSQL `DATABASE_URL` (e.g. `postgres://user:pass@host/db`).
 /// Uses `sqlx` directly — no external CLI tools required.
 pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
-    let mut cache: tokio::sync::MutexGuard<'_, HashMap<String, PgPool>> = SQL_POOL_CACHE.lock().await;
+    let mut cache = SQL_POOL_CACHE.lock().await;
     
     let pool = if let Some(p) = cache.get(connection_string) {
         p.clone()
@@ -260,7 +261,7 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
             .await
         {
             Ok(p) => {
-                cache.insert(connection_string.to_string(), p.clone());
+                cache.put(connection_string.to_string(), p.clone());
                 p
             }
             Err(e) => {

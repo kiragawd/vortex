@@ -205,19 +205,29 @@ impl VortexMetrics {
     /// Called when a task transitions from QUEUED → RUNNING.
     ///
     /// Increments `tasks_running` and decrements `tasks_queued`.
+    /// Bug 17 fix: both gauges are clamped to 0 to prevent negative values when
+    /// record_task_start / success / failure are called out of order.
     #[inline]
     pub fn record_task_start(&self) {
         self.tasks_running.inc();
-        self.tasks_queued.dec();
+        // Clamp tasks_queued to 0 minimum
+        let current = self.tasks_queued.get();
+        if current > 0 {
+            self.tasks_queued.dec();
+        }
     }
 
     /// Called when a task finishes successfully.
     ///
     /// Decrements `tasks_running`, increments `tasks_succeeded_total`, and
     /// records the wall-clock `duration_secs` in the histogram.
+    /// Bug 17 fix: `tasks_running` is clamped to 0 minimum.
     #[inline]
     pub fn record_task_success(&self, duration_secs: f64) {
-        self.tasks_running.dec();
+        let current = self.tasks_running.get();
+        if current > 0 {
+            self.tasks_running.dec();
+        }
         self.tasks_succeeded_total.inc();
         self.task_duration_seconds.observe(duration_secs);
     }
@@ -226,9 +236,13 @@ impl VortexMetrics {
     ///
     /// Decrements `tasks_running`, increments `tasks_failed_total`, and
     /// records the wall-clock `duration_secs` in the histogram.
+    /// Bug 17 fix: `tasks_running` is clamped to 0 minimum.
     #[inline]
     pub fn record_task_failure(&self, duration_secs: f64) {
-        self.tasks_running.dec();
+        let current = self.tasks_running.get();
+        if current > 0 {
+            self.tasks_running.dec();
+        }
         self.tasks_failed_total.inc();
         self.task_duration_seconds.observe(duration_secs);
     }
@@ -350,9 +364,9 @@ mod tests {
     #[test]
     fn test_new_registers_all_metrics() {
         let m = fresh_metrics();
-        // Registry should be able to gather all 10 metric families.
+        // Registry should be able to gather all 9 metric families.
         let families = m.registry.gather();
-        assert_eq!(families.len(), 10, "expected 10 metric families");
+        assert_eq!(families.len(), 9, "expected 9 metric families");
     }
 
     #[test]

@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS dag_callbacks (
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
-    id          TEXT     PRIMARY KEY,
+    id          BIGSERIAL PRIMARY KEY,
     timestamp   TIMESTAMPTZ NOT NULL,
     actor       TEXT     NOT NULL,
     action      TEXT     NOT NULL,

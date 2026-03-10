@@ -12,7 +12,7 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 |---------|---------|--------|
 | **Startup** | Minutes (webserver + scheduler + workers + Redis + DB) | Seconds (single binary) |
 | **Scheduling** | Python-based, GIL-bound | Lock-free Rust async (Tokio) |
-| **Dependencies** | Python, Redis, Celery, PostgreSQL | Just Rust + Python runtime |
+| **Dependencies** | Python, Redis, Celery, PostgreSQL | Rust + Python runtime + PostgreSQL |
 | **Binary Size** | ~500MB+ installed | ~15MB single binary |
 | **DAG Compatibility** | Native | Airflow-compatible shim layer |
 
@@ -59,10 +59,13 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 - **Airflow compatibility shim** — `from vortex import DAG, BashOperator, PythonOperator`
 
 ### Extensibility & Power
-- **Plugin System** — Trait-based custom operators (e.g., S3, SQL, Slack)
+- **Plugin System** — Trait-based custom operators (e.g., HTTP, SQL, Slack)
 - **Dynamic Loading** — Load `.so` / `.dylib` plugins from `plugins/` at runtime
 - **Task Groups** — Logical and visual nesting of tasks for complex pipelines
 - **DAG Factory** — Generate DAGs from YAML/JSON configs for non-Python users
+- **XCom** — Cross-task communication via push/pull key-value store
+- **Task Pools** — Concurrency-limiting resource pools for shared resources
+- **Webhook Callbacks** — Configurable notifications on success/failure/retry/SLA miss (Webhook, Slack, Email)
 
 ### Web Dashboard (Built-in)
 - **Visual DAG graphs** — Interactive D3.js + Dagre dependency visualization
@@ -77,14 +80,24 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 ### Distributed Execution (Swarm)
 - **gRPC worker protocol** — Workers register, poll, execute, and report via Protobuf
 - **Auto-recovery** — Dead worker detection, task re-queuing, health check loop
+- **Worker re-registration** — Workers automatically re-register after controller restart without manual intervention
 - **Worker draining** — Graceful shutdown with task completion
 
 ### Security & Reliability
 - **AES-256-GCM encrypted vault** — Secrets encrypted at rest with unique nonces
+- **Login rate-limiting** — Max 10 attempts per 60 s per username, returns `429 Too Many Requests`
+- **Schedule validation** — `normalize_schedule` validates cron expressions at DAG registration time, rejecting garbage expressions before they can crash the cron loop
+- **Path traversal protection** — DAG source updates validate against the canonical `dags/` directory
+- **Security headers** — All responses include `Content-Security-Policy`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff`
+- **Request body limits** — Bodies > 10 MB are rejected with `413 Payload Too Large`
+- **Health check endpoint** — `GET /health` verifies DB connectivity; ready for load-balancer probes and K8s readiness checks
+- **Graceful shutdown** — On `SIGINT`/`SIGTERM`, marks all `Running` tasks as `Failed` and releases the HA leader lock before exiting
+- **Team isolation** — Non-admin users can only see and trigger their own team's DAGs
 - **One-Click Rollbacks** — Side-by-side version diffing and immediate rollback
 - **Task Timeouts** — Configurable execution limits with auto-kill enforcement
 - **RBAC enforcement** — Middleware-level role checks on all API endpoints
-- **PostgreSQL Connectivity** — Connection pooling and production-grade migrations
+- **PostgreSQL backend** — Connection pooling and production-grade migrations
+- **Configurable bind addresses** — Use `--port` and `--grpc-bind` to restrict network exposure
 
 ## ⚠️ Production Considerations
 
@@ -114,7 +127,7 @@ While VORTEX provides a highly performant execution engine, it intentionally for
 
 - **Rust** — Latest stable (1.70+)
 - **Python** — 3.13+ or 3.14+
-- **PostgreSQL** — 14+ (Recommended for production)
+- **PostgreSQL** — 14+ (required)
 - **protoc** — Protocol Buffers compiler (for gRPC)
 
 ### Build
@@ -134,6 +147,12 @@ cargo build --release
 ```bash
 # Terminal 1: Start server with PostgreSQL
 ./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex"
+
+# Optional: custom web port (default 3000) and restrict gRPC to localhost
+./target/release/vortex server --swarm --database-url "postgres://..." --port 8080 --grpc-bind 127.0.0.1
+
+# Optional: register the built-in benchmark DAG
+./target/release/vortex server --swarm --database-url "postgres://..." --benchmark
 
 # Terminal 2: Start a worker
 ./target/release/vortex worker --controller http://localhost:50051 --capacity 4
@@ -166,21 +185,24 @@ The DAG is automatically loaded on server startup or can be uploaded via the web
 
 ## CLI Reference
 
-VORTEX comes with a dedicated CLI for automation.
+VORTEX comes with a dedicated CLI (`vortex-cli`) for automation.
 
 ```bash
-vortex dags list
-vortex dags trigger <dag_id>
-vortex dags backfill <dag_id> --start 2026-01-01 --end 2026-02-01 --parallel 4
-vortex secrets set MY_KEY MY_VAL
-vortex users create new_user --role Operator
+vortex-cli dags list
+vortex-cli dags trigger <dag_id>
+vortex-cli dags pause <dag_id>
+vortex-cli dags unpause <dag_id>
+vortex-cli dags backfill <dag_id> --start 2026-01-01 --end 2026-02-01 --parallel 4
+vortex-cli tasks logs <task_instance_id>
+vortex-cli secrets set MY_KEY MY_VAL
+vortex-cli users create new_user --role Operator
 ```
 
-Run `vortex --help` for full command reference.
+Run `vortex-cli --help` for full command reference. See [CLI Reference](./docs/CLI_REFERENCE.md) for details on all supported flags.
 
 ## Database Schema
 
-VORTEX uses a unified relational schema (PostgreSQL recommended) with the following tables:
+VORTEX uses PostgreSQL with the following tables:
 
 - **`dags`** — DAG definitions, schedule, team assignment, pause state
 - **`tasks`** — Task definitions (id, command, type, config, group, timeout, retry)
@@ -192,6 +214,10 @@ VORTEX uses a unified relational schema (PostgreSQL recommended) with the follow
 - **`users`** — RBAC user accounts with API keys and team IDs
 - **`teams`** — Multi-tenancy isolation with resource quotas
 - **`secrets`** — AES-256-GCM encrypted key-value secrets
+- **`task_xcom`** — Cross-task communication key-value store
+- **`pools`** — Concurrency-limiting resource pools
+- **`pool_slots`** — Active slot allocations for pools
+- **`dag_callbacks`** — Per-DAG webhook/notification configuration
 
 ## Project Structure
 
@@ -200,9 +226,8 @@ vortex/
 ├── src/
 │   ├── main.rs           # Entry point, CLI parsing, orchestration loop
 │   ├── scheduler.rs      # DAG/Task structs, dependency-aware scheduler
-│   ├── db_trait.rs       # Unified database abstraction
+│   ├── db_trait.rs       # Unified database abstraction trait
 │   ├── db_postgres.rs    # PostgreSQL implementation
-│   ├── db_sqlite.rs      # SQLite implementation (dev only)
 │   ├── web.rs            # Axum REST API + static asset serving
 │   ├── swarm.rs          # gRPC Swarm controller
 │   ├── worker.rs         # gRPC Swarm worker
@@ -212,6 +237,10 @@ vortex/
 │   ├── python_parser.rs  # PyO3 + Dynamic DAG logic
 │   ├── dag_factory.rs    # YAML/JSON DAG generation
 │   ├── metrics.rs        # Prometheus instrumentation
+│   ├── xcom.rs           # Cross-task communication (XCom)
+│   ├── pools.rs          # Task pool management
+│   ├── sensors.rs        # SQL/HTTP sensor operators
+│   ├── notifications.rs  # Webhook/Slack/Email callback notifications
 │   └── lib.rs            # Library exports
 ├── python/vortex/        # Python Airflow-compatibility shim
 ├── assets/index.html     # Single-file Web Dashboard (D3 + Dagre)
@@ -227,10 +256,13 @@ vortex/
 
 - **[Architecture](./docs/ARCHITECTURE.md)** — System design and data flow
 - **[API Reference](./docs/API_REFERENCE.md)** — Complete REST API with examples
+- **[CLI Reference](./docs/CLI_REFERENCE.md)** — CLI command reference
 - **[Deployment Guide](./docs/DEPLOYMENT.md)** — Build, configure, and run in production
 - **[Python Integration](./docs/PHASE_2_PYTHON_INTEGRATION.md)** — DAG authoring with Python
 - **[Secrets Vault](./docs/PILLAR_3_SECRETS_VAULT.md)** — Encrypted secret management
 - **[Resilience](./docs/PILLAR_4_RESILIENCE.md)** — Auto-recovery and health monitoring
+- **[Plugins](./docs/PLUGINS.md)** — Custom operator development
+- **[High Availability](./docs/high-availability.md)** — HA deployment with leader election
 
 ## Testing
 

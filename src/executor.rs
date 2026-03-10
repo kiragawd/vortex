@@ -10,14 +10,25 @@ use libloading::Library;
 
 use std::sync::RwLock;
 
+//── Plugin Registry ──────────────────────────────────────────────────────────
+//
+// Bug 35 note: PLUGIN_REGISTRY uses std::sync::RwLock, which is thread-safe for
+// concurrent reads, but its safety guarantee is convention-only in the following
+// sense: `load_plugin` is `unsafe` and must ONLY be called at server startup,
+// before the first `get_plugin` call. Calling it after the server is serving
+// requests introduces a race between readers and the exclusive write.
+// Future work: replace with an AppState-scoped registry to enforce init ordering.
 pub static PLUGIN_REGISTRY: RwLock<Option<PluginRegistry>> = RwLock::new(None);
 
+/// Initialise the global plugin registry. Call exactly once at server startup
+/// before accepting any requests.
 pub fn init_global_registry(registry: PluginRegistry) {
     if let Ok(mut lock) = PLUGIN_REGISTRY.write() {
         *lock = Some(registry);
     }
 }
 
+/// Look up a plugin by name. Thread-safe for concurrent reads.
 pub fn get_plugin(name: &str) -> Option<Arc<dyn VortexOperator>> {
     if let Ok(lock) = PLUGIN_REGISTRY.read() {
         if let Some(reg) = lock.as_ref() {
@@ -65,6 +76,12 @@ impl PluginRegistry {
 
     /// Dynamically loads a plugin from a shared library.
     /// The library must export a `_vortex_plugin_create` C-ABI function.
+    ///
+    /// # Safety
+    /// Bug 20 note: this function executes arbitrary native code from the loaded
+    /// `.so`/`.dylib`. Only load plugins from trusted, verified sources.
+    /// There is no sandboxing — a malicious plugin has full process access.
+    /// Future work: run plugins in a separate process with restricted capabilities.
     pub unsafe fn load_plugin<S: Into<String>>(&mut self, path: &str, name: S) -> Result<()> {
         let lib = unsafe { Library::new(path)? };
         let creator: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn VortexOperator> = unsafe { lib.get(b"_vortex_plugin_create\0")? };
@@ -174,12 +191,19 @@ pub struct ExecutionResult {
 /// Injects VORTEX context env vars (for XCom, etc.) into the command's environment.
 fn inject_vortex_env(cmd: &mut Command, env_vars: &HashMap<String, String>) {
     cmd.envs(env_vars.iter());
-    // Always inject VORTEX_BASE_URL and VORTEX_API_KEY for XCom/pool helpers
+    // Always inject VORTEX_BASE_URL for XCom/pool helpers
     if !env_vars.contains_key("VORTEX_BASE_URL") {
         cmd.env("VORTEX_BASE_URL", std::env::var("VORTEX_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()));
     }
+    // NOTE: We intentionally do NOT inject a default admin API key here.
+    // Tasks should be given scoped, read-only tokens via their env_vars
+    // if they need API access. Injecting the admin key is a security risk.
     if !env_vars.contains_key("VORTEX_API_KEY") {
-        cmd.env("VORTEX_API_KEY", std::env::var("VORTEX_API_KEY").unwrap_or_else(|_| "vortex_admin_key".to_string()));
+        if let Ok(key) = std::env::var("VORTEX_TASK_API_KEY") {
+            // Use a dedicated task-scoped key if configured
+            cmd.env("VORTEX_API_KEY", key);
+        }
+        // If no task key is configured, tasks won't have API access — by design.
     }
 }
 
@@ -247,13 +271,37 @@ impl TaskExecutor {
     ) -> ExecutionResult {
         let start = Instant::now();
 
-        // Check if python_code is just a function name (no spaces, no newlines)
-        let is_function_call = !python_code.contains('\n') && !python_code.contains('(');
-        let full_script = if is_function_call {
-             format!("import os\n# If it is just a function name, we can't easily call it without context.\n# But for now, we'll try to find it if possible.\n# Integration tests use task_2_func and task_3_func which are in the same file.\n# We need to import the DAG file or similar.\n\ndef {}(): pass # Stub for now to avoid NameError if we can't find it\n\nprint('Executing function: {}')\n{}()", python_code, python_code, python_code)
-        } else {
-             python_code.to_string()
-        };
+        // Bug 21 fix: the old code detected a bare function name (no spaces/parens)
+        // and generated `def fn(): pass; fn()` — an empty no-op stub that never
+        // executed the real function. Without knowing which module the function
+        // lives in we cannot import it, so we treat this case as an unsupported
+        // invocation and return a clear error rather than silently succeeding.
+        //
+        // If the caller wants to invoke a Python function they should provide
+        // either: (a) the full script including the function definition, or
+        // (b) an importable call expression like `from my_dag import fn; fn()`.
+        let is_bare_function_name = !python_code.contains('\n')
+            && !python_code.contains('(')
+            && !python_code.contains(' ')
+            && !python_code.is_empty();
+
+        if is_bare_function_name {
+            return ExecutionResult {
+                task_id: task_id.to_string(),
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: format!(
+                    "Bug 21 fix: bare function name '{}' cannot be executed without its module. \
+                     Provide a full script or an import expression like \
+                     'from my_module import {}; {}()'",
+                    python_code, python_code, python_code
+                ),
+                duration_ms: 0,
+            };
+        }
+
+        let full_script = python_code.to_string();
 
         // Create a temporary file for the Python code
         let temp_file = match NamedTempFile::new() {
@@ -322,5 +370,75 @@ impl TaskExecutor {
                 duration_ms,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_execute_bash_success() {
+        let env_vars = HashMap::new();
+        let res = TaskExecutor::execute_bash("t1", "echo 'hello world'", env_vars, Some(5)).await;
+        
+        assert!(res.success);
+        assert_eq!(res.exit_code, 0);
+        assert_eq!(res.stdout.trim(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_execute_bash_failure() {
+        let env_vars = HashMap::new();
+        let res = TaskExecutor::execute_bash("t2", "ls /nonexistent_directory_here", env_vars, Some(5)).await;
+        
+        assert!(!res.success);
+        assert_ne!(res.exit_code, 0);
+        assert!(res.stderr.contains("No such file or directory") || res.stderr.contains("doesn't exist"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_bash_timeout() {
+        let env_vars = HashMap::new();
+        let res = TaskExecutor::execute_bash("t3", "sleep 3", env_vars, Some(1)).await;
+        
+        assert!(!res.success);
+        assert_eq!(res.exit_code, -2);
+        assert!(res.stderr.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_python_success() {
+        let env_vars = HashMap::new();
+        let code = "print('hello python')\n";
+        let res = TaskExecutor::execute_python("t4", code, env_vars, Some(5)).await;
+        
+        assert!(res.success);
+        assert_eq!(res.exit_code, 0);
+        assert_eq!(res.stdout.trim(), "hello python");
+    }
+
+    #[tokio::test]
+    async fn test_execute_python_bug21_bare_function() {
+        let env_vars = HashMap::new();
+        // A bare function name with no spaces or parens should be rejected
+        let code = "my_function";
+        let res = TaskExecutor::execute_python("t5", code, env_vars, Some(5)).await;
+        
+        assert!(!res.success);
+        assert_eq!(res.exit_code, -1);
+        assert!(res.stderr.contains("bare function name"));
+        assert!(res.stderr.contains("my_function"));
+    }
+
+    #[tokio::test]
+    async fn test_env_injection() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("CUSTOM_VAR".to_string(), "custom_value".to_string());
+        
+        let res = TaskExecutor::execute_bash("t6", "echo $CUSTOM_VAR", env_vars, Some(5)).await;
+        
+        assert!(res.success);
+        assert_eq!(res.stdout.trim(), "custom_value");
     }
 }
