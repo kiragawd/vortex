@@ -32,18 +32,18 @@ cargo build --release
 ### Controller (Server)
 
 ```bash
-# Production mode with PostgreSQL (required)
-./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex"
+# Production mode with PostgreSQL (required) (and Python DAG support enabled)
+./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex" --allow-unsafe-dag-exec
 
 # Custom web port (default: 3000)
-./target/release/vortex server --database-url "postgres://..." --port 8080
+./target/release/vortex server --database-url "postgres://..." --port 8080 --allow-unsafe-dag-exec
 
 # Custom gRPC port and bind address (default port: 50051, default bind: 0.0.0.0)
 # Use --grpc-bind 127.0.0.1 to restrict gRPC to localhost in single-host deployments
-./target/release/vortex server --swarm --database-url "postgres://..." --swarm-port 50052 --grpc-bind 127.0.0.1
+./target/release/vortex server --swarm --database-url "postgres://..." --swarm-port 50052 --grpc-bind 127.0.0.1 --allow-unsafe-dag-exec
 
 # Enable the built-in synthetic benchmark DAG (for scale testing)
-./target/release/vortex server --swarm --database-url "postgres://..." --benchmark
+./target/release/vortex server --swarm --database-url "postgres://..." --benchmark --allow-unsafe-dag-exec
 ```
 
 The REST API and dashboard are served on **http://localhost:3000** (or the port specified by `--port`).
@@ -286,7 +286,8 @@ Every response from VORTEX includes:
 ## Security Limitations & Constraints
 
 ### 1. Python DAG Parsing (PyO3)
-Currently, VORTEX parses and executes Python DAG files natively using the PyO3 runtime. **This executes actual Python code on the controller.** There is currently no AST-level sandboxing. 
+By default, Python DAG execution is sandboxed/disabled in VORTEX. This is because VORTEX parses and executes Python DAG files natively using the PyO3 runtime, which executes actual Python code on the controller. 
+To enable Python DAGs, the server must be explicitly booted with `--allow-unsafe-dag-exec`. 
 > ⚠️ **You must ensure that only trusted personnel have write access to the `dags/` folder.** Do not process untrusted DAG definitions.
 
 ### 2. Worker gRPC Connections (TLS)

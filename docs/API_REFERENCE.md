@@ -115,6 +115,9 @@ Supports pagination via `?limit=N&offset=N`.
   "limit": 50,
   "offset": 0
 }
+
+// Error (500)
+{ "error": "Database error details..." }
 ```
 
 > **Note:** Non-admin users with a `team_id` will only see DAGs belonging to their team.
@@ -270,6 +273,9 @@ Writes updated source to disk, re-parses with PyO3, and updates the in-memory DA
 
 // Response (200)
 { "message": "Backfill triggered" }
+
+// Error (400) - If dates are omitted or formatted incorrectly
+{ "error": "Invalid start_date or end_date format" }
 ```
 
 > **Note:** `start_date` and `end_date` must be RFC 3339 timestamps.

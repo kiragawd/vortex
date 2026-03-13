@@ -4,9 +4,10 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use std::sync::Arc;
-//! use crate::metrics::{VortexMetrics, metrics_handler};
+//! use axum::{routing::get, Router};
+//! use vortex::metrics::{VortexMetrics, metrics_handler};
 //!
 //! // In your app setup:
 //! let metrics = Arc::new(VortexMetrics::new().expect("failed to init metrics"));
@@ -317,10 +318,10 @@ impl VortexMetrics {
 ///
 /// Wire this into your router with `State<Arc<VortexMetrics>>`:
 ///
-/// ```rust
+/// ```ignore
 /// use std::sync::Arc;
 /// use axum::{routing::get, Router};
-/// use crate::metrics::{VortexMetrics, metrics_handler};
+/// use vortex::metrics::{VortexMetrics, metrics_handler};
 ///
 /// let metrics = Arc::new(VortexMetrics::new().unwrap());
 /// let app = Router::new()

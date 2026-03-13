@@ -32,16 +32,22 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         let code = std::fs::read_to_string(file_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to read DAG file: {}", e)))?;
 
+        // BUG-21 FIX: Use separate globals and locals dicts with __builtins__
+        // set on globals. The old code used the same dict for both, which breaks
+        // Python module semantics (e.g., `import` statements won't populate globals).
+        let globals = PyDict::new(py);
+        let builtins = py.import("builtins")?;
+        globals.set_item("__builtins__", builtins)?;
+        globals.set_item("ds", "1970-01-01")?;
+        globals.set_item("execution_date", "1970-01-01T00:00:00Z")?;
+
         let locals = PyDict::new(py);
-        locals.set_item("ds", "1970-01-01")?;
-        locals.set_item("execution_date", "1970-01-01T00:00:00Z")?;
         
         debug!("🐍 PyO3: Executing Python code...");
         tracing::warn!("⚠️ SECURITY WARNING: Executing Python DAG file {} via PyO3 without sandboxing. Ensure DAG files are trusted.", file_path);
-        // Use the same dict for globals and locals to support typical script behavior
         let py_code = std::ffi::CString::new(code.as_str())
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid CString: {}", e)))?;
-        py.run(&py_code, Some(&locals), Some(&locals))?;
+        py.run(&py_code, Some(&globals), Some(&locals))?;
 
         let get_dags = vortex.getattr("get_dags")?;
         let dags_data: Bound<'_, PyList> = get_dags.call0()?.downcast_into()?;

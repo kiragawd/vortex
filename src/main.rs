@@ -90,6 +90,14 @@ struct Cli {
     /// Register synthetic benchmark DAG
     #[arg(long)]
     benchmark: bool,
+
+    /// Allow loading native plugins (.so/.dylib) from plugins/ directory (SECURITY RISK)
+    #[arg(long)]
+    allow_unsafe_plugins: bool,
+
+    /// Allow executing Python DAG files via PyO3 (SECURITY RISK — runs arbitrary code)
+    #[arg(long)]
+    allow_unsafe_dag_exec: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -202,27 +210,32 @@ async fn main() -> Result<()> {
     // Plugin Discovery
     // ─────────────────────────────────────────────────────────────────
     let mut plugin_registry = executor::PluginRegistry::new();
-    let plugins_dir = std::path::Path::new("plugins");
-    if plugins_dir.exists() && plugins_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(plugins_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                    if ext == "so" || ext == "dylib" || ext == "dll" {
-                        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-                        unsafe {
-                            match plugin_registry.load_plugin(path.to_str().unwrap(), file_stem) {
-                                Ok(_) => info!("🔌 Loaded plugin '{}' from {:?}", file_stem, path),
-                                Err(e) => warn!("⚠️ Failed to load plugin {:?}: {}", path, e),
+    // BUG-11 FIX: Gate plugin loading behind --allow-unsafe-plugins (default OFF)
+    if cli.allow_unsafe_plugins {
+        let plugins_dir = std::path::Path::new("plugins");
+        if plugins_dir.exists() && plugins_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(plugins_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        if ext == "so" || ext == "dylib" || ext == "dll" {
+                            let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+                            unsafe {
+                                match plugin_registry.load_plugin(path.to_str().unwrap(), file_stem) {
+                                    Ok(_) => info!("🔌 Loaded plugin '{}' from {:?}", file_stem, path),
+                                    Err(e) => warn!("⚠️ Failed to load plugin {:?}: {}", path, e),
+                                }
                             }
                         }
                     }
                 }
             }
+        } else {
+            info!("🔌 Plugins directory not found or empty. Using default operators.");
         }
     } else {
-        info!("🔌 Plugins directory not found or empty. Using default operators.");
+        info!("🔌 Plugin loading disabled. Use --allow-unsafe-plugins to enable (SECURITY RISK).");
     }
     executor::init_global_registry(plugin_registry);
     
@@ -249,22 +262,27 @@ async fn main() -> Result<()> {
                         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                         if let Some(path_str) = path.to_str() {
                             if ext == "py" {
-                                info!("🐍 Loading DAG file: {}", path_str);
-                                match python_parser::parse_python_dag(path_str) {
-                                    Ok(dags) => {
-                                        for dag in dags { 
-                                            info!("✅ Loaded DAG: {}", dag.id);
-                                            let dag_id = dag.id.clone();
-                                            map.insert(dag_id.clone(), Arc::new(dag));
-                                            
-                                            // Pillar 4: Force create version record for physical files
-                                            if let Err(e) = db.store_dag_version(&dag_id, path_str).await {
-                                                error!("Failed to store version for {}: {}", dag_id, e);
+                                // BUG-18 FIX: Gate Python DAG exec behind --allow-unsafe-dag-exec
+                                if !cli.allow_unsafe_dag_exec {
+                                    warn!("⚠️ Skipping Python DAG file {} — use --allow-unsafe-dag-exec to enable (SECURITY RISK)", path_str);
+                                } else {
+                                    info!("🐍 Loading DAG file: {}", path_str);
+                                    match python_parser::parse_python_dag(path_str) {
+                                        Ok(dags) => {
+                                            for dag in dags { 
+                                                info!("✅ Loaded DAG: {}", dag.id);
+                                                let dag_id = dag.id.clone();
+                                                map.insert(dag_id.clone(), Arc::new(dag));
+                                                
+                                                // Pillar 4: Force create version record for physical files
+                                                if let Err(e) = db.store_dag_version(&dag_id, path_str).await {
+                                                    error!("Failed to store version for {}: {}", dag_id, e);
+                                                }
                                             }
+                                        },
+                                        Err(e) => {
+                                            error!("❌ Failed to parse DAG file {}: {}", path_str, e);
                                         }
-                                    },
-                                    Err(e) => {
-                                        error!("❌ Failed to parse DAG file {}: {}", path_str, e);
                                     }
                                 }
                             } else if ext == "json" || ext == "yaml" || ext == "yml" {
@@ -373,10 +391,19 @@ async fn main() -> Result<()> {
         // Pillar 4: Spawn Health Check Loop
         let mut leader_rx_health = leader_rx.clone();
         tokio::spawn(async move {
-            if !*leader_rx_health.borrow() {
-                let _ = leader_rx_health.changed().await;
+            loop {
+                // BUG-1 FIX: Re-check leadership status every iteration, not just at startup.
+                if !*leader_rx_health.borrow() {
+                    info!("⏸ Health check loop: lost leadership, suspending...");
+                    let _ = leader_rx_health.changed().await;
+                    info!("▶ Health check loop: regained leadership, resuming...");
+                    continue;
+                }
+                // Run one health check cycle then sleep (health_check_loop is now one-shot).
+                // We break out of this inner call after one cycle and re-check leader status.
+                health_state.health_check_cycle().await;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             }
-            health_state.health_check_loop().await;
         });
     }
 
@@ -416,6 +443,14 @@ async fn main() -> Result<()> {
         }
         info!("🌀 Scheduler loop started.");
         while let Some(req) = rx.recv().await {
+            // BUG-1 FIX: Re-check leadership status before processing each request.
+            if !*leader_rx_sched.borrow() {
+                info!("⏸ Scheduler loop: lost leadership, suspending...");
+                let _ = leader_rx_sched.changed().await;
+                info!("▶ Scheduler loop: regained leadership, resuming...");
+                // Re-check with borrow to confirm we're leader now
+                if !*leader_rx_sched.borrow() { continue; }
+            }
             debug!("🔔 Scheduler received request: {:?}", req);
             let dag = {
                 let map = dags_sched.lock().await;
@@ -490,6 +525,7 @@ async fn main() -> Result<()> {
 
                         let (tx_done, mut rx_done) = tokio::sync::mpsc::channel(100);
                         let mut tasks_remaining = dag_clone.tasks.len() - finished_tasks.len();
+                        let mut active_tasks = 0; // BUG-10 FIX: track active tasks to prevent deadlock
                         
                         // Queue initial tasks
                         for (tid, &deg) in in_degree.iter() {
@@ -508,8 +544,10 @@ async fn main() -> Result<()> {
                                     max_retries: task.max_retries, retry_delay_secs: task.retry_delay_secs,
                                     // BUG-2 FIX: secrets come from task definition, not hardcoded
                                     required_secrets: vec![],
+                                    execution_timeout_secs: task.execution_timeout.unwrap_or(0),  // BUG-16
                                 }).await;
 
+                                active_tasks += 1;
                                 // Monitor this specific task
                                 let db_mon = Arc::clone(&db_clone);
                                 let tx_mon = tx_done.clone();
@@ -544,7 +582,12 @@ async fn main() -> Result<()> {
 
                         let mut all_success = true;
                         while tasks_remaining > 0 {
+                            if active_tasks == 0 {
+                                error!("Scheduler deadlock detected in manual run: {} tasks remaining but 0 active monitors. Breaking loop.", tasks_remaining);
+                                break;
+                            }
                             if let Some((finished_tid, success)) = rx_done.recv().await {
+                                active_tasks -= 1;
                                 tasks_remaining -= 1;
                                 if !success { all_success = false; }
                                 
@@ -553,7 +596,7 @@ async fn main() -> Result<()> {
                                         let deg = in_degree.get_mut(down).unwrap();
                                         *deg -= 1;
                                         if *deg == 0 {
-                                            // BUG-4 FIX: skip downstream tasks if upstream failed
+                                            // BUG-4 / BUG-25 FIX: skip downstream tasks if upstream failed
                                             if !success {
                                                 let skipped_ti = uuid::Uuid::new_v4().to_string();
                                                 if let Err(e) = db_clone.create_task_instance(&skipped_ti, &dag_clone.id, down, "Upstream_Failed", execution_date_clone, &run_id_clone).await {
@@ -562,7 +605,8 @@ async fn main() -> Result<()> {
                                                 if let Err(e) = db_clone.log_task_event(&skipped_ti, &dag_clone.id, down, &run_id_clone, "upstream_failed", Some("Upstream task failed"), None).await {
                                                     error!("DB error logging event: {}", e);
                                                 }
-                                                tasks_remaining -= 1;
+                                                active_tasks += 1;
+                                                let _ = tx_done.send((down.clone(), false)).await;
                                                 continue;
                                             }
 
@@ -583,8 +627,10 @@ async fn main() -> Result<()> {
                                                 max_retries: task.max_retries, retry_delay_secs: task.retry_delay_secs,
                                                 // BUG-2 FIX: secrets come from task definition, not hardcoded
                                                 required_secrets: vec![],
+                                                execution_timeout_secs: task.execution_timeout.unwrap_or(0),  // BUG-16
                                             }).await;
 
+                                            active_tasks += 1;
                                             let db_mon = Arc::clone(&db_clone);
                                             let tx_mon = tx_done.clone();
                                             let down_mon = down.clone();
@@ -613,6 +659,8 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
+                            } else {
+                                break;
                             }
                         }
                         let final_state = if all_success { "Success" } else { "Failed" };
@@ -649,6 +697,14 @@ async fn main() -> Result<()> {
         info!("🔴 SLA Monitor loop started (checking every 60s)");
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            // BUG-1 FIX: Re-check leadership status each iteration.
+            if !*leader_rx_sla.borrow() {
+                info!("⏸ SLA Monitor: lost leadership, suspending...");
+                let _ = leader_rx_sla.changed().await;
+                info!("▶ SLA Monitor: regained leadership, resuming...");
+                continue;
+            }
             
             // Query DAG runs that are currently "Running" and haven't already breached SLA
             match db_sla.get_running_dag_runs().await {
@@ -694,6 +750,14 @@ async fn main() -> Result<()> {
         info!("⏰ Cron scheduler loop started (checking every 60s)");
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            // BUG-1 FIX: Re-check leadership status each iteration.
+            if !*leader_rx_cron.borrow() {
+                info!("⏸ Cron scheduler: lost leadership, suspending...");
+                let _ = leader_rx_cron.changed().await;
+                info!("▶ Cron scheduler: regained leadership, resuming...");
+                continue;
+            }
             metrics_cron.update_scheduler_heartbeat();
             
             match db_cron.get_scheduled_dags().await {

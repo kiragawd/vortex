@@ -87,7 +87,8 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 - **AES-256-GCM encrypted vault** — Secrets encrypted at rest with unique nonces
 - **Login rate-limiting** — Max 10 attempts per 60 s per username, returns `429 Too Many Requests`
 - **Schedule validation** — `normalize_schedule` validates cron expressions at DAG registration time, rejecting garbage expressions before they can crash the cron loop
-- **Path traversal protection** — DAG source updates validate against the canonical `dags/` directory
+- **Execution Sandboxing** — Python DAG execution (`--allow-unsafe-dag-exec`) and dynamic `.so` plugins (`--allow-unsafe-plugins`) are disabled by default and require explicit CLI opt-in.
+- **Path traversal protection** — DAG source updates validate against the canonical `dags/` directory using strict resolution guards.
 - **Security headers** — All responses include `Content-Security-Policy`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff`
 - **Request body limits** — Bodies > 10 MB are rejected with `413 Payload Too Large`
 - **Health check endpoint** — `GET /health` verifies DB connectivity; ready for load-balancer probes and K8s readiness checks
@@ -142,14 +143,16 @@ export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 cargo build --release
 ```
 
+**Note:** By default, VORTEX runs in a secure sandbox mode. To execute Python DAGs or load dynamic plugins, you must pass the corresponding explicit opt-in flags.
+
 ### Run Controller + Swarm
 
 ```bash
-# Terminal 1: Start server with PostgreSQL
-./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex"
+# Terminal 1: Start server with PostgreSQL (and Python DAG support enabled)
+./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex" --allow-unsafe-dag-exec
 
 # Optional: custom web port (default 3000) and restrict gRPC to localhost
-./target/release/vortex server --swarm --database-url "postgres://..." --port 8080 --grpc-bind 127.0.0.1
+./target/release/vortex server --swarm --database-url "postgres://..." --port 8080 --grpc-bind 127.0.0.1 --allow-unsafe-dag-exec
 
 # Optional: register the built-in benchmark DAG
 ./target/release/vortex server --swarm --database-url "postgres://..." --benchmark

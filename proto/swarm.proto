@@ -52,6 +52,7 @@ message TaskAssignment {
   string config_json = 8;        // Serialized task config
   int32 max_retries = 9;
   int32 retry_delay_secs = 10;
+  int32 execution_timeout_secs = 11; // BUG-16: Per-task timeout (0 = use worker default 300s)
 }
 
 message TaskResult {

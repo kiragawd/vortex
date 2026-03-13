@@ -37,10 +37,10 @@ def set_dag_callbacks(dag_id: str, config: dict):
             "Email": {
                 "smtp_host": "smtp.gmail.com",
                 "smtp_port": 587,
-                "from": "vortex@example.com",
-                "to": ["oncall@example.com"],
-                "username": "vortex@example.com",
-                "password": "secret"
+                "from": "[EMAIL_ADDRESS]",
+                "to": ["[EMAIL_ADDRESS]"],
+                "username": "[EMAIL_ADDRESS]",
+                "password": "[PASSWORD]"
             }
         }
 

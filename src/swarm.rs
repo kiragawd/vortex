@@ -37,6 +37,7 @@ pub struct PendingTask {
     pub max_retries: i32,       // Phase 2.5
     pub retry_delay_secs: i32,  // Phase 2.5
     pub required_secrets: Vec<String>, // Pillar 3
+    pub execution_timeout_secs: i32,  // BUG-16: Per-task timeout
 }
 
 pub struct SwarmState {
@@ -101,50 +102,57 @@ impl SwarmState {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
             interval.tick().await;
-            if !self.enabled { continue; }
+            self.health_check_cycle().await;
+        }
+    }
 
-            // Phase 3 Metrics
-            if let Some(m) = &self.metrics {
-                m.set_workers_active(self.active_worker_count().await as i64);
-                m.set_queue_depth(self.queue_depth().await as i64);
-            }
+    /// BUG-1 FIX: Single iteration of the health check, extracted so main.rs
+    /// can call it in a loop that re-checks HA leadership between iterations.
+    pub async fn health_check_cycle(&self) {
+        if !self.enabled { return; }
 
-            // 1. Detect Offline Workers
-            if let Ok(stale_workers) = self.db.mark_stale_workers_offline(60).await {
-                for worker_id in stale_workers {
-                    warn!("⚠️ Swarm: Worker {} missed heartbeats. Marking OFFLINE.", worker_id);
-                    
-                    // 2. Re-queue tasks assigned to this worker
-                    if let Ok(count) = self.db.requeue_worker_tasks(&worker_id).await {
-                        if count > 0 {
-                            warn!("♻️ Swarm: Re-queued {} tasks from offline worker {}.", count, worker_id);
-                            
-                            // 3. Move them back to in-memory queue for scheduling
-                            if let Ok(tasks) = self.db.get_interrupted_tasks_by_worker(&worker_id).await {
-                                let mut queue = self.task_queue.write().await;
-                                for t in tasks {
-                                    // t is (task_instance_id, dag_id, task_id, command, run_id, task_type, config_json, max_retries, retry_delay_secs)
-                                    queue.push(PendingTask {
-                                        task_instance_id: t.0,
-                                        dag_id: t.1,
-                                        task_id: t.2,
-                                        command: t.3,
-                                        dag_run_id: t.4,
-                                        task_type: t.5,
-                                        config_json: t.6,
-                                        max_retries: t.7,
-                                        retry_delay_secs: t.8,
-                                        required_secrets: vec![], // Resolved at poll time
-                                    });
-                                }
+        // Phase 3 Metrics
+        if let Some(m) = &self.metrics {
+            m.set_workers_active(self.active_worker_count().await as i64);
+            m.set_queue_depth(self.queue_depth().await as i64);
+        }
+
+        // 1. Detect Offline Workers
+        if let Ok(stale_workers) = self.db.mark_stale_workers_offline(60).await {
+            for worker_id in stale_workers {
+                warn!("⚠️ Swarm: Worker {} missed heartbeats. Marking OFFLINE.", worker_id);
+                
+                // 2. Re-queue tasks assigned to this worker
+                if let Ok(count) = self.db.requeue_worker_tasks(&worker_id).await {
+                    if count > 0 {
+                        warn!("♻️ Swarm: Re-queued {} tasks from offline worker {}.", count, worker_id);
+                        
+                        // 3. Move them back to in-memory queue for scheduling
+                        if let Ok(tasks) = self.db.get_interrupted_tasks_by_worker(&worker_id).await {
+                            let mut queue = self.task_queue.write().await;
+                            for t in tasks {
+                                // t is (task_instance_id, dag_id, task_id, command, run_id, task_type, config_json, max_retries, retry_delay_secs)
+                                queue.push(PendingTask {
+                                    task_instance_id: t.0,
+                                    dag_id: t.1,
+                                    task_id: t.2,
+                                    command: t.3,
+                                    dag_run_id: t.4,
+                                    task_type: t.5,
+                                    config_json: t.6,
+                                    max_retries: t.7,
+                                    retry_delay_secs: t.8,
+                                    required_secrets: vec![], // Resolved at poll time
+                                    execution_timeout_secs: 0,  // BUG-16: not available in re-queue path, worker uses default
+                                });
                             }
-                            let _ = self.db.clear_worker_id_from_queued_tasks(&worker_id).await;
                         }
+                        let _ = self.db.clear_worker_id_from_queued_tasks(&worker_id).await;
                     }
-
-                    // 4. Remove from in-memory state
-                    let _ = self.remove_worker(&worker_id).await;
                 }
+
+                // 4. Remove from in-memory state
+                let _ = self.remove_worker(&worker_id).await;
             }
         }
     }
@@ -224,6 +232,7 @@ impl SwarmController for SwarmService {
                 config_json: t.config_json,
                 max_retries: t.max_retries,
                 retry_delay_secs: t.retry_delay_secs,
+                execution_timeout_secs: t.execution_timeout_secs,  // BUG-16
             });
         }
         Ok(Response::new(PollTaskResponse { tasks }))
@@ -281,6 +290,7 @@ impl SwarmController for SwarmService {
                                 max_retries,
                                 retry_delay_secs,
                                 required_secrets,
+                                execution_timeout_secs: 0,  // BUG-16: not available in retry path, worker uses default
                             }).await;
                         }
                     });

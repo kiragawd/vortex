@@ -71,7 +71,7 @@ SOFTWARE.
 
 ### To Obtain a License
 
-Contact: `ashwin@vasireddy.com`
+Contact: `ashwin.vasireddy@gmail.com`
 
 Include in your inquiry:
 - Company name & size
@@ -132,7 +132,7 @@ VORTEX is © 2026 Ashwin Vasireddy. Used under [Personal OSS License / Enterpris
 - **Custom licensing?** We can negotiate. Email us.
 - **Trial period?** Available upon request.
 
-**Contact:** `ashwin@vasireddy.com`
+**Contact:** `ashwin.vasireddy@gmail.com`
 
 ---
 

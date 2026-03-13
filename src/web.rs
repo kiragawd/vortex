@@ -282,6 +282,16 @@ async fn upload_dag(State(state): State<Arc<AppState>>, axum::extract::Extension
         let name = field.name().unwrap_or("").to_string();
         let file_name = field.file_name().unwrap_or("").to_string();
         if name == "file" && file_name.ends_with(".py") {
+            // BUG-3 FIX: Extract only the basename to prevent path traversal attacks.
+            // e.g. "../../etc/cron.d/evil.py" → "evil.py"
+            let safe_name = match std::path::Path::new(&file_name).file_name() {
+                Some(n) => n.to_string_lossy().to_string(),
+                None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid file name"}))).into_response(),
+            };
+            if !safe_name.ends_with(".py") {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": "Only .py files are allowed"}))).into_response();
+            }
+
             let data = match field.bytes().await {
                 Ok(b) => b,
                 Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
@@ -291,9 +301,29 @@ async fn upload_dag(State(state): State<Arc<AppState>>, axum::extract::Extension
                 .map(|p| p.join("dags").to_string_lossy().to_string())
                 .unwrap_or_else(|_| "dags".to_string());
             fs::create_dir_all(&dags_dir).ok();
-            let file_path = format!("{}/{}", dags_dir, file_name);
+            // BUG-3 FIX: Use safe_name (basename only) and verify canonicalized path
+            let file_path = format!("{}/{}", dags_dir, safe_name);
             if let Err(e) = fs::write(&file_path, &data) {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to save file: {}", e)}))).into_response();
+            }
+            // BUG-3 FIX: Post-write canonicalization guard — verify written file is inside dags_dir
+            let dags_dir_canonical = match std::fs::canonicalize(&dags_dir) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = fs::remove_file(&file_path);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Cannot resolve dags directory: {}", e)}))).into_response();
+                }
+            };
+            let file_canonical = match std::fs::canonicalize(&file_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = fs::remove_file(&file_path);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Cannot resolve uploaded file path: {}", e)}))).into_response();
+                }
+            };
+            if !file_canonical.starts_with(&dags_dir_canonical) {
+                let _ = fs::remove_file(&file_path);
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": "Path traversal detected: file path escapes dags/ directory"}))).into_response();
             }
 
             match crate::python_parser::parse_python_dag(&file_path) {
@@ -529,7 +559,10 @@ async fn get_dag_tasks(
     let limit = params.limit.unwrap_or(50).min(500);
     let offset = params.offset.unwrap_or(0);
 
-    let dag_db = state.db.get_dag_by_id(&id).await.unwrap_or_default();
+    let dag_db = match state.db.get_dag_by_id(&id).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching DAG: {}", e)}))).into_response(),
+    };
     if let Some(dag) = &dag_db {
         if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
             if auth_user.team_id.as_deref() != Some(t) && auth_user.team_id.is_some() {
@@ -540,10 +573,17 @@ async fn get_dag_tasks(
         return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response();
     }
 
-    let tasks = state.db.get_dag_tasks(&id).await.unwrap_or_default();
+    // BUG-9 FIX: Propagate DB errors as 500 instead of masking them as empty results.
+    let tasks = match state.db.get_dag_tasks(&id).await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching tasks: {}", e)}))).into_response(),
+    };
     
     // Pillar 4: Pass run_id if it exists in task_instances table
-    let (instances_data, instances_total) = state.db.get_task_instances(&id, limit, offset).await.unwrap_or_default();
+    let (instances_data, instances_total) = match state.db.get_task_instances(&id, limit, offset).await {
+        Ok(result) => result,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching instances: {}", e)}))).into_response(),
+    };
     
     // Get dependencies from in-memory map
     let dependencies = {
@@ -571,17 +611,22 @@ async fn get_dag_runs(
     let limit = params.limit.unwrap_or(50).min(500);
     let offset = params.offset.unwrap_or(0);
 
-    if let Ok(Some(dag)) = state.db.get_dag_by_id(&id).await {
-        if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
-            if auth_user.team_id.as_deref() != Some(t) && auth_user.team_id.is_some() {
-                return (StatusCode::FORBIDDEN, Json(json!({"error": "DAG belongs to another team"}))).into_response();
+    match state.db.get_dag_by_id(&id).await {
+        Ok(Some(dag)) => {
+            if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
+                if auth_user.team_id.as_deref() != Some(t) && auth_user.team_id.is_some() {
+                    return (StatusCode::FORBIDDEN, Json(json!({"error": "DAG belongs to another team"}))).into_response();
+                }
             }
         }
-    } else {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response();
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching DAG: {}", e)}))).into_response(),
     }
 
-    let (runs, total) = state.db.get_dag_runs(&id, limit, offset).await.unwrap_or_default();
+    let (runs, total) = match state.db.get_dag_runs(&id, limit, offset).await {
+        Ok(res) => res,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching runs: {}", e)}))).into_response(),
+    };
     Json(PaginatedResponse { data: runs, total, limit, offset }).into_response()
 }
 async fn get_task_logs(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -887,7 +932,7 @@ async fn unpause_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>,
             ) {
                 if let Ok(last_run) = chrono::DateTime::parse_from_rfc3339(last_run_str) {
                     let last_run_utc = last_run.with_timezone(&chrono::Utc);
-                    let now = chrono::Utc::now();
+                    let _now = chrono::Utc::now();
 
                     if let Ok(schedule_str) = crate::scheduler::normalize_schedule(schedule_expr) {
                         if !schedule_str.is_empty() {
@@ -949,10 +994,15 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
         _ => return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response(),
     };
 
-    let start = chrono::DateTime::parse_from_rfc3339(&body.start_date).map(|dt| dt.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|_| chrono::Utc::now());
-    let end = chrono::DateTime::parse_from_rfc3339(&body.end_date).map(|dt| dt.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|_| chrono::Utc::now());
+    // BUG-17 FIX: Return 400 on invalid date input instead of silently falling back to Utc::now().
+    let start = match chrono::DateTime::parse_from_rfc3339(&body.start_date) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid start_date: {}", e)}))).into_response(),
+    };
+    let end = match chrono::DateTime::parse_from_rfc3339(&body.end_date) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid end_date: {}", e)}))).into_response(),
+    };
 
     let schedule_expr = dag_meta.get("schedule_interval").and_then(|v| v.as_str()).unwrap_or("");
     let schedule_str = match crate::scheduler::normalize_schedule(schedule_expr) {
@@ -981,6 +1031,14 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
         })).into_response();
     }
 
+    // BUG-20 FIX: Cap backfill intervals to prevent channel saturation and OOM.
+    const MAX_BACKFILL_INTERVALS: usize = 10_000;
+    if intervals.len() > MAX_BACKFILL_INTERVALS {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("Backfill would generate {} intervals, exceeding the limit of {}. Narrow the date range.", intervals.len(), MAX_BACKFILL_INTERVALS)
+        }))).into_response();
+    }
+
     let _ = state.db.log_audit_event(&auth_user.username, "dag.backfill", "dag", &id, &format!("{{\"start\":\"{}\",\"end\":\"{}\"}}", start, end)).await;
     
     state.backfill_progress.write().await.insert(id.clone(), 0.0);
@@ -997,15 +1055,27 @@ async fn backfill_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>
         let total_f = total as f32;
         backfill_progress.write().await.insert(dag_id_bg.clone(), 0.0);
         for (i, dt) in intervals.into_iter().enumerate() {
-            let _ = tx.send(ScheduleRequest {
-                dag_id: dag_id_bg.clone(),
-                triggered_by: "backfill".to_string(),
-                run_type: RunType::Full,
-                execution_date: Some(dt),
-            }).await;
+            // BUG-20 FIX: Use try_send to avoid blocking the entire backfill
+            // spawned task when the scheduler channel is full.
+            loop {
+                match tx.try_send(ScheduleRequest {
+                    dag_id: dag_id_bg.clone(),
+                    triggered_by: "backfill".to_string(),
+                    run_type: RunType::Full,
+                    execution_date: Some(dt),
+                }) {
+                    Ok(_) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Backpressure: yield and retry instead of blocking forever
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::warn!("Scheduler channel closed during backfill for DAG {}", dag_id_bg);
+                        return;
+                    }
+                }
+            }
             backfill_progress.write().await.insert(dag_id_bg.clone(), (i + 1) as f32 / total_f);
-            // Small yield so we don't starve other tasks while dispatching
-            tokio::task::yield_now().await;
         }
         backfill_progress.write().await.insert(dag_id_bg.clone(), 1.0);
         // Improvement 44: evict completed entry after 60 s so the HashMap

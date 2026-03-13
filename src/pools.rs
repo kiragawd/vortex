@@ -32,13 +32,13 @@ impl PoolManager {
             return Err(anyhow!("The 'default' pool cannot be deleted"));
         }
 
-        // Check whether any slots are currently occupied before deleting.
+        // BUG-7 FIX: Block deletion when slots are occupied instead of just warning.
         let (occupied, _) = self.get_pool_usage(name).await?;
         if occupied > 0 {
-            warn!(
-                pool = name,
-                occupied, "Deleting pool that still has occupied slots"
-            );
+            return Err(anyhow!(
+                "Pool '{}' has {} occupied slot(s). Drain all tasks before deleting.",
+                name, occupied
+            ));
         }
 
         info!(pool = name, "Deleted pool");
@@ -81,37 +81,16 @@ impl PoolManager {
     ///
     /// Returns `true` if the slot was acquired, `false` if the pool is full.
     pub async fn acquire_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool> {
-        let (occupied, total_slots) = match self.get_pool_usage(pool_name).await {
-            Ok(usage) => usage,
-            Err(_) => {
-                warn!(pool = pool_name, "Pool not found during acquire_slot");
-                return Err(anyhow!("Pool '{}' not found", pool_name));
-            }
-        };
-
-        if occupied >= total_slots {
-            warn!(
-                pool = pool_name,
-                occupied,
-                total = total_slots,
-                task_instance_id,
-                "Pool is full — slot acquisition denied"
-            );
-            return Ok(false);
+        // BUG-5 FIX: Delegate entirely to the atomic DB operation which uses
+        // SELECT FOR UPDATE inside a transaction. The previous code did a
+        // non-atomic get_pool_usage pre-check (TOCTOU vulnerability).
+        let acquired = self.db.acquire_pool_slot(pool_name, task_instance_id).await?;
+        if acquired {
+            info!(pool = pool_name, task_instance_id, "Slot acquired");
+        } else {
+            warn!(pool = pool_name, task_instance_id, "Pool is full — slot acquisition denied");
         }
-
-        // BUG-6 FIX: Actually write the slot claim into pool_slots so the
-        // occupied count reflects reality on the next get_pool_usage call.
-        self.db.acquire_pool_slot(pool_name, task_instance_id).await?;
-
-        info!(
-            pool = pool_name,
-            task_instance_id,
-            occupied = occupied + 1,
-            total = total_slots,
-            "Slot acquired"
-        );
-        Ok(true)
+        Ok(acquired)
     }
 
     /// Release the slot held by `task_instance_id` in `pool_name`.

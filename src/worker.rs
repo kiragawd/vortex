@@ -160,8 +160,21 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
 
             tokio::spawn(async move {
                 let result = execute_task_remote(&task, &wid).await;
-                if let Err(e) = report_client.report_task_result(result).await {
-                    error!("❌ Failed to report task result to swarm: {}", e);
+                // BUG-4 FIX: Retry report_task_result up to 3 times with exponential backoff
+                // to prevent tasks from being stuck in "Running" forever on transient gRPC failures.
+                let mut reported = false;
+                let backoff_secs = [1u64, 5, 15];
+                for (attempt, delay) in backoff_secs.iter().enumerate() {
+                    match report_client.report_task_result(result.clone()).await {
+                        Ok(_) => { reported = true; break; }
+                        Err(e) => {
+                            warn!("⚠️ report_task_result attempt {} failed: {}. Retrying in {}s...", attempt + 1, e, delay);
+                            tokio::time::sleep(Duration::from_secs(*delay)).await;
+                        }
+                    }
+                }
+                if !reported {
+                    error!("❌ Failed to report task result after 3 attempts — task may be stuck in Running state");
                 }
                 active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             });
@@ -175,12 +188,20 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
     info!("⏳ Executing: {}/{} (type: {}, instance: {})", 
         task.dag_id, task.task_id, task.task_type, task.task_instance_id);
     
+    // BUG-16 FIX: Use per-task execution_timeout from the TaskAssignment.
+    // Falls back to 300s default if the field is 0 (proto default) or missing.
+    let timeout = if task.execution_timeout_secs > 0 {
+        Some(task.execution_timeout_secs as u64)
+    } else {
+        None // executor defaults to 300s
+    };
+
     let result = match task.task_type.as_str() {
         "python" => {
-            TaskExecutor::execute_python(&task.task_id, &task.command, task.secrets.clone(), None).await
+            TaskExecutor::execute_python(&task.task_id, &task.command, task.secrets.clone(), timeout).await
         },
         "bash" => {
-            TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), None).await
+            TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), timeout).await
         },
         other_type => {
             if let Some(plugin) = crate::executor::get_plugin(other_type) {
@@ -202,7 +223,7 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
                     }
                 }
             } else {
-                TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), None).await
+                TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), timeout).await
             }
         }
     };

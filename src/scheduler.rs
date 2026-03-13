@@ -319,6 +319,7 @@ impl Scheduler {
         let (tx, mut rx) = mpsc::channel(100);
         let mut tasks_remaining = dag.tasks.len();
         let mut all_success = true;
+        let mut active_tasks = 0; // BUG-10 FIX: Track active tasks
 
         // Initial tasks with zero dependencies
         {
@@ -332,6 +333,7 @@ impl Scheduler {
                     let task_id_clone = task_id.clone();
                     let run_id = dag_run_id.clone();
                     
+                    active_tasks += 1;
                     tokio::spawn(async move {
                         Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
                     });
@@ -339,60 +341,78 @@ impl Scheduler {
             }
         }
 
+        // BUG-10 FIX: Instead of relying purely on channel closure (which never happens
+        // since the main loop holds `tx`), we track `active_tasks`. If active_tasks hits 0
+        // while tasks_remaining > 0, we break to avoid an infinite hang on `rx.recv().await`.
+
         while tasks_remaining > 0 {
-            if let Some((finished_task_id, success)) = rx.recv().await {
-                tasks_remaining -= 1;
-                if !success {
-                    all_success = false;
-                }
-                
-                if let Some(downstream_tasks) = adj.get(&finished_task_id) {
-                    for down in downstream_tasks {
-                        let degree = {
-                            let mut in_degree_guard = in_degree.lock().await;
-                            let deg = match in_degree_guard.get_mut(down) {
-                                Some(d) => d,
-                                None => {
-                                    error!("In-degree entry missing for task: {}", down);
+            if active_tasks == 0 {
+                error!("Scheduler deadlock detected: {} tasks remaining but 0 active tasks. Breaking to prevent infinite hang.", tasks_remaining);
+                all_success = false;
+                break;
+            }
+            match rx.recv().await {
+                Some((finished_task_id, success)) => {
+                    active_tasks -= 1;
+                    tasks_remaining -= 1;
+                    if !success {
+                        all_success = false;
+                    }
+                    
+                    if let Some(downstream_tasks) = adj.get(&finished_task_id) {
+                        for down in downstream_tasks {
+                            let degree = {
+                                let mut in_degree_guard = in_degree.lock().await;
+                                let deg = match in_degree_guard.get_mut(down) {
+                                    Some(d) => d,
+                                    None => {
+                                        error!("In-degree entry missing for task: {}", down);
+                                        continue;
+                                    }
+                                };
+                                *deg -= 1;
+                                *deg
+                            };
+                            
+                            if degree == 0 {
+                                // BUG-4 FIX applied to local scheduler: skip downstream tasks if upstream failed
+                                if !success {
+                                    // Bug 25 fix: send (down, false) back on the channel so the
+                                    // receive loop decrements tasks_remaining and propagates the
+                                    // failure to *this* task's own downstream tasks.
+                                    let skipped_ti = Uuid::new_v4().to_string();
+                                    if let Err(e) = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await {
+                                        error!("DB error creating upstream_failed instance: {}", e);
+                                    }
+                                    if let Err(e) = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await {
+                                        error!("DB error logging event: {}", e);
+                                    }
+                                    active_tasks += 1;
+                                    let _ = tx.send((down.clone(), false)).await;
                                     continue;
                                 }
-                            };
-                            *deg -= 1;
-                            *deg
-                        };
-                        
-                        if degree == 0 {
-                            // BUG-4 FIX applied to local scheduler: skip downstream tasks if upstream failed
-                            if !success {
-                                // Bug 25 fix: send (down, false) back on the channel so the
-                                // receive loop decrements tasks_remaining and propagates the
-                                // failure to *this* task's own downstream tasks.
-                                // The old code manually decremented tasks_remaining here and
-                                // used `continue` — so grandchildren (B->C when A->B->C fails)
-                                // never had their in_degree decremented. The DAG would hang.
-                                let skipped_ti = Uuid::new_v4().to_string();
-                                if let Err(e) = db.create_task_instance(&skipped_ti, &dag.id, down, "Upstream_Failed", start_time, &dag_run_id).await {
-                                    error!("DB error creating upstream_failed instance: {}", e);
-                                }
-                                if let Err(e) = db.log_task_event(&skipped_ti, &dag.id, down, &dag_run_id, "upstream_failed", Some("Upstream task failed"), None).await {
-                                    error!("DB error logging event: {}", e);
-                                }
-                                let _ = tx.send((down.clone(), false)).await;
-                                continue;
-                            }
 
-                            let tx_clone = tx.clone();
-                            let dag_clone = Arc::clone(&dag);
-                            let db_clone = Arc::clone(&db);
-                            let metrics_clone = metrics.clone();
-                            let task_id_clone = down.clone();
-                            let run_id = dag_run_id.clone();
-                            
-                            tokio::spawn(async move {
-                                Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
-                            });
+                                let tx_clone = tx.clone();
+                                let dag_clone = Arc::clone(&dag);
+                                let db_clone = Arc::clone(&db);
+                                let metrics_clone = metrics.clone();
+                                let task_id_clone = down.clone();
+                                let run_id = dag_run_id.clone();
+                                
+                                active_tasks += 1;
+                                tokio::spawn(async move {
+                                    Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
+                                });
+                            }
                         }
                     }
+                }
+                None => {
+                    // BUG-10 FIX: Channel closed unexpectedly (all senders dropped).
+                    // This can happen if spawned tasks panic. Break to avoid infinite hang.
+                    error!("Scheduler channel closed unexpectedly with {} tasks remaining — marking DAG as Failed", tasks_remaining);
+                    all_success = false;
+                    break;
                 }
             }
         }

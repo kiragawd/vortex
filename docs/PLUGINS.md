@@ -62,7 +62,12 @@ Copy the resulting shared library (e.g., `libmy_custom_plugin.so` or `libmy_cust
 cp target/release/libmy_custom_plugin.dylib /path/to/vortex/plugins/
 ```
 
-When you start VORTEX, it will automatically scan the `plugins/` directory, load the shared library, and register `my_custom_task` as an official executor. You can now use this task type in your Python DAG definitions.
+When you start VORTEX **with the `--allow-unsafe-plugins` flag**, it will automatically scan the `plugins/` directory, load the shared library, and register `my_custom_task` as an official executor. You can now use this task type in your Python DAG definitions.
+
+```bash
+# Start VORTEX and explicitly opt-in to loading dynamic plugins
+./target/release/vortex server --swarm --database-url "postgres://..." --allow-unsafe-plugins
+```
 
 ## ⚠️ Security Warning
 

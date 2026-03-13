@@ -289,23 +289,25 @@ mod integration_tests {
             let runs = dag_runs.clone();
             handles.push(tokio::spawn(async move {
                 let run_id = format!("run-{}", dag_num);
-                let mut r = runs.write().await;
-                r.insert(
-                    run_id.clone(),
-                    DAGRun {
-                        run_id: run_id.clone(),
-                        dag_id: format!("dag-{}", dag_num),
-                        state: "Running".to_string(),
-                        tasks: vec![
-                            TaskInstance {
-                                task_id: "task-1".to_string(),
-                                state: "Running".to_string(),
-                                assigned_worker: Some(format!("worker-{}", dag_num)),
-                                retry_count: 0,
-                            },
-                        ],
-                    },
-                );
+                {
+                    let mut r = runs.write().await;
+                    r.insert(
+                        run_id.clone(),
+                        DAGRun {
+                            run_id: run_id.clone(),
+                            dag_id: format!("dag-{}", dag_num),
+                            state: "Running".to_string(),
+                            tasks: vec![
+                                TaskInstance {
+                                    task_id: "task-1".to_string(),
+                                    state: "Running".to_string(),
+                                    assigned_worker: Some(format!("worker-{}", dag_num)),
+                                    retry_count: 0,
+                                },
+                            ],
+                        },
+                    );
+                }
 
                 // Simulate execution
                 tokio::time::sleep(Duration::from_millis(10 + dag_num as u64 * 10)).await;

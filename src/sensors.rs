@@ -265,7 +265,10 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
                 p
             }
             Err(e) => {
-                warn!("🗄️  SqlSensor: Failed to connect to '{}': {}", connection_string, e);
+                // BUG-19 FIX: Redact credentials from the connection string in logs.
+                // Only show host/database portion after the '@' sign.
+                let redacted = connection_string.split('@').last().unwrap_or("[redacted]");
+                warn!("🗄️  SqlSensor: Failed to connect to '***@{}': {}", redacted, e);
                 return false;
             }
         }

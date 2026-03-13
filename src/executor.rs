@@ -99,6 +99,21 @@ impl PluginRegistry {
     }
 }
 
+/// Maximum bytes of stdout/stderr to retain per task execution (1 MB).
+/// BUG-12 FIX: Prevents OOM from tasks that produce unbounded console output.
+const MAX_LOG_BYTES: usize = 1_048_576;
+
+/// Truncate a string to MAX_LOG_BYTES, appending a marker if truncated.
+fn truncate_log(s: String) -> String {
+    if s.len() > MAX_LOG_BYTES {
+        let mut truncated = s[..MAX_LOG_BYTES].to_string();
+        truncated.push_str("\n... [TRUNCATED — output exceeded 1 MB] ...");
+        truncated
+    } else {
+        s
+    }
+}
+
 /// A macro for plugins to declare their export function easily.
 #[macro_export]
 macro_rules! declare_plugin {
@@ -223,7 +238,8 @@ impl TaskExecutor {
         cmd.arg("-c")
             .arg(bash_command)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);  // BUG-2 FIX: kill child process if the future is dropped
         inject_vortex_env(&mut cmd, &env_vars);
 
         let timeout_duration = timeout_secs.unwrap_or(300);
@@ -239,8 +255,8 @@ impl TaskExecutor {
                     task_id: task_id.to_string(),
                     success,
                     exit_code,
-                    stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    stdout: truncate_log(String::from_utf8_lossy(&output.stdout).to_string()),
+                    stderr: truncate_log(String::from_utf8_lossy(&output.stderr).to_string()),
                     duration_ms,
                 }
             }
@@ -333,7 +349,8 @@ impl TaskExecutor {
         let mut cmd = Command::new("python3");
         cmd.arg(&temp_path)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);  // BUG-2 FIX: kill child process if the future is dropped
         inject_vortex_env(&mut cmd, &env_vars);
 
         let timeout_duration = timeout_secs.unwrap_or(300);
@@ -348,8 +365,8 @@ impl TaskExecutor {
                     task_id: task_id.to_string(),
                     success,
                     exit_code,
-                    stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    stdout: truncate_log(String::from_utf8_lossy(&output.stdout).to_string()),
+                    stderr: truncate_log(String::from_utf8_lossy(&output.stderr).to_string()),
                     duration_ms,
                 }
             }
