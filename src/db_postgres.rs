@@ -1299,7 +1299,7 @@ impl DatabaseBackend for PostgresDb {
                     "dag_id":     r.get::<String, _>("dag_id"),
                     "version":    r.get::<i64, _>("version"),
                     "file_path":  r.get::<String, _>("file_path"),
-                    "created_at": r.get::<String, _>("created_at"),
+                    "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
                 })
             })
             .collect())
@@ -1325,7 +1325,7 @@ impl DatabaseBackend for PostgresDb {
                 "dag_id":     r.get::<String, _>("dag_id"),
                 "version":    r.get::<i64, _>("version"),
                 "file_path":  r.get::<String, _>("file_path"),
-                "created_at": r.get::<String, _>("created_at"),
+                "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
             })
         }))
     }

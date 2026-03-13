@@ -11,6 +11,10 @@ with DAG(dag_id="parallel_benchmark") as dag:
         task_id="t2",
         bash_command="sleep 1 && echo 'Ingestion A complete'"
     )
+# Test comment for UI verification
+
+# Final verification
+
 
     t3 = BashOperator(
         task_id="t3",

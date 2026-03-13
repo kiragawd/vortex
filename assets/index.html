@@ -148,6 +148,50 @@
             overflow: hidden;
         }
 
+        /* Toast Notifications */
+        #toast-container {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            z-index: 20000;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            pointer-events: none;
+        }
+
+        .vortex-toast {
+            pointer-events: auto;
+            min-width: 300px;
+            padding: 16px 20px;
+            border-radius: 16px;
+            background: rgba(22, 22, 30, 0.95);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transform: translateX(120%);
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .vortex-toast.show {
+            transform: translateX(0);
+        }
+
+        .vortex-toast-success {
+            border-left: 4px solid #00f2ff;
+        }
+
+        .vortex-toast-error {
+            border-left: 4px solid #f43f5e;
+        }
+
+        .vortex-toast-info {
+            border-left: 4px solid #7000ff;
+        }
+
         /* Upload modal */
         .drop-zone {
             border: 2px dashed rgba(0, 242, 255, 0.3);
@@ -164,6 +208,8 @@
 
 <body class="min-h-screen">
     <!-- Login Screen -->
+    <div id="toast-container"></div>
+
     <div id="login-overlay">
         <div class="glass w-full max-w-md p-10 rounded-3xl vortex-border shadow-2xl">
             <div class="flex items-center gap-3 justify-center mb-8">
@@ -304,18 +350,18 @@
                         </div>
                     </div>
                     <div id="detail-actions" class="flex items-center gap-3">
-                        <button id="btn-edit" onclick="showEditSource()"
+                        <button id="btn-edit" type="button" onclick="showEditSource()"
                             class="px-4 py-2.5 rounded-xl bg-white/5 text-white/70 border border-white/10 font-bold text-sm">📝
                             Edit Code</button>
-                        <button id="btn-retry" onclick="retryDagFailures()"
+                        <button id="btn-retry" type="button" onclick="retryDagFailures()"
                             class="px-4 py-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold text-sm">♻️
                             Retry Failures</button>
-                        <button id="btn-pause" onclick="togglePause()"
+                        <button id="btn-pause" type="button" onclick="togglePause()"
                             class="px-4 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold text-sm">⏸
                             Pause</button>
-                        <button id="btn-backfill" onclick="openBackfillModal()"
+                        <button id="btn-backfill" type="button" onclick="openBackfillModal()"
                             class="px-6 py-2.5 rounded-xl bg-orange-500/20 text-orange-400 border border-orange-500/20 font-black hover:bg-orange-500/40 transition-all">BACKFILL</button>
-                        <button id="btn-trigger" onclick="triggerCurrentDag()"
+                        <button id="btn-trigger" type="button" onclick="triggerCurrentDag()"
                             class="px-6 py-2.5 rounded-xl vortex-gradient text-black font-black shadow-lg shadow-vortex-primary/20 hover:scale-105 transition-all">TRIGGER
                             RUN</button>
                     </div>
@@ -758,6 +804,28 @@
             return res.json();
         }
 
+        function toast(msg, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const t = document.createElement('div');
+            t.className = `vortex-toast vortex-toast-${type}`;
+            
+            let icon = 'ℹ️';
+            if (type === 'success') icon = '✨';
+            if (type === 'error') icon = '❌';
+
+            t.innerHTML = `<span class="text-xl">${icon}</span> <span class="font-bold text-sm text-white/90">${msg}</span>`;
+            container.appendChild(t);
+            
+            // Trigger animation
+            setTimeout(() => t.classList.add('show'), 10);
+            
+            // Auto-remove
+            setTimeout(() => {
+                t.classList.remove('show');
+                setTimeout(() => t.remove(), 400);
+            }, 4000);
+        }
+
         // ─── Login ──────────────────────────────────────────────────
         function showLoginScreen() {
             document.getElementById('login-overlay').style.display = 'flex';
@@ -1089,7 +1157,7 @@
             try {
                 var data = await api('/api/dags/' + currentDagId + '/runs');
                 lastRunsData = data;  // store runs data separately
-                var runs = data.runs || [];
+                var runs = data.data || [];
                 var html = '';
                 runs.forEach(function (run) {
                     var stateClass = run.state === 'Success'
@@ -1193,9 +1261,9 @@
             if (!currentDagId) return;
             try {
                 await api('/api/dags/' + currentDagId + '/trigger', 'POST');
-                alert('Triggered!');
+                toast('Triggered!', 'success');
                 refreshDagDetails();
-            } catch (e) { alert('Trigger failed: ' + e.message); }
+            } catch (e) { toast('Trigger failed: ' + e.message, 'error'); }
         }
 
         function openBackfillModal() {
@@ -1228,7 +1296,7 @@
         async function submitBackfill() {
             const start = document.getElementById('backfill-start').value;
             const end = document.getElementById('backfill-end').value;
-            if (!start || !end) { alert("Select start and end dates"); return; }
+            if (!start || !end) { toast("Select start and end dates", "error"); return; }
 
             try {
                 const startIso = new Date(start).toISOString();
@@ -1240,7 +1308,7 @@
                 document.getElementById('backfill-progress-container').classList.remove('hidden');
 
                 pollBackfillProgress();
-            } catch (e) { alert('Backfill Failed: ' + e.message); }
+            } catch (e) { toast('Backfill Failed: ' + e.message, 'error'); }
         }
 
         async function pollBackfillProgress() {
@@ -1274,9 +1342,9 @@
             if (!currentDagId) return;
             try {
                 await api('/api/dags/' + currentDagId + '/retry', 'POST');
-                alert('Retry Triggered!');
+                toast('Retry Triggered!', 'success');
                 refreshDagDetails();
-            } catch (e) { alert('Retry failed: ' + e.message); }
+            } catch (e) { toast('Retry failed: ' + e.message, 'error'); }
         }
 
         async function togglePause() {
@@ -1330,17 +1398,17 @@
                 document.getElementById('editor-dag-id').textContent = 'File: ' + (data.file_path || currentDagId + '.py');
                 document.getElementById('editor-content').value = data.source || '';
                 document.getElementById('editor-modal').style.display = 'flex';
-            } catch (e) { alert('Failed to load source: ' + e.message); }
+            } catch (e) { toast('Failed to load source: ' + e.message, 'error'); }
         }
 
         async function saveSource() {
             var source = document.getElementById('editor-content').value;
             try {
                 await api('/api/dags/' + currentDagId + '/source', 'PATCH', { source: source });
-                alert('Source saved!');
+                toast('Source saved!', 'success');
                 closeEditor();
                 refreshDagDetails();
-            } catch (e) { alert('Save failed: ' + e.message); }
+            } catch (e) { toast('Save failed: ' + e.message, 'error'); }
         }
 
         function closeEditor() { document.getElementById('editor-modal').style.display = 'none'; }
@@ -1382,7 +1450,7 @@
         async function fetchSecrets() {
             try {
                 var s = await api('/api/secrets');
-                var secrets = s.secrets || [];
+                var secrets = s.data || s.secrets || [];
                 document.getElementById('secrets-list').innerHTML = secrets.map(function (x) {
                     return '<div class="glass p-4 rounded-xl border border-white/5 font-mono">' + x + '</div>';
                 }).join('');
@@ -1450,7 +1518,7 @@
                 }
                 closeUploadModal();
                 fetchDags();
-                alert('DAG uploaded successfully!');
+                toast('DAG uploaded successfully!', 'success');
             } catch (e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
         }
 
@@ -1500,10 +1568,10 @@
                     var err = await res.json();
                     throw new Error(err.error || 'Rollback failed');
                 }
-                alert('Successfully rolled back to v' + versionNumber);
+                toast('Successfully rolled back to v' + versionNumber, 'success');
                 closeVersionModal();
             } catch (e) {
-                alert('Rollback Error: ' + e.message);
+                toast('Rollback Error: ' + e.message, 'error');
             }
         }
 
