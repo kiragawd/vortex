@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
+use std::collections::HashMap;
 use std::env;
+use std::path::PathBuf;
 use std::process;
 
 #[derive(Parser, Debug)]
@@ -32,6 +34,26 @@ enum Commands {
     Users {
         #[command(subcommand)]
         action: UsersAction,
+    },
+    /// Migrate Airflow DAGs to generated Rust DAG modules
+    Migrate {
+        /// Path to a Python DAG file or a directory containing DAG files
+        input_path: String,
+        /// Output directory for generated Rust modules
+        #[arg(long, default_value = "generated_dags")]
+        output_dir: String,
+        /// Strict mode: fail if placeholders are generated
+        #[arg(long)]
+        strict: bool,
+        /// Enable agentic PythonOperator translation
+        #[arg(long)]
+        agentic: bool,
+        /// LLM provider to use when --agentic is set: openai|anthropic
+        #[arg(long, default_value = "openai")]
+        llm_provider: String,
+        /// Optional model override for agentic translation
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -384,6 +406,151 @@ async fn main() {
                     }
                 }
             }
+        },
+        Commands::Migrate {
+            input_path,
+            output_dir,
+            strict,
+            agentic,
+            llm_provider,
+            model,
+        } => {
+            use vortex::agentic::{
+                AnthropicProvider, OpenAiProvider, translate_python_to_rust_agentic,
+            };
+            use vortex::airflow_ast_parser::parse_airflow_file;
+            use vortex::dag_codegen::{
+                assert_graph_equivalence, validate_generated_rust_source,
+                write_generated_dag_with_overrides, write_migration_report,
+            };
+
+            let input = PathBuf::from(&input_path);
+            let mut py_files = Vec::new();
+            if input.is_file() {
+                py_files.push(input);
+            } else if input.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&input) {
+                    for e in entries.flatten() {
+                        let p = e.path();
+                        if p.extension().and_then(|x| x.to_str()) == Some("py") {
+                            py_files.push(p);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("Input path not found: {}", input_path);
+                process::exit(1);
+            }
+
+            if py_files.is_empty() {
+                eprintln!("No Python DAG files found in {}", input_path);
+                process::exit(1);
+            }
+
+            let mut summaries = Vec::new();
+            for file in py_files {
+                match parse_airflow_file(&file) {
+                    Ok(dags) => {
+                        for dag in dags {
+                            let mut overrides: HashMap<String, String> = HashMap::new();
+                            if agentic {
+                                for t in &dag.tasks {
+                                    if t.operator_type.contains("Python") {
+                                        let source_text = t
+                                            .raw_kwargs
+                                            .get("raw_args")
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("python_callable={:?}", t.python_callable));
+
+                                        let translated = if llm_provider == "anthropic" {
+                                            let provider = AnthropicProvider {
+                                                endpoint: env::var("ANTHROPIC_ENDPOINT").unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".to_string()),
+                                                api_key: env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+                                                model: model.clone().unwrap_or_else(|| "claude-3-5-sonnet-latest".to_string()),
+                                            };
+                                            translate_python_to_rust_agentic(&provider, &source_text, 3).await
+                                        } else {
+                                            let provider = OpenAiProvider {
+                                                endpoint: env::var("OPENAI_ENDPOINT").unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
+                                                api_key: env::var("OPENAI_API_KEY").unwrap_or_default(),
+                                                model: model.clone().unwrap_or_else(|| "gpt-4o-mini".to_string()),
+                                            };
+                                            translate_python_to_rust_agentic(&provider, &source_text, 3).await
+                                        };
+
+                                        match translated {
+                                            Ok(code) => {
+                                                overrides.insert(t.task_id.clone(), code);
+                                            }
+                                            Err(e) => {
+                                                if strict {
+                                                    eprintln!(
+                                                        "Agentic translation failed for DAG {} task {}: {}",
+                                                        dag.dag_id, t.task_id, e
+                                                    );
+                                                    process::exit(1);
+                                                }
+                                                eprintln!(
+                                                    "Agentic translation skipped for DAG {} task {}: {}",
+                                                    dag.dag_id, t.task_id, e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            match write_generated_dag_with_overrides(&output_dir, &dag, &overrides) {
+                                Ok((summary, generated_source)) => {
+                                    if let Err(e) = validate_generated_rust_source(&generated_source) {
+                                        eprintln!(
+                                            "Generated Rust validation failed for DAG {}: {}",
+                                            summary.dag_id, e
+                                        );
+                                        process::exit(1);
+                                    }
+                                    if let Err(e) = assert_graph_equivalence(&dag, &generated_source) {
+                                        eprintln!(
+                                            "Graph equivalence check failed for DAG {}: {}",
+                                            summary.dag_id, e
+                                        );
+                                        process::exit(1);
+                                    }
+                                    if strict && summary.placeholder_tasks > 0 {
+                                        eprintln!(
+                                            "Strict mode failed for DAG {}: {} placeholder tasks generated",
+                                            summary.dag_id, summary.placeholder_tasks
+                                        );
+                                        process::exit(1);
+                                    }
+                                    println!(
+                                        "Generated {} (converted={}, placeholders={})",
+                                        summary.generated_file,
+                                        summary.converted_tasks,
+                                        summary.placeholder_tasks
+                                    );
+                                    summaries.push(summary);
+                                }
+                                Err(e) => {
+                                    eprintln!("Generation failed for {}: {}", file.display(), e);
+                                    process::exit(1);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Parse failed for {}: {}", file.display(), e);
+                        process::exit(1);
+                    }
+                }
+            }
+
+            if let Err(e) = write_migration_report(&output_dir, &summaries) {
+                eprintln!("Failed to write migration report: {}", e);
+                process::exit(1);
+            }
+
+            println!("Migration completed. Output: {}", output_dir);
         }
     }
 }

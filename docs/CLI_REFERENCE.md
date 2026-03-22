@@ -40,11 +40,60 @@ vortex-cli dags <action>
   ```
   Unpauses the specified DAG (calls `PATCH /api/dags/:id/unpause`).
 
-- **`backfill <id> --start <date> --end <date> [--parallel N]`**
+- **`backfill <id> --start-date <date> --end-date <date> [--parallel] [--dry-run]`**
   ```bash
-  vortex-cli dags backfill my_pipeline --start 2026-01-01T00:00:00Z --end 2026-02-01T00:00:00Z --parallel 4
+  vortex-cli dags backfill my_pipeline --start-date 2026-01-01 --end-date 2026-02-01 --parallel
+  vortex-cli dags backfill my_pipeline --start-date 2026-01-01 --end-date 2026-02-01 --dry-run
   ```
   Triggers a backfill run for the specified date range.
+
+### Migrate Airflow DAGs
+```bash
+vortex-cli migrate <path-to-airflow-dags> [options]
+```
+
+Generates Rust DAG modules from Airflow DAG Python files or dbt projects.
+
+#### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--output-dir <dir>` | Directory for generated Rust modules and reports | `./generated_dags` |
+| `--strict` | Fail if any unresolved placeholders remain | `false` |
+| `--report-format <fmt>` | Report format: `json` or `md` | `json` |
+| `--use-shim-fallback` | Preserve original Python callable payloads for runtime shim fallback | `false` |
+| `--agentic` | Enable LLM-assisted conversion for unresolved tasks | `false` |
+| `--llm-provider <provider>` | LLM provider: `openai` or `anthropic` (requires `--agentic`) | — |
+| `--model <model>` | LLM model name (requires `--agentic`) | — |
+
+#### Standard migration
+```bash
+vortex-cli migrate ./dags --output-dir ./generated_dags
+vortex-cli migrate ./dags --output-dir ./generated_dags --strict
+vortex-cli migrate ./dags --output-dir ./generated_dags --report-format md
+vortex-cli migrate ./dags --output-dir ./generated_dags --use-shim-fallback
+```
+
+#### Agentic conversion (AI-assisted)
+```bash
+vortex-cli migrate ./dags --agentic --llm-provider openai --model gpt-4o-mini
+vortex-cli migrate ./dags --agentic --llm-provider anthropic --model claude-3-5-sonnet-latest
+```
+
+Required environment variables for agentic mode:
+- **OpenAI:** `OPENAI_API_KEY` (optional: `OPENAI_ENDPOINT`)
+- **Anthropic:** `ANTHROPIC_API_KEY` (optional: `ANTHROPIC_ENDPOINT`)
+
+#### dbt project conversion
+```bash
+vortex-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+```
+
+When migration runs, VORTEX performs:
+- Generated Rust syntax validation.
+- DAG graph equivalence validation (dependency parity).
+- Strict failure if unresolved placeholders remain when `--strict` is enabled.
+- For agentic mode: iterative compile-check and lint validation of LLM-generated code.
 
 ### Manage Tasks
 ```bash
@@ -88,3 +137,9 @@ vortex-cli users <action>
 | `tasks logs <id>` | `GET` | `/api/tasks/:id/logs` |
 | `secrets set <k> <v>` | `POST` | `/api/secrets` |
 | `users create <u>` | `POST` | `/api/users` |
+
+## Notes
+- `migrate` runs locally and writes generated files/report to disk.
+- `migrate` does not call VORTEX REST API endpoints.
+- `migrate --agentic` requires a valid LLM provider API key set via environment variable.
+- `migrate` with dbt projects parses the dbt manifest, expands Jinja SQL, and generates Rust pipeline modules.

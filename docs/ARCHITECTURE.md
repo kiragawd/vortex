@@ -60,7 +60,44 @@ Single-page application embedded in the binary via `rust-embed`:
 - **Auth:** Login form → API key stored in `localStorage`
 - **RBAC:** Admin sees all DAGs; Operator/Viewer with a `team_id` sees only their team's DAGs; Operator/Viewer with no team sees only unassigned DAGs (Bug #14 fix)
 - **Auto-refresh:** 5-second polling for DAG status and Swarm health
+### 5. Enterprise Connector Subsystem
 
+A unified abstraction for external data systems, defined in `src/enterprise_connector.rs` with implementations in `src/connectors.rs`:
+
+- **Connector Trait (`EnterpriseConnector`)** — Async interface for connect, health check, execute, stream, introspect, and close operations
+- **Connector Registry** — Dynamic name-based registration and lookup (`ConnectorRegistry`)
+- **Capability System** — Each connector declares its capabilities (Transactions, BatchRead, StreamingRead, AsyncJobs, ArrowZeroCopy, PushdownPredicates)
+- **Connector Kinds** — `Database`, `Warehouse`, `Api`, `Transformation`
+
+**Implemented connectors:**
+
+| Connector | Module | Driver | Key Features |
+|-----------|--------|--------|-------------|
+| PostgreSQL | `PostgresEnterpriseConnector` | `sqlx::PgPool` | Connection pooling, streaming fetch, query instrumentation |
+| Snowflake | `SnowflakeConnector` | REST API | Key-pair/OAuth auth, async query polling, Arrow result format |
+| Databricks | `DatabricksConnector` | REST API | SQL Warehouse mode + Jobs API mode, async polling |
+| MySQL | `MySqlConnector` | `sqlx` MySQL | Async queries, type normalization |
+| MS SQL | `MsSqlConnector` | `tiberius` TDS | Async queries, type normalization |
+| dbt | `DbtConnector` | CLI shell | Runs `dbt compile/run/test`, captures JSON logs, secret redaction |
+
+**Cross-cutting:** All connectors share a retry policy (`with_retry`) with configurable backoff, timeout, and auth context (`ConnectorContext`).
+
+### 6. Migration Pipeline
+
+Airflow-to-Vortex transpilation system spanning three modules:
+
+- **Static AST Parser** (`src/airflow_ast_parser.rs`) — Parses Python DAG files into an intermediate representation (IR) without executing Python. Extracts DAG definitions, operator instantiations, dependency expressions (`>>`, `set_upstream`), and schedule metadata. Validates unique task IDs, edge references, and detects cycles.
+- **DAG Code Generator** (`src/dag_codegen.rs`) — Transforms AST IR into native Rust DAG modules. Emits `todo!()` for unsupported `PythonOperator` logic with fallback shim payloads. Produces migration reports (converted tasks, placeholder tasks, required manual actions).
+- **CLI Migrate Command** (`src/bin/vortex-cli.rs`) — `vortex-cli migrate <path>` drives the full pipeline: discover → parse → generate → validate → report. Supports `--strict`, `--report-format json|md`, `--output-dir`, and `--use-shim-fallback` flags.
+
+### 7. Agentic Migration Layer
+
+AI-assisted conversion for unresolved Python and dbt logic, implemented in `src/agentic.rs`:
+
+- **LLM Provider Abstraction** — `LlmProvider` trait with OpenAI and Anthropic implementations. Provider-agnostic prompt templates, policy checks, and token/cost telemetry.
+- **Python-to-Rust Agent** — Iterative loop: analyze Python callable → plan Rust equivalent → generate code → `cargo check` + lint policy validation → repair loop until passing or retry budget exhausted.
+- **dbt-to-Rust Agent** — Loads dbt manifest, expands Jinja SQL with deterministic context, builds dependency graph of SQL transformations, maps nodes to connector execution stages, and generates a Rust orchestration module.
+- **Safety** — Blocks dangerous APIs by policy, forces explicit error handling, validates all generated code compiles before acceptance.
 ---
 
 ## Execution Flow
@@ -168,6 +205,9 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 | **gRPC** | Tonic + Prost | Type-safe Protobuf, streaming |
 | **Python Bridge** | PyO3 | Native CPython embedding (Requires trusted DAG files; AST sandboxing planned) |
 | **Encryption** | AES-256-GCM (aes-gcm) | NIST-approved, authenticated encryption |
+| **Enterprise Connectors** | sqlx, tiberius, reqwest | Unified trait with Postgres, Snowflake, Databricks, MySQL, MSSQL, dbt |
+| **Migration Pipeline** | rustpython-parser, codegen | Static AST parsing, Rust code generation |
+| **Agentic Layer** | OpenAI / Anthropic APIs | LLM-assisted Python-to-Rust and dbt-to-Rust conversion |
 | **Dashboard** | Vanilla JS + Tailwind + D3 + Dagre | No build step, embedded via rust-embed |
 | **Task Execution** | Direct process spawn | `sh -c` for bash, `python3` for python |
 
@@ -182,3 +222,5 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 - [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Encrypted secrets
 - [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery
 - [High Availability](./high-availability.md) — HA deployment with leader election
+- [Migration Guide](./MIGRATION_GUIDE.md) — Airflow-to-Vortex DAG migration
+- [Connector API](./CONNECTOR_API.md) — Enterprise connector trait and implementations

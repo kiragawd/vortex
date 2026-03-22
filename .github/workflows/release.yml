@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  verify-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run Tests
+        run: cargo test --all-targets
+
+      - name: Generate changelog summary
+        run: |
+          echo "Release ${GITHUB_REF_NAME}" > release_notes.txt
+          echo "" >> release_notes.txt
+          sed -n '1,120p' CHANGELOG.md >> release_notes.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.txt
+          files: |
+            target/release/vortex
+            target/release/vortex-cli

@@ -15,3 +15,8 @@ pub mod db_trait;
 pub mod db_postgres;
 pub mod proto;
 pub mod dag_factory;
+pub mod airflow_ast_parser;
+pub mod enterprise_connector;
+pub mod connectors;
+pub mod dag_codegen;
+pub mod agentic;

@@ -114,6 +114,10 @@ Workers connecting to a TLS-enabled controller:
 | `VORTEX_NODE_ID` | HA mode | Unique identifier for this controller node (auto-generated if unset) |
 | `VORTEX_TASK_API_KEY` | Optional | Scoped API key injected into task processes for API access |
 | `VORTEX_BASE_URL` | Optional | Base URL for task API access (default: `http://localhost:3000`) |
+| `OPENAI_API_KEY` | Agentic migration (OpenAI) | API key for OpenAI LLM provider |
+| `OPENAI_ENDPOINT` | Optional | Custom OpenAI-compatible API endpoint |
+| `ANTHROPIC_API_KEY` | Agentic migration (Anthropic) | API key for Anthropic LLM provider |
+| `ANTHROPIC_ENDPOINT` | Optional | Custom Anthropic-compatible API endpoint |
 | `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | Python 3.14+ | Set to `1` for PyO3 compatibility |
 
 ### Generate Encryption Key
@@ -240,6 +244,37 @@ For automated backups, consider `pg_dump` cron jobs or PostgreSQL continuous arc
 | **"Too many login attempts"** | Rate limit is 10 attempts per 60 seconds per username. Wait and retry. |
 | **Tasks stuck in Running** | On restart, controller auto-marks interrupted tasks as Failed. |
 | **Database connection errors** | Verify PostgreSQL is running and `--database-url` is correct. |
+| **Agentic migration fails** | Verify `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is set. Check provider endpoint reachability. |
+| **Migration placeholders remaining** | Use `--agentic` to auto-resolve, or manually convert placeholder tasks. |
+
+---
+
+## Agentic Migration Setup
+
+To use AI-assisted migration for converting Airflow DAGs or dbt projects to native Rust:
+
+1. **Set provider API key:**
+   ```bash
+   # OpenAI
+   export OPENAI_API_KEY="sk-..."
+
+   # Anthropic
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   ```
+
+2. **Run agentic migration:**
+   ```bash
+   vortex-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+   ```
+
+3. **Review generated code** — All LLM-generated Rust code is compile-checked and lint-validated automatically. Review outputs before promoting to production.
+
+4. **dbt project conversion:**
+   ```bash
+   vortex-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+   ```
+
+See the [Migration Guide](./MIGRATION_GUIDE.md) for full details on flags, validation, and phased cutover.
 
 ---
 

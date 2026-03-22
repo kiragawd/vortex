@@ -58,6 +58,32 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 - **Dynamic DAG Generation** — Support for loops and parameterization (Jinja/f-strings)
 - **Airflow compatibility shim** — `from vortex import DAG, BashOperator, PythonOperator`
 
+### Enterprise Connectors
+- **Unified Connector Trait** — `EnterpriseConnector` contract in `src/enterprise_connector.rs` with config validation, health checks, query execution, streaming, and introspection
+- **Connector Registry** — Dynamic registration and lookup of connectors by name
+- **PostgreSQL** — Native async connector via `sqlx` with connection pooling, streaming fetch, and query instrumentation
+- **Snowflake** — REST API connector with key-pair / OAuth auth, async query polling, and Arrow result format support
+- **Databricks** — Dual-mode connector: SQL Warehouse for direct queries and Jobs API for workflow triggers
+- **MySQL** — Async connector scaffold via `sqlx` MySQL driver with type normalization
+- **MS SQL Server** — Async connector scaffold via TDS (`tiberius`) with type normalization
+- **dbt** — Shell controller connector: runs `dbt compile/run/test`, captures JSON logs, maps exit codes to task status
+- **Retry & Timeout** — Cross-cutting retry policy with configurable backoff on all connectors
+- **Capability Flags** — Connectors declare capabilities (Transactions, BatchRead, StreamingRead, AsyncJobs, ArrowZeroCopy, etc.)
+
+### Airflow Migration Pipeline
+- **Static AST Parser** — Rust-native Python AST parser (`src/airflow_ast_parser.rs`) extracts DAGs, tasks, dependencies, and schedules without executing Python
+- **Rust DAG Code Generator** — Generates native Rust DAG modules from parsed AST IR (`src/dag_codegen.rs`), with `todo!()` placeholders for unsupported constructs
+- **CLI `migrate` Command** — `vortex-cli migrate <path>` transpiles Airflow DAGs to Rust with `--strict`, `--report-format`, and `--use-shim-fallback` options
+- **Migration Reports** — JSON/Markdown reports listing converted tasks, placeholder tasks, and required manual actions
+- **Graph Equivalence Validation** — Automated checks that generated DAG dependency topology matches the source Airflow DAG
+
+### Agentic Migration (AI-Assisted)
+- **LLM Provider Integration** — Provider-agnostic abstraction supporting OpenAI and Anthropic (`src/agentic.rs`)
+- **Python-to-Rust Agent** — Iterative translation loop: analyze → plan → generate → compile-check → lint → repair until passing or budget exhausted
+- **dbt-to-Rust Agent** — Parses dbt manifest, expands Jinja SQL, builds dependency graph, and generates Rust pipeline modules
+- **Safety Guardrails** — Policy-based blocking of dangerous APIs, forced explicit error handling, and compile validation on all generated code
+- **Token/Cost Telemetry** — Tracks LLM usage and cost per agentic conversion
+
 ### Extensibility & Power
 - **Plugin System** — Trait-based custom operators (e.g., HTTP, SQL, Slack)
 - **Dynamic Loading** — Load `.so` / `.dylib` plugins from `plugins/` at runtime
@@ -112,7 +138,7 @@ See the [High Availability Guide](./docs/high-availability.md) for full setup in
 
 While VORTEX provides a highly performant execution engine, it intentionally foregoes some of the larger ecosystem features found in legacy orchestrators like Airflow. The following features are currently missing or planned for future releases:
 
-- **Provider/Connector Ecosystem:** VORTEX includes a native HTTP operator and a dynamic plugin system. It does not ship with thousands of pre-built integrations (AWS, GCP, Snowflake, etc.).
+- **Provider/Connector Ecosystem:** VORTEX ships with native enterprise connectors for PostgreSQL, Snowflake, Databricks, MySQL, MS SQL, and dbt. Additional cloud-native integrations (AWS, GCP, etc.) can be added via the `EnterpriseConnector` trait or the plugin system.
 - **Dataset-Triggered Scheduling:** Data-aware scheduling and Dataset triggers are not currently implemented, but are on the **Roadmap**.
 - **Dynamic Task Mapping:** Runtime task fan-out (e.g., `task.expand()`) is not yet supported. Static DAGs cover the vast majority of use cases; dynamic mapping is on the **Roadmap**.
 - **Authentication (SSO/LDAP):** Authentication is handled natively via API keys, which is appropriate for a v1 OSS release. OAuth 2.0, SAML, and LDAP integrations are not included.
@@ -196,6 +222,8 @@ vortex-cli dags trigger <dag_id>
 vortex-cli dags pause <dag_id>
 vortex-cli dags unpause <dag_id>
 vortex-cli dags backfill <dag_id> --start 2026-01-01 --end 2026-02-01 --parallel 4
+vortex-cli migrate ./dags --output-dir ./generated_dags --strict
+vortex-cli migrate ./dags --agentic --llm-provider openai --model gpt-4o-mini
 vortex-cli tasks logs <task_instance_id>
 vortex-cli secrets set MY_KEY MY_VAL
 vortex-cli users create new_user --role Operator
@@ -242,6 +270,11 @@ vortex/
 │   ├── metrics.rs        # Prometheus instrumentation
 │   ├── xcom.rs           # Cross-task communication (XCom)
 │   ├── pools.rs          # Task pool management
+│   ├── airflow_ast_parser.rs # Static Python AST parser for Airflow DAGs
+│   ├── dag_codegen.rs    # Rust DAG code generator from parsed AST
+│   ├── enterprise_connector.rs # Unified connector trait and registry
+│   ├── connectors.rs     # Connector implementations (Postgres, Snowflake, Databricks, dbt, MySQL, MSSQL)
+│   ├── agentic.rs        # LLM-assisted migration (OpenAI/Anthropic providers)
 │   ├── sensors.rs        # SQL/HTTP sensor operators
 │   ├── notifications.rs  # Webhook/Slack/Email callback notifications
 │   └── lib.rs            # Library exports
@@ -266,6 +299,8 @@ vortex/
 - **[Resilience](./docs/PILLAR_4_RESILIENCE.md)** — Auto-recovery and health monitoring
 - **[Plugins](./docs/PLUGINS.md)** — Custom operator development
 - **[High Availability](./docs/high-availability.md)** — HA deployment with leader election
+- **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow-to-Vortex DAG migration
+- **[Connector API](./docs/CONNECTOR_API.md)** — Enterprise connector trait and implementations
 
 ## Testing
 

@@ -3799,6 +3799,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sqlx",
+ "syn 2.0.117",
  "tempfile",
  "tokio",
  "tokio-rustls",
