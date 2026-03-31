@@ -88,3 +88,58 @@ Before writing a plugin, check if your use case is covered by built-in task type
 | `http` | Make HTTP requests with configurable method, URL, headers, and body |
 
 Plugins are useful for custom integrations (database operators, cloud service operators, etc.) that aren't covered by the built-in types.
+
+---
+
+## Plugin SDK Scaffold CLI
+
+**Module:** `src/sdk.rs`
+
+Generate a new plugin project with the scaffold CLI:
+
+```bash
+vortex-cli plugin init my_custom_operator
+```
+
+This generates a complete Cargo project structure:
+
+```
+my_custom_operator/
+├── Cargo.toml          # Pre-configured with cdylib crate-type and vortex dependency
+├── src/
+│   └── lib.rs          # VortexOperator trait implementation template
+├── tests/
+│   └── integration.rs  # Test scaffold
+└── plugin.toml         # Plugin manifest (name, version, author, capabilities)
+```
+
+### Plugin Manifest (`plugin.toml`)
+
+Each plugin includes a manifest file for metadata validation:
+
+```toml
+[plugin]
+name = "my_custom_operator"
+version = "0.1.0"
+author = "Your Name"
+description = "Custom operator for XYZ"
+vortex_version = ">=0.6.0"
+
+[capabilities]
+task_types = ["my_custom_task"]
+```
+
+### Manifest Validation
+
+On plugin load, Vortex validates:
+- Plugin name uniqueness in the registry
+- Version compatibility with the running Vortex version
+- Required fields are present and well-formed
+
+---
+
+## Related Documentation
+
+- [Architecture](./ARCHITECTURE.md) — System design and plugin executor
+- [Deployment](./DEPLOYMENT.md) — `--allow-unsafe-plugins` flag
+- [API Reference](./API_REFERENCE.md) — Task execution endpoints

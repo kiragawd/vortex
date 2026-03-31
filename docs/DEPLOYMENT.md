@@ -289,6 +289,94 @@ See the [Migration Guide](./MIGRATION_GUIDE.md) for full details on flags, valid
 
 ---
 
+## Docker Deployment
+
+### Docker Compose (Development)
+
+```bash
+docker-compose up -d
+```
+
+Runs: Vortex controller + worker + PostgreSQL + Prometheus — ideal for local development and testing.
+
+### Dockerfile
+
+Multi-stage production build with minimal runtime image:
+
+1. **Builder stage** — Compiles Vortex with optimized release profile
+2. **Runtime stage** — Minimal image with only the binary and required runtime libraries
+
+```bash
+docker build -t vortex:latest .
+docker run -p 3000:3000 -p 50051:50051 \
+  -e DATABASE_URL="postgres://user:pass@host/vortex" \
+  vortex:latest server --swarm
+```
+
+---
+
+## Kubernetes Deployment
+
+### Helm Chart
+
+The Helm chart at `helm/vortex/` provides production-ready Kubernetes deployment:
+
+```bash
+helm install vortex ./helm/vortex \
+  --set database.url="postgres://user:pass@pg-service/vortex" \
+  --set controller.replicas=1 \
+  --set worker.replicas=3
+```
+
+### Components
+
+| Resource | Type | Description |
+|----------|------|-------------|
+| Controller | StatefulSet | Main scheduler + API server with stable identity |
+| Worker | Deployment | HPA-ready worker pool for task execution |
+| DAG Storage | PVC | Persistent volume for DAG files |
+| Config | ConfigMap | Runtime configuration |
+| Secrets | Secret | Database credentials, vault key, API keys |
+
+### Probes
+
+| Probe | Endpoint | Interval |
+|-------|----------|----------|
+| Startup | `GET /health` | 5s (30 failure threshold) |
+| Readiness | `GET /health` | 10s |
+| Liveness | `GET /health` | 15s |
+
+### Horizontal Pod Autoscaler
+
+Workers scale based on CPU utilization or custom metrics:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: vortex-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+
+### Kubernetes Executor
+
+Pod-per-task executor for Kubernetes-native task isolation:
+
+- **Pod spec generation** — `K8sExecutorConfig` defines resource requests/limits, tolerations, node selectors, and service accounts
+- **Status:** Pod spec generation is implemented. Full `kube-rs` client integration for pod submission and status polling is pending. Use the gRPC Swarm for horizontal scaling in the meantime.
+
+---
+
 ## Graceful Shutdown
 
 VORTEX handles `SIGINT` (Ctrl+C) and `SIGTERM` gracefully:

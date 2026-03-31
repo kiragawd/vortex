@@ -1,8 +1,24 @@
 # Architecture Overview — VORTEX System Design
 
+Vortex replaces Python's heavy, process-based, GIL-bound orchestration architecture with Rust's high-performance, async-first paradigm.
+
+### Key Architectural Advantages
+
+1. **Concurrency Model (Tokio vs Python processes):** Airflow spawns heavyweight OS processes for parallel scheduling, creating heavy PostgreSQL lock contention. Vortex uses Rust's `tokio` async runtime with lightweight async tasks (~2KB memory footprint) that yield instead of blocking, enabling orders of magnitude more parallel task executions per core.
+
+2. **Native Connectors & Automated Conversion:** An AST-parsing and AI-agentic layer transpiles Airflow Python DAGs into native Rust code. Databricks, Snowflake, and PostgreSQL connectors execute directly in Rust with memory-efficient frameworks.
+
+3. **Single Binary Deployment:** Vortex compiles to a single ~15MB binary containing the web UI, REST API, scheduler, and worker executor — replacing Airflow's multi-process infrastructure (Webserver, Schedulers, Triggerer, Celery/Redis, Workers).
+
+4. **Distributed gRPC Swarm:** Horizontal scaling via lightweight gRPC Swarm (Worker/Controller) architecture with graceful heartbeat management, node loss handling, and task requeuing.
+
+5. **Built-in Security:** AES-256-GCM encrypted vault, team-based multi-tenancy, path traversal protection, and RBAC at the middleware level.
+
+---
+
 ## System Components
 
-VORTEX is a single-binary orchestration engine with four logical components:
+VORTEX is a single-binary orchestration engine with the following logical components:
 
 ### 1. Controller (Orchestrator)
 
@@ -79,6 +95,8 @@ A unified abstraction for external data systems, defined in `src/enterprise_conn
 | PostgreSQL | `PostgresEnterpriseConnector` | `sqlx::PgPool` | Connection pooling, streaming fetch, query instrumentation |
 | Snowflake | `SnowflakeConnector` | REST API | Key-pair/OAuth auth, async query polling, Arrow result format |
 | Databricks | `DatabricksConnector` | REST API | SQL Warehouse mode + Jobs API mode, async polling |
+| BigQuery | `BigQueryConnector` | REST API | OAuth token auth, query execution |
+| Redshift | `RedshiftConnector` | `sqlx` PostgreSQL | Real SQL execution via PG wire protocol |
 | MySQL | `MySqlConnector` | `sqlx` MySQL | Async queries, type normalization |
 | MS SQL | `MsSqlConnector` | `tiberius` TDS | Async queries, type normalization |
 | dbt | `DbtConnector` | CLI shell | Runs `dbt compile/run/test`, captures JSON logs, secret redaction |
@@ -101,6 +119,28 @@ AI-assisted conversion for unresolved Python and dbt logic, implemented in `src/
 - **Python-to-Rust Agent** — Iterative loop: analyze Python callable → plan Rust equivalent → generate code → `cargo check` + lint policy validation → repair loop until passing or retry budget exhausted.
 - **dbt-to-Rust Agent** — Loads dbt manifest, expands Jinja SQL with deterministic context, builds dependency graph of SQL transformations, maps nodes to connector execution stages, and generates a Rust orchestration module.
 - **Safety** — Blocks dangerous APIs by policy, forces explicit error handling, validates all generated code compiles before acceptance.
+
+### 8. Event-Driven Architecture & Sensors
+
+Event bus and sensor framework for reactive orchestration, implemented in `src/event_framework.rs` and `src/sensors.rs`:
+
+- **Event Bus** — Broadcast channel-based in-memory event log with source glob matching, JSON path conditions, and metadata filters
+- **Webhook Receiver** — HTTP endpoint for ingesting external events into the event bus
+- **Event-Triggered DAGs** — DAG execution triggered when incoming events match configured patterns
+- **Sensor Framework** — Configurable sensors with poke (tight loop) and reschedule (release slot) modes:
+  - **File Sensor** — Watch filesystem paths for existence or modification
+  - **HTTP Sensor** — Poll HTTP endpoints, match response codes and body patterns
+  - **SQL Sensor** — Execute queries against databases, evaluate row count or value conditions
+  - **External Task Sensor** — Wait for upstream DAG/task completion across DAG boundaries
+
+### 9. Configuration & Operations
+
+Operational tooling implemented in `src/config_ops.rs` and `src/devops.rs`:
+
+- **Config Manager** — Environment-scoped configuration (dev/staging/prod) with inheritance resolution
+- **Feature Flags** — Boolean feature flag management with `RwLock`-protected in-memory store
+- **Git-Sync** — DAG repository synchronization with SSH/HTTP/token auth and sync state tracking
+- **Health Checks** — Operational health check types and maintenance window definitions
 ---
 
 ## Execution Flow
@@ -203,27 +243,42 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | **Runtime** | Rust + Tokio | Async concurrency, memory safety, no GC |
-| **Database** | PostgreSQL (SQLx) | ACID, production-grade, advisory locks for HA |
-| **Web API** | Axum | Lightweight, tower middleware, async |
-| **gRPC** | Tonic + Prost | Type-safe Protobuf, streaming |
-| **Python Bridge** | PyO3 | Native CPython embedding (Requires trusted DAG files; AST sandboxing planned) |
-| **Encryption** | AES-256-GCM (aes-gcm) | NIST-approved, authenticated encryption |
+| **Database** | PostgreSQL (SQLx 0.7) | ACID, production-grade, advisory locks for HA |
+| **Web API** | Axum 0.7 | Lightweight, tower middleware, async |
+| **gRPC** | Tonic 0.12 + Prost 0.13 | Type-safe Protobuf, streaming |
+| **CLI** | Clap 4.5 | Derive-based argument parsing |
+| **Python Bridge** | PyO3 0.23 | Native CPython embedding (requires `--allow-unsafe-dag-exec` opt-in) |
+| **Encryption** | AES-256-GCM (aes-gcm 0.10) | NIST-approved, authenticated encryption |
+| **TLS** | Rustls 0.23 + axum-server 0.7 | TLS for REST API, rustls-based |
 | **Enterprise Connectors** | sqlx, tiberius, reqwest | Unified trait with Postgres, Snowflake, Databricks, MySQL, MSSQL, dbt |
-| **Migration Pipeline** | rustpython-parser, codegen | Static AST parsing, Rust code generation |
+| **Migration Pipeline** | Regex-based AST parser, syn 2.0 | Static AST parsing, Rust code generation |
 | **Agentic Layer** | OpenAI / Anthropic APIs | LLM-assisted Python-to-Rust and dbt-to-Rust conversion |
-| **Dashboard** | Vanilla JS + Tailwind + D3 + Dagre | No build step, embedded via rust-embed |
+| **Dashboard** | React 18.3 + TypeScript 5.3 + Vite 5.1 | SPA with Tailwind CSS 3.4, Zustand, React Query, embedded via rust-embed |
+| **Charts** | Recharts 2.12 | Gantt visualization, temporal analysis |
+| **Logging** | tracing + tracing-subscriber | Structured logging with JSON and env-filter support |
+| **Metrics** | Prometheus 0.13 | Built-in `/metrics` endpoint |
+| **Email** | Lettre 0.11 | SMTP notifications |
+| **Plugins** | libloading 0.9 | Dynamic `.so`/`.dylib` loading at runtime |
 | **Task Execution** | Direct process spawn | `sh -c` for bash, `python3` for python |
 
 ---
 
 ## Related Documentation
 
+- [Authentication & Security](./AUTHENTICATION.md) — IAM, RBAC, secrets, and security model
+- [Scheduling](./SCHEDULING.md) — Cron, dataset triggers, cross-DAG deps, dynamic mapping
+- [Observability](./OBSERVABILITY.md) — Lineage, incident management, tracing, and metrics
+- [Events & Sensors](./EVENTS_SENSORS.md) — Event bus, webhooks, and sensor framework
+- [Compliance](./COMPLIANCE.md) — Audit logging, approval workflows, and governance
+- [Configuration](./CONFIGURATION.md) — Config management, feature flags, and Git-Sync
+- [Dashboard](./DASHBOARD.md) — React SPA features and development
 - [API Reference](./API_REFERENCE.md) — Complete REST API documentation
 - [CLI Reference](./CLI_REFERENCE.md) — CLI command reference
-- [Deployment Guide](./DEPLOYMENT.md) — Build, configure, and run
+- [Deployment Guide](./DEPLOYMENT.md) — Build, configure, Docker, Kubernetes, and Helm
 - [Python Integration](./PYTHON_INTEGRATION.md) — DAG authoring
 - [Secrets Vault](./SECRETS_VAULT.md) — Encrypted secrets
-- [Resilience](./RESILIENCE.md) — Auto-recovery
+- [Resilience](./RESILIENCE.md) — Auto-recovery and disaster recovery
+- [Plugins](./PLUGINS.md) — Custom operator development and SDK
 - [High Availability](./high-availability.md) — HA deployment with leader election
 - [Migration Guide](./MIGRATION_GUIDE.md) — Airflow-to-Vortex DAG migration
 - [Connector API](./CONNECTOR_API.md) — Enterprise connector trait and implementations

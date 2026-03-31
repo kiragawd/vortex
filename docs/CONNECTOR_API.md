@@ -15,19 +15,24 @@ Implementations: `src/connectors.rs`.
 │  get(name) → Arc<dyn Connector>          │
 └────────────────┬─────────────────────────┘
                  │
-   ┌─────────────┼──────────────┬──────────────┬──────────────┐
-   │             │              │              │              │
-┌──┴───┐  ┌─────┴─────┐  ┌────┴─────┐  ┌────┴────┐  ┌──────┴──────┐
-│Postgres│ │Snowflake  │  │Databricks│  │MySQL /  │  │dbt          │
-│(sqlx) │ │(REST+Arrow)│  │(REST)    │  │MSSQL    │  │(CLI shell)  │
-└───────┘ └───────────┘  └──────────┘  └─────────┘  └─────────────┘
+   ┌─────────┬───┼───────┬──────────┬──────────┬──────────┐
+   │         │   │       │          │          │          │
+┌──┴───┐ ┌───┴──┐ ┌──┴──┐ ┌────┴───┐ ┌────┴────┐ ┌───┴────┐
+│Postgres│ │Snowfl│ │Databr│ │BigQuery│ │Redshift │ │MySQL / │
+│(sqlx) │ │(REST)│ │(REST)│ │(REST)  │ │(sqlx)   │ │MSSQL   │
+└───────┘ └──────┘ └─────┘ └────────┘ └─────────┘ └────────┘
+   ┌──────────┐  ┌──────────┐  ┌──────────┐
+   │dbt (CLI) │  │Kafka     │  │S3/GCS    │
+   └──────────┘  └──────────┘  └──────────┘
 ```
 
 ## Connector Kinds
-- `Database` — PostgreSQL, MySQL, MS SQL
-- `Warehouse` — Snowflake, Databricks
+- `Database` — PostgreSQL, MySQL, MS SQL, Redshift
+- `Warehouse` — Snowflake, Databricks, BigQuery
 - `Api` — REST/HTTP endpoints
 - `Transformation` — dbt
+- `Streaming` — Kafka (scaffolded)
+- `Storage` — S3, GCS, Delta Lake (scaffolded)
 
 ## Capabilities
 Each connector declares its supported capabilities:
@@ -154,6 +159,62 @@ Each connector declares its supported capabilities:
 
 **Security:** Secrets are redacted from command arguments and captured log output.
 **Timeout:** Configurable execution timeout wraps the child process.
+
+---
+
+### BigQuery — `BigQueryConnector`
+**Kind:** Warehouse
+**Capabilities:** BatchRead, AsyncJobs
+
+**Module:** `src/cloud_connectors.rs`
+
+**Auth:** OAuth token authentication.
+**Execution flow:**
+1. Submit SQL query via BigQuery REST API
+2. Poll job status until completion
+3. Fetch result rows
+
+---
+
+### Redshift — `RedshiftConnector`
+**Kind:** Database
+**Capabilities:** Transactions, BatchRead, BatchWrite, StreamingRead
+
+**Module:** `src/cloud_connectors.rs`
+
+**Driver:** `sqlx` PostgreSQL driver (Redshift is PostgreSQL wire-compatible).
+**Auth:** Username/password via connection string.
+
+---
+
+### Scaffolded Connectors
+
+The following connectors have configuration types defined but are awaiting full implementation:
+
+| Connector | Module | Notes |
+|-----------|--------|-------|
+| Kafka | `src/cloud_connectors.rs` | Producer/consumer configuration types |
+| S3 | `src/cloud_connectors.rs` | Bucket, prefix, and credential configuration |
+| GCS | `src/cloud_connectors.rs` | Bucket and service account configuration |
+| Delta Lake | `src/cloud_connectors.rs` | Table path and storage configuration |
+
+---
+
+## Connector Ecosystem Summary
+
+| Connector | Status | Driver |
+|-----------|--------|--------|
+| PostgreSQL | **Functional** | `sqlx::PgPool` (async) |
+| Snowflake | **Functional** | REST API + Arrow |
+| Databricks | **Functional** | REST API (SQL Warehouse + Jobs) |
+| BigQuery | **Functional** | REST API + OAuth |
+| Redshift | **Functional** | `sqlx` PostgreSQL wire |
+| MySQL | **Scaffolded** | `sqlx` MySQL (async) |
+| MS SQL | **Scaffolded** | `tiberius` TDS (async) |
+| dbt | **Functional** | CLI shell |
+| Kafka | **Scaffolded** | Config types only |
+| S3/GCS | **Scaffolded** | Config types only |
+| Delta Lake | **Scaffolded** | Config types only |
 
 ---
 

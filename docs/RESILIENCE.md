@@ -290,3 +290,36 @@ curl -s http://localhost:3000/api/swarm/workers \
 - [Deployment Guide](./DEPLOYMENT.md) — Setup and operational procedures
 - [Secrets Vault](./SECRETS_VAULT.md) — Encrypted secret storage
 - [High Availability](./high-availability.md) — HA with leader election
+
+---
+
+## Disaster Recovery
+
+**Module:** `src/disaster_recovery.rs`
+
+### Backup Metadata
+
+In-memory backup tracking and metadata management:
+
+- `BackupRecord` — Records backup ID, timestamp, status, and storage location
+- `BackupStatus` — Tracks backup lifecycle: `Pending`, `InProgress`, `Completed`, `Failed`
+- `BackupConfig` — Defines backup schedule, retention, and target storage
+
+### Failover
+
+Cluster node and health state type definitions for multi-region deployments:
+
+- Node health states for active/standby cluster members
+- Failover trigger conditions based on health check failures
+
+### Chaos Testing
+
+Chaos test hook definitions for validating system resilience:
+
+- Simulated worker crashes during task execution
+- Network partition scenarios between controller and workers
+- Database connectivity interruption testing
+
+### Current Status
+
+Backup I/O and automated restore are not yet operational. Metadata tracking and type definitions are in place. Use PostgreSQL-native backup tools (`pg_dump`, `pg_basebackup`) for production backup needs in the interim.

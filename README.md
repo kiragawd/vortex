@@ -18,35 +18,37 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────┐
-│                  VORTEX Controller                      │
-│                                                        │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐            │
-│  │ REST API │  │Scheduler │  │ DAG Parser│            │
-│  │ (Axum)   │  │ (Tokio)  │  │  (PyO3)   │            │
-│  └─────┬────┘  └────┬─────┘  └─────┬─────┘            │
-│        │            │              │                    │
-│        └────────────┼──────────────┘                    │
-│                     │                                   │
-│              ┌──────┴──────┐                            │
-│              │ PostgreSQL  │                            │
-│              │ (Primary DB)│                            │
-│              └──────┬──────┘                            │
-│                     │                                   │
-│              ┌──────┴──────┐                            │
-│              │ gRPC Swarm  │                            │
-│              │ Controller  │                            │
-│              └──────┬──────┘                            │
-│                     │                                   │
-└─────────────────────┼──────────────────────────────────┘
-                      │ gRPC
-         ┌────────────┼────────────┐
-         │            │            │
-    ┌────┴────┐  ┌────┴────┐  ┌───┴─────┐
-    │Worker 1 │  │Worker 2 │  │Worker N │
-    │(Rust)   │  │(Rust)   │  │(Rust)   │
-    └─────────┘  └─────────┘  └─────────┘
+```mermaid
+graph TB
+    subgraph Controller["VORTEX Controller"]
+        API["REST API<br/>(Axum :3000)"]
+        SCHED["Scheduler<br/>(Tokio async)"]
+        PARSER["DAG Parser<br/>(PyO3)"]
+        API --- DB
+        SCHED --- DB
+        PARSER --- DB
+        DB["PostgreSQL<br/>(Primary DB)"]
+        DB --- GRPC["gRPC Swarm Controller<br/>(Tonic :50051)"]
+    end
+
+    GRPC -- "gRPC" --> W1["Worker 1<br/>(Rust)"]
+    GRPC -- "gRPC" --> W2["Worker 2<br/>(Rust)"]
+    GRPC -- "gRPC" --> WN["Worker N<br/>(Rust)"]
+
+    UI["React SPA<br/>(embedded via rust-embed)"] --> API
+    PROM["Prometheus"] --> API
+
+    style Controller fill:#1a1a2e,stroke:#e94560,color:#fff
+    style API fill:#0f3460,stroke:#e94560,color:#fff
+    style SCHED fill:#0f3460,stroke:#e94560,color:#fff
+    style PARSER fill:#0f3460,stroke:#e94560,color:#fff
+    style DB fill:#16213e,stroke:#e94560,color:#fff
+    style GRPC fill:#16213e,stroke:#e94560,color:#fff
+    style W1 fill:#533483,stroke:#e94560,color:#fff
+    style W2 fill:#533483,stroke:#e94560,color:#fff
+    style WN fill:#533483,stroke:#e94560,color:#fff
+    style UI fill:#0f3460,stroke:#e94560,color:#fff
+    style PROM fill:#16213e,stroke:#e94560,color:#fff
 ```
 
 ## Features
@@ -95,8 +97,9 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 
 ### Web Dashboard
 - **React SPA** — React 18 + TypeScript + Vite 5 with Tailwind CSS, dark/light mode
-- **Visual DAG graphs** — Interactive D3.js + Dagre dependency visualization
+- **Visual DAG graphs** — Interactive dependency visualization with Recharts
 - **14 pages** — Dashboard, DAGs, Runs, Compliance, RBAC, Monitoring, Settings, Swarm, Lineage, Connectors, Events, and more
+- **State Management** — Zustand for global state, TanStack React Query for server state
 - **Status Aggregation** — Real-time state coloring for Task Groups and DAGs
 - **Run History** — Collapsible accordion with per-run graph snapshots
 - **Code Editor** — In-browser DAG source editing with live re-parse
@@ -128,6 +131,12 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 - **Auto-recovery** — Dead worker detection, task re-queuing, health check loop
 - **Worker re-registration** — Workers automatically re-register after controller restart without manual intervention
 - **Worker draining** — Graceful shutdown with task completion
+
+### Event-Driven Architecture & Sensors
+- **Event bus** — Broadcast channel-based in-memory event log with filter matching
+- **Webhook receiver** — Ingest external events via HTTP endpoint
+- **Event-triggered DAGs** — DAG execution triggered by matching event patterns
+- **Sensor framework** — File, HTTP, SQL, and external task sensors with poke/reschedule modes
 
 ### Security & Reliability
 - **AES-256-GCM encrypted vault** — Secrets encrypted at rest with unique nonces
@@ -355,13 +364,20 @@ vortex/
 ## Documentation
 
 - **[Architecture](./docs/ARCHITECTURE.md)** — System design and data flow
+- **[Authentication & Security](./docs/AUTHENTICATION.md)** — IAM, RBAC, secrets, and security model
+- **[Scheduling](./docs/SCHEDULING.md)** — Cron, dataset triggers, cross-DAG deps, dynamic mapping
+- **[Observability](./docs/OBSERVABILITY.md)** — Lineage, incident management, tracing, and metrics
+- **[Events & Sensors](./docs/EVENTS_SENSORS.md)** — Event bus, webhooks, and sensor framework
+- **[Compliance](./docs/COMPLIANCE.md)** — Audit logging, approval workflows, and governance
+- **[Configuration](./docs/CONFIGURATION.md)** — Config management, feature flags, and Git-Sync
+- **[Dashboard](./docs/DASHBOARD.md)** — React SPA features and development
 - **[API Reference](./docs/API_REFERENCE.md)** — Complete REST API with examples
 - **[CLI Reference](./docs/CLI_REFERENCE.md)** — CLI command reference
-- **[Deployment Guide](./docs/DEPLOYMENT.md)** — Build, configure, and run in production
+- **[Deployment Guide](./docs/DEPLOYMENT.md)** — Build, configure, Docker, Kubernetes, and Helm
 - **[Python Integration](./docs/PYTHON_INTEGRATION.md)** — DAG authoring with Python
 - **[Secrets Vault](./docs/SECRETS_VAULT.md)** — Encrypted secret management
-- **[Resilience](./docs/RESILIENCE.md)** — Auto-recovery and health monitoring
-- **[Plugins](./docs/PLUGINS.md)** — Custom operator development
+- **[Resilience](./docs/RESILIENCE.md)** — Auto-recovery, health monitoring, and disaster recovery
+- **[Plugins](./docs/PLUGINS.md)** — Custom operator development and SDK
 - **[High Availability](./docs/high-availability.md)** — HA deployment with leader election
 - **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow-to-Vortex DAG migration
 - **[Connector API](./docs/CONNECTOR_API.md)** — Connector trait and implementations
