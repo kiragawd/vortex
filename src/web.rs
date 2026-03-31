@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use tracing::{info, debug};
 use axum::{
     extract::{Path, State, Multipart, Query},
@@ -112,6 +113,7 @@ impl WebServer {
             .route("/api/dags/:id/backfill/progress", get(get_backfill_progress))
             .route("/api/dags/:id/validate", get(validate_dag_id))
             .route("/api/dags/:id/source", get(get_dag_source).patch(update_dag_source))
+            .route("/api/dags/:id/source/rust", patch(update_dag_source_rust))
             .route("/api/dags/:id/versions", get(get_dag_versions_handler))
             .route("/api/dags/:id/versions/:version/source", get(get_dag_version_source_handler))
             .route("/api/dags/:id/versions/:version/rollback", post(rollback_dag_version_handler))
@@ -123,7 +125,7 @@ impl WebServer {
             .route("/api/swarm/workers", get(swarm_workers))
             .route("/api/swarm/workers/:id/drain", post(swarm_drain_worker))
             .route("/api/swarm/workers/:id", delete(swarm_remove_worker))
-            // Pillar 3: Secrets
+            // Secrets Management
             .route("/api/secrets", get(get_secrets))
             .route("/api/secrets", post(store_secret))
             .route("/api/secrets/:key", delete(delete_secret))
@@ -131,25 +133,55 @@ impl WebServer {
             .route("/api/users", get(get_users))
             .route("/api/users", post(create_user))
             .route("/api/users/:username", delete(delete_user))
-            // Phase 2: XCom
+            // XCom
             .route("/api/xcom/push", post(xcom_push_handler))
             .route("/api/xcom/pull", get(xcom_pull_handler))
             .route("/api/dags/:id/runs/:run_id/xcom", get(xcom_list_handler))
-            // Phase 2: Task Pools
+            // Task Pools
             .route("/api/pools", get(list_pools).post(create_pool_handler))
             .route("/api/pools/:name", get(get_pool_handler).put(update_pool_handler).delete(delete_pool_handler))
-            // Phase 2: Webhook Callbacks
+            // Webhook Callbacks
             .route("/api/dags/:id/callbacks", get(get_callbacks_handler).put(set_callbacks_handler).delete(delete_callbacks_handler))
-            // Wave 2: Audit
+            // Audit
             .route("/api/audit", get(get_audit_logs_handler))
-            // Wave 2: Analysis
+            // Analysis
             .route("/api/analysis/gantt", get(gantt_handler))
             .route("/api/analysis/calendar", get(calendar_handler))
-            // Wave 2: Teams API
-            // Wave 2: Teams API
+            // Teams API
+            // Teams API
             .route("/api/teams", get(get_teams_handler).post(create_team_handler))
             .route("/api/teams/:id", get(get_team_handler).put(update_team_handler).delete(delete_team_handler))
             .route("/api/teams/:id/users/:username", put(assign_user_team_handler))
+            // Auth Provider Management
+            .route("/api/auth/providers", get(get_auth_providers_handler).post(create_auth_provider_handler))
+            .route("/api/auth/providers/:id", delete(delete_auth_provider_handler))
+            .route("/api/auth/sessions", get(get_user_sessions_handler))
+            .route("/api/auth/sessions/cleanup", post(cleanup_sessions_handler))
+            // Lineage & Incident Management
+            .route("/api/lineage/events/:dag_id", get(get_lineage_events_handler))
+            .route("/api/lineage/datasets", get(get_lineage_datasets_handler))
+            .route("/api/incidents/configs", get(get_incident_configs_handler).post(create_incident_config_handler))
+            .route("/api/incidents/configs/:id", delete(delete_incident_config_handler))
+            // Compliance, Governance & Change Management
+            .route("/api/audit/log", get(get_audit_log_handler))
+            .route("/api/approval/gates", get(get_approval_gates_handler).post(create_approval_gate_handler))
+            .route("/api/approval/gates/:id", delete(delete_approval_gate_handler))
+            .route("/api/approval/requests", get(get_approval_requests_handler).post(create_approval_request_handler))
+            .route("/api/approval/requests/:id/approve", post(approve_request_handler))
+            .route("/api/approval/requests/:id/reject", post(reject_request_handler))
+            .route("/api/retention/policies", get(get_retention_policies_handler).post(create_retention_policy_handler))
+            .route("/api/compliance/controls", get(get_compliance_controls_handler).post(upsert_compliance_control_handler))
+            .route("/api/compliance/summary/:framework", get(get_compliance_summary_handler))
+            // Fine-Grained RBAC, Token Scoping & Network Security
+            .route("/api/rbac/roles", get(get_rbac_roles_handler))
+            .route("/api/rbac/roles/:role_id/permissions", get(get_role_permissions_handler))
+            .route("/api/rbac/users/:user_id/roles", get(get_user_roles_handler).post(assign_user_role_handler))
+            .route("/api/rbac/users/:user_id/roles/:role_id", delete(revoke_user_role_handler))
+            .route("/api/rbac/users/:user_id/permissions", get(get_user_permissions_handler))
+            .route("/api/tokens", get(get_api_tokens_handler).post(create_api_token_handler))
+            .route("/api/tokens/:id/revoke", post(revoke_api_token_handler))
+            .route("/api/network/ip-allowlist", get(get_ip_allowlist_handler).post(create_ip_allowlist_rule_handler))
+            .route("/api/network/ip-allowlist/:id", delete(delete_ip_allowlist_rule_handler))
             .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
         // Bug 13 fix: apply CORS layer so browser clients from other origins can
@@ -162,9 +194,19 @@ impl WebServer {
         let app = Router::new()
             .merge(api_routes)
             .route("/api/login", post(login))
+            // OIDC/SAML Auth Flows (unauthenticated)
+            .route("/api/auth/oidc/authorize", get(oidc_authorize_handler))
+            .route("/api/auth/oidc/callback", get(oidc_callback_handler))
+            .route("/api/auth/saml/acs", post(saml_acs_handler))
+            .route("/api/auth/providers/public", get(get_public_auth_providers_handler))
             .route("/metrics", get(prometheus_metrics_handler_wrapper))
-            // Improvement 38: health check endpoint
+            // OpenAPI spec
+            .route("/api/openapi.json", get(openapi_spec_handler))
+            // Improvement 38: health check endpoint (also exposed under /api/ for UI clients)
             .route("/health", get(health_handler))
+            .route("/api/health", get(health_handler))
+            // Global runs endpoint for the UI runs page
+            .route("/api/runs", get(get_all_runs_handler))
             .fallback(static_handler)
             .layer(middleware::from_fn(request_id_middleware))
             // Improvement 40: reject request bodies larger than 10 MB
@@ -275,7 +317,7 @@ async fn auth_middleware(
     }
 }
 
-// Phase 2.4 Handlers
+// Additional Handlers
 
 async fn upload_dag(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>, mut multipart: Multipart) -> Response {
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -467,7 +509,7 @@ async fn delete_user(Path(username): Path<String>, State(state): State<Arc<AppSt
     }
 }
 
-// Pillar 3: Secrets Handlers
+// Secrets Management Handlers
 
 async fn get_secrets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.db.get_all_secrets().await {
@@ -550,6 +592,20 @@ async fn get_dags(
         Err(_) => Json(PaginatedResponse { data: vec![], total: 0, limit, offset }),
     }
 }
+
+/// GET /api/runs — all recent runs across every DAG (for the UI Runs page)
+async fn get_all_runs_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(100).min(500);
+    let offset = params.offset.unwrap_or(0);
+    match state.db.get_all_runs(limit, offset).await {
+        Ok((runs, total)) => Json(PaginatedResponse { data: runs, total, limit, offset }).into_response(),
+        Err(_) => Json(PaginatedResponse::<serde_json::Value> { data: vec![], total: 0, limit, offset }).into_response(),
+    }
+}
+
 async fn get_dag_tasks(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -579,7 +635,7 @@ async fn get_dag_tasks(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching tasks: {}", e)}))).into_response(),
     };
     
-    // Pillar 4: Pass run_id if it exists in task_instances table
+    // Pass run_id if it exists in task_instances table
     let (instances_data, instances_total) = match state.db.get_task_instances(&id, limit, offset).await {
         Ok(result) => result,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error fetching instances: {}", e)}))).into_response(),
@@ -759,7 +815,7 @@ async fn update_dag_source(Path(id): Path<String>, State(state): State<Arc<AppSt
             }
 
             if let Some(dag) = target_dag {
-                // Pillar 4: Update the DB schema/tasks for the new version
+                // Update the DB schema/tasks for the new version
                 let _ = state.db.register_dag(&dag).await;
                 
                 {
@@ -782,7 +838,71 @@ async fn update_dag_source(Path(id): Path<String>, State(state): State<Arc<AppSt
     }
 }
 
-// ─── Phase 4 Wave 2: DAG Versioning & Rollback ──────────────────────────────
+/// PATCH /api/dags/:id/source/rust — Update source and reparse as a Rust/Config DAG (JSON/YAML)
+async fn update_dag_source_rust(Path(id): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>, Json(body): Json<UpdateSource>) -> Response {
+    let version = match state.db.get_latest_version(&id).await {
+        Ok(Some(v)) => v,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let path = version["file_path"].as_str().unwrap_or("");
+
+    // Path traversal validation
+    let allowed_base = std::path::Path::new("dags")
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from("dags"));
+    let target = std::path::Path::new(path);
+    let canonical_target = match target.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(target),
+                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Cannot resolve working directory"}))).into_response(),
+            }
+        }
+    };
+    if !canonical_target.starts_with(&allowed_base) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Path traversal detected: file_path is outside the dags/ directory"}))).into_response();
+    }
+
+    if let Err(e) = fs::write(path, &body.source) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+    }
+
+    // Reparse using dag_factory (JSON/YAML config DAGs) instead of python_parser
+    match crate::dag_factory::parse_dag_file(path) {
+        Ok(dags) => {
+            let mut target_dag = None;
+            for dag in dags {
+                if dag.id == id {
+                    target_dag = Some(dag);
+                    break;
+                }
+            }
+
+            if let Some(dag) = target_dag {
+                let _ = state.db.register_dag(&dag).await;
+                {
+                    let mut map = state.dags.lock().await;
+                    map.insert(id.clone(), Arc::new(dag));
+                }
+                let _ = state.db.store_dag_version(&id, path).await;
+                let _ = state.db.log_audit_event(
+                    &auth_user.username, "dag.source_update_rust", "dag", &id, "{}",
+                ).await;
+                Json(json!({"message": "Source updated and re-parsed (config/rust)"})).into_response()
+            } else {
+                (StatusCode::BAD_REQUEST, Json(json!({"error": format!("No DAG with ID '{}' found in file", id)}))).into_response()
+            }
+        },
+        Err(e) => {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Failed to parse updated source: {}", e)}))).into_response()
+        }
+    }
+}
+
+// ─── DAG Versioning & Rollback ──────────────────────────────
 
 async fn get_dag_versions_handler(
     Path(id): Path<String>,
@@ -1105,6 +1225,12 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> Response {
         "db":      if db_ok { "connected" } else { "unreachable" },
     }))).into_response()
 }
+
+/// Serve the OpenAPI 3.1 spec as JSON
+async fn openapi_spec_handler() -> impl IntoResponse {
+    Json(crate::openapi::generate_openapi_spec())
+}
+
 async fn swarm_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"enabled": state.swarm.enabled, "active_workers": state.swarm.active_worker_count().await, "queue_depth": state.swarm.queue_depth().await}))
 }
@@ -1142,11 +1268,24 @@ async fn static_handler(req: Request<axum::body::Body>) -> impl IntoResponse {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             ([(axum::http::header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
-        None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+        None => {
+            // SPA fallback: serve index.html for paths without file extensions
+            // (i.e. client-side routes like /dags, /runs, /settings)
+            if !path.contains('.') {
+                if let Some(index) = Assets::get("index.html") {
+                    return (
+                        [(axum::http::header::CONTENT_TYPE, "text/html")],
+                        index.data,
+                    )
+                        .into_response();
+                }
+            }
+            (StatusCode::NOT_FOUND, "Not Found").into_response()
+        }
     }
 }
 
-// ─── Phase 2: XCom Handlers ─────────────────────────────────────────────────
+// ─── XCom Handlers ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct XComPushRequest {
@@ -1206,7 +1345,7 @@ async fn xcom_list_handler(
     }
 }
 
-// ─── Phase 2: Task Pool Handlers ────────────────────────────────────────────
+// ─── Task Pool Handlers ────────────────────────────────────────────
 
 async fn list_pools(State(state): State<Arc<AppState>>) -> Response {
     match state.pool_manager.get_all_pools().await {
@@ -1274,7 +1413,7 @@ async fn delete_pool_handler(State(state): State<Arc<AppState>>, Path(name): Pat
     }
 }
 
-// ─── Phase 2: Webhook Callback Handlers ─────────────────────────────────────
+// ─── Webhook Callback Handlers ─────────────────────────────────────
 
 async fn get_callbacks_handler(State(state): State<Arc<AppState>>, Path(dag_id): Path<String>) -> Response {
     match crate::notifications::NotificationManager::get_callbacks(&state.db, &dag_id).await {
@@ -1312,13 +1451,13 @@ async fn delete_callbacks_handler(State(state): State<Arc<AppState>>, Path(dag_i
     }
 }
 
-// ─── Phase 3: Prometheus Metrics Handler ────────────────────────────────────
+// ─── Prometheus Metrics Handler ────────────────────────────────────
 
 async fn prometheus_metrics_handler_wrapper(State(state): State<Arc<AppState>>) -> Response {
     crate::metrics::metrics_handler(State(state.metrics.clone())).await.into_response()
 }
 
-// ─── Wave 2: Audit Log Handler ───────────────────────────────────────────────
+// ─── Audit Log Handler ───────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct AuditQuery {
@@ -1342,7 +1481,7 @@ async fn get_audit_logs_handler(
     }
 }
 
-// ─── Wave 2: Gantt Handler ───────────────────────────────────────────────────
+// ─── Gantt Handler ───────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct GanttQuery {
@@ -1359,7 +1498,7 @@ async fn gantt_handler(
     }
 }
 
-// ─── Wave 2: Calendar Handler ────────────────────────────────────────────────
+// ─── Calendar Handler ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct CalendarQuery {
@@ -1436,7 +1575,7 @@ async fn calendar_handler(
     Json(json!({ "events": events })).into_response()
 }
 
-// ─── Wave 2: Teams Handler ───────────────────────────────────────────────────
+// ─── Teams Handler ───────────────────────────────────────────────────
 
 async fn get_teams_handler(
     State(state): State<Arc<AppState>>,
@@ -1567,6 +1706,679 @@ async fn assign_user_team_handler(
             Json(json!({"status": "assigned", "username": username, "team_id": target_team})).into_response()
         },
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response()
+    }
+}
+
+// ── Auth Provider Handlers ───────────────────────────────────────
+
+async fn get_auth_providers_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can manage auth providers"}))).into_response();
+    }
+    match state.db.get_auth_providers().await {
+        Ok(providers) => Json(json!({"providers": providers})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateAuthProviderRequest {
+    id: String,
+    provider_type: String,
+    name: String,
+    config: serde_json::Value,
+    enabled: Option<bool>,
+    priority: Option<i32>,
+}
+
+async fn create_auth_provider_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+    Json(body): Json<CreateAuthProviderRequest>,
+) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can manage auth providers"}))).into_response();
+    }
+    let valid_types = ["oidc", "saml", "ldap", "local"];
+    if !valid_types.contains(&body.provider_type.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid provider type. Must be one of: {:?}", valid_types)}))).into_response();
+    }
+    let config_str = serde_json::to_string(&body.config).unwrap_or_else(|_| "{}".to_string());
+    match state.db.upsert_auth_provider(&body.id, &body.provider_type, &body.name, &config_str, body.enabled.unwrap_or(true), body.priority.unwrap_or(0)).await {
+        Ok(()) => {
+            let _ = state.db.log_audit_event(&auth_user.username, "auth_provider.create", "auth_provider", &body.id, "{}").await;
+            (StatusCode::CREATED, Json(json!({"status": "created", "id": body.id}))).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_auth_provider_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can manage auth providers"}))).into_response();
+    }
+    if id == "local" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Cannot delete the local auth provider"}))).into_response();
+    }
+    match state.db.delete_auth_provider(&id).await {
+        Ok(()) => {
+            let _ = state.db.log_audit_event(&auth_user.username, "auth_provider.delete", "auth_provider", &id, "{}").await;
+            Json(json!({"status": "deleted", "id": id})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_user_sessions_handler(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can view sessions"}))).into_response();
+    }
+    // Return count of active sessions as a summary
+    Json(json!({"status": "ok", "message": "Session management available"})).into_response()
+}
+
+async fn cleanup_sessions_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can cleanup sessions"}))).into_response();
+    }
+    match state.db.cleanup_expired_sessions().await {
+        Ok(count) => {
+            let _ = state.db.log_audit_event(&auth_user.username, "sessions.cleanup", "system", "sessions", &format!("{{\"deleted\": {}}}", count)).await;
+            Json(json!({"status": "ok", "deleted_sessions": count})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// Public endpoint: list enabled auth providers (no auth required) for login page.
+async fn get_public_auth_providers_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.db.get_auth_providers().await {
+        Ok(providers) => {
+            // Filter to only expose non-sensitive info
+            let public: Vec<serde_json::Value> = providers.iter().map(|p| {
+                json!({
+                    "id": p.get("id"),
+                    "provider_type": p.get("provider_type"),
+                    "name": p.get("name"),
+                    "enabled": p.get("enabled"),
+                })
+            }).collect();
+            Json(json!({"providers": public})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct OidcAuthorizeQuery {
+    provider_id: Option<String>,
+}
+
+async fn oidc_authorize_handler(
+    State(_state): State<Arc<AppState>>,
+    Query(query): Query<OidcAuthorizeQuery>,
+) -> Response {
+    let _provider_id = query.provider_id.unwrap_or_else(|| "oidc".to_string());
+    // In a full implementation, this would:
+    // 1. Look up the OIDC provider config from DB
+    // 2. Generate a state parameter and store it in session
+    // 3. Build the authorization URL with PKCE
+    // 4. Redirect the user to the IdP
+    Json(json!({
+        "status": "oidc_redirect",
+        "message": "OIDC authorization flow. Configure an OIDC provider to enable SSO.",
+        "docs": "POST /api/auth/providers with provider_type='oidc' to configure"
+    })).into_response()
+}
+
+#[derive(Deserialize)]
+struct OidcCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn oidc_callback_handler(
+    State(_state): State<Arc<AppState>>,
+    Query(query): Query<OidcCallbackQuery>,
+) -> Response {
+    if let Some(error) = query.error {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("OIDC error: {}", error)}))).into_response();
+    }
+    match (&query.code, &query.state) {
+        (Some(_code), Some(_state)) => {
+            // In a full implementation:
+            // 1. Validate state parameter against stored session
+            // 2. Exchange authorization code for tokens
+            // 3. Fetch user info
+            // 4. Create/update user in DB
+            // 5. Create session
+            // 6. Return session token
+            Json(json!({
+                "status": "callback_received",
+                "message": "OIDC callback received. Configure an OIDC provider for full SSO flow."
+            })).into_response()
+        }
+        _ => (StatusCode::BAD_REQUEST, Json(json!({"error": "Missing code or state parameter"}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SamlAcsRequest {
+    #[serde(rename = "SAMLResponse")]
+    saml_response: Option<String>,
+    #[serde(rename = "RelayState")]
+    relay_state: Option<String>,
+}
+
+async fn saml_acs_handler(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Form(form): axum::extract::Form<SamlAcsRequest>,
+) -> Response {
+    match form.saml_response {
+        Some(_response) => {
+            // In a full implementation:
+            // 1. Decode base64 SAML response
+            // 2. Validate XML signature
+            // 3. Extract assertions (NameID, attributes)
+            // 4. Map to Vortex user/role/team
+            // 5. Create session
+            Json(json!({
+                "status": "saml_received",
+                "message": "SAML assertion received. Configure a SAML provider for full SSO flow."
+            })).into_response()
+        }
+        None => (StatusCode::BAD_REQUEST, Json(json!({"error": "Missing SAMLResponse"}))).into_response(),
+    }
+}
+
+// --- Lineage & Incident Management Handlers ---
+
+#[derive(Deserialize)]
+struct LineageEventsQuery {
+    limit: Option<i64>,
+    run_id: Option<String>,
+}
+
+async fn get_lineage_events_handler(
+    State(state): State<Arc<AppState>>,
+    Path(dag_id): Path<String>,
+    Query(params): Query<LineageEventsQuery>,
+) -> Response {
+    let limit = params.limit.unwrap_or(50);
+    let run_id_ref = params.run_id.as_deref();
+    match state.db.get_lineage_events(&dag_id, run_id_ref, limit).await {
+        Ok(events) => Json(json!({ "dag_id": dag_id, "events": events, "limit": limit })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_lineage_datasets_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationQuery>,
+) -> Response {
+    let limit = params.limit.unwrap_or(100);
+    let offset = params.offset.unwrap_or(0);
+    match state.db.get_lineage_datasets(limit, offset).await {
+        Ok(datasets) => Json(json!({ "datasets": datasets, "limit": limit, "offset": offset })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct IncidentConfigsQuery {
+    team_id: Option<String>,
+}
+
+async fn get_incident_configs_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<IncidentConfigsQuery>,
+) -> Response {
+    let team_id_ref = params.team_id.as_deref();
+    match state.db.get_incident_configs(team_id_ref).await {
+        Ok(configs) => Json(json!({ "configs": configs })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct IncidentConfigRequest {
+    id: Option<String>,
+    team_id: Option<String>,
+    provider: String,
+    name: String,
+    config: String,
+    enabled: Option<bool>,
+}
+
+async fn create_incident_config_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IncidentConfigRequest>,
+) -> Response {
+    let enabled = body.enabled.unwrap_or(true);
+    let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let team_id_ref = body.team_id.as_deref();
+    match state.db.upsert_incident_config(&id, team_id_ref, &body.provider, &body.name, &body.config, enabled).await {
+        Ok(_) => (StatusCode::CREATED, Json(json!({"status": "created", "id": id, "provider": body.provider}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_incident_config_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.db.delete_incident_config(&id).await {
+        Ok(()) => Json(json!({"status": "deleted", "id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// --- Compliance, Governance & Change Management Handlers ---
+
+#[derive(Deserialize)]
+struct AuditLogQuery {
+    event_type: Option<String>,
+    actor: Option<String>,
+    resource_type: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+async fn get_audit_log_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AuditLogQuery>,
+) -> Response {
+    let limit = params.limit.unwrap_or(100);
+    let offset = params.offset.unwrap_or(0);
+    match state.db.get_audit_log(params.event_type.as_deref(), params.actor.as_deref(), params.resource_type.as_deref(), limit, offset).await {
+        Ok(entries) => Json(json!({ "entries": entries, "limit": limit, "offset": offset })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_approval_gates_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.db.get_approval_gates().await {
+        Ok(gates) => Json(json!({ "gates": gates })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApprovalGateRequest {
+    id: Option<String>,
+    name: String,
+    resource_type: String,
+    resource_pattern: String,
+    required_approvers: Option<i32>,
+    approver_roles: Option<Vec<String>>,
+    enabled: Option<bool>,
+}
+
+async fn create_approval_gate_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ApprovalGateRequest>,
+) -> Response {
+    let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let roles = body.approver_roles.unwrap_or_default();
+    let enabled = body.enabled.unwrap_or(true);
+    let required = body.required_approvers.unwrap_or(1);
+    match state.db.upsert_approval_gate(&id, &body.name, &body.resource_type, &body.resource_pattern, required, &roles, enabled).await {
+        Ok(_) => (StatusCode::CREATED, Json(json!({"status": "created", "id": id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_approval_gate_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.db.delete_approval_gate(&id).await {
+        Ok(()) => Json(json!({"status": "deleted", "id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApprovalRequestQuery {
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn get_approval_requests_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ApprovalRequestQuery>,
+) -> Response {
+    let limit = params.limit.unwrap_or(50);
+    match state.db.get_approval_requests(params.status.as_deref(), limit).await {
+        Ok(requests) => Json(json!({ "requests": requests })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateApprovalRequest {
+    gate_id: String,
+    resource_type: String,
+    resource_id: String,
+    change_description: Option<String>,
+    change_diff: Option<serde_json::Value>,
+}
+
+async fn create_approval_request_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(body): Json<CreateApprovalRequest>,
+) -> Response {
+    let diff = body.change_diff.unwrap_or(serde_json::json!({}));
+    match state.db.create_approval_request(&body.gate_id, &user.username, &body.resource_type, &body.resource_id, body.change_description.as_deref(), &diff).await {
+        Ok(id) => (StatusCode::CREATED, Json(json!({"status": "pending", "id": id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApproveRejectBody {
+    comment: Option<String>,
+}
+
+async fn approve_request_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Path(id): Path<String>,
+    Json(body): Json<ApproveRejectBody>,
+) -> Response {
+    match state.db.add_approval_vote(&id, &user.username, body.comment.as_deref()).await {
+        Ok(new_status) => Json(json!({"status": new_status, "request_id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn reject_request_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Path(id): Path<String>,
+    Json(body): Json<ApproveRejectBody>,
+) -> Response {
+    match state.db.reject_approval_request(&id, &user.username, body.comment.as_deref()).await {
+        Ok(()) => Json(json!({"status": "rejected", "request_id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_retention_policies_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.db.get_retention_policies(false).await {
+        Ok(policies) => Json(json!({ "policies": policies })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RetentionPolicyRequest {
+    id: Option<String>,
+    name: String,
+    target_table: String,
+    retention_days: i32,
+    delete_batch_size: Option<i32>,
+    enabled: Option<bool>,
+}
+
+async fn create_retention_policy_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RetentionPolicyRequest>,
+) -> Response {
+    let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let batch = body.delete_batch_size.unwrap_or(1000);
+    let enabled = body.enabled.unwrap_or(true);
+    match state.db.upsert_retention_policy(&id, &body.name, &body.target_table, body.retention_days, batch, enabled).await {
+        Ok(_) => (StatusCode::CREATED, Json(json!({"status": "created", "id": id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ComplianceControlsQuery {
+    framework: Option<String>,
+}
+
+async fn get_compliance_controls_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ComplianceControlsQuery>,
+) -> Response {
+    match state.db.get_compliance_controls(params.framework.as_deref()).await {
+        Ok(controls) => Json(json!({ "controls": controls })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpsertComplianceControlRequest {
+    framework: String,
+    control_id: String,
+    description: Option<String>,
+    status: String,
+    evidence: Option<serde_json::Value>,
+}
+
+async fn upsert_compliance_control_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(body): Json<UpsertComplianceControlRequest>,
+) -> Response {
+    let description = body.description.as_deref().unwrap_or("");
+    let evidence = body.evidence.unwrap_or(serde_json::json!({}));
+    match state.db.upsert_compliance_control(&body.framework, &body.control_id, description, &body.status, &evidence, &user.username).await {
+        Ok(_) => (StatusCode::CREATED, Json(json!({"status": "updated", "framework": body.framework, "control_id": body.control_id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_compliance_summary_handler(
+    State(state): State<Arc<AppState>>,
+    Path(framework): Path<String>,
+) -> Response {
+    match state.db.get_compliance_controls(Some(&framework)).await {
+        Ok(controls) => {
+            let total = controls.len();
+            let compliant = controls.iter().filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("compliant")).count();
+            let non_compliant = controls.iter().filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("non_compliant")).count();
+            let partial = controls.iter().filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("partially_compliant")).count();
+            let not_assessed = total - compliant - non_compliant - partial;
+            Json(json!({
+                "framework": framework,
+                "total": total,
+                "compliant": compliant,
+                "non_compliant": non_compliant,
+                "partially_compliant": partial,
+                "not_assessed": not_assessed,
+                "compliance_rate": if total > 0 { (compliant as f64 / total as f64 * 100.0).round() } else { 0.0 },
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// --- Fine-Grained RBAC, Token Scoping & Network Security Handlers ---
+
+async fn get_rbac_roles_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.db.get_rbac_roles().await {
+        Ok(roles) => Json(json!({ "roles": roles })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_role_permissions_handler(
+    State(state): State<Arc<AppState>>,
+    Path(role_id): Path<String>,
+) -> Response {
+    match state.db.get_rbac_role_permissions(&role_id).await {
+        Ok(perms) => Json(json!({ "role_id": role_id, "permissions": perms })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_user_roles_handler(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<String>,
+) -> Response {
+    match state.db.get_user_roles(&user_id).await {
+        Ok(roles) => Json(json!({ "user_id": user_id, "roles": roles })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AssignRoleRequest {
+    role_id: String,
+    team_id: Option<String>,
+}
+
+async fn assign_user_role_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<AuthUser>,
+    Path(user_id): Path<String>,
+    Json(body): Json<AssignRoleRequest>,
+) -> Response {
+    match state.db.assign_user_role(&user_id, &body.role_id, body.team_id.as_deref(), &caller.username).await {
+        Ok(()) => (StatusCode::CREATED, Json(json!({"status": "assigned", "user_id": user_id, "role_id": body.role_id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RevokeRoleQuery {
+    team_id: Option<String>,
+}
+
+async fn revoke_user_role_handler(
+    State(state): State<Arc<AppState>>,
+    Path((user_id, role_id)): Path<(String, String)>,
+    Query(params): Query<RevokeRoleQuery>,
+) -> Response {
+    match state.db.revoke_user_role(&user_id, &role_id, params.team_id.as_deref()).await {
+        Ok(()) => Json(json!({"status": "revoked", "user_id": user_id, "role_id": role_id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct UserPermQuery {
+    team_id: Option<String>,
+}
+
+async fn get_user_permissions_handler(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<String>,
+    Query(params): Query<UserPermQuery>,
+) -> Response {
+    match state.db.get_user_effective_permissions(&user_id, params.team_id.as_deref()).await {
+        Ok(perms) => Json(json!({ "user_id": user_id, "permissions": perms })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_api_tokens_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Response {
+    match state.db.get_api_tokens(&user.username).await {
+        Ok(tokens) => Json(json!({ "tokens": tokens })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateTokenRequest {
+    name: String,
+    scopes: Vec<String>,
+    team_id: Option<String>,
+    expires_at: Option<String>,
+}
+
+async fn create_api_token_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(body): Json<CreateTokenRequest>,
+) -> Response {
+    let raw_token = crate::rbac::generate_token();
+    let hash = match crate::rbac::hash_token(&raw_token) {
+        Ok(h) => h,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    };
+    match state.db.create_api_token(&body.name, &hash, &user.username, &body.scopes, body.team_id.as_deref(), body.expires_at.as_deref()).await {
+        Ok(id) => (StatusCode::CREATED, Json(json!({"id": id, "token": raw_token, "name": body.name, "scopes": body.scopes, "note": "Save this token — it will not be shown again."}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn revoke_api_token_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.db.revoke_api_token(&id).await {
+        Ok(()) => Json(json!({"status": "revoked", "id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_ip_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.db.get_ip_allowlist().await {
+        Ok(rules) => Json(json!({ "rules": rules })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct IpAllowlistRequest {
+    id: Option<String>,
+    cidr: String,
+    description: Option<String>,
+    enabled: Option<bool>,
+}
+
+async fn create_ip_allowlist_rule_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IpAllowlistRequest>,
+) -> Response {
+    let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let desc = body.description.as_deref().unwrap_or("");
+    let enabled = body.enabled.unwrap_or(true);
+    match state.db.upsert_ip_allowlist_rule(&id, &body.cidr, desc, enabled).await {
+        Ok(_) => (StatusCode::CREATED, Json(json!({"status": "created", "id": id, "cidr": body.cidr}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_ip_allowlist_rule_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.db.delete_ip_allowlist_rule(&id).await {
+        Ok(()) => Json(json!({"status": "deleted", "id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
 

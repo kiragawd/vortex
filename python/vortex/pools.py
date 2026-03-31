@@ -8,6 +8,13 @@ import urllib.request
 import urllib.error
 
 
+def _get_api_key():
+    key = os.environ.get("VORTEX_API_KEY", "")
+    if not key:
+        raise EnvironmentError("VORTEX_API_KEY environment variable is required")
+    return key
+
+
 def get_pool_info(pool_name: str = "default"):
     """Get current pool usage information.
 
@@ -18,13 +25,13 @@ def get_pool_info(pool_name: str = "default"):
         VORTEX_API_KEY   — API key for authentication (default: vortex_admin_key)
         VORTEX_BASE_URL  — Base URL of the VORTEX API server (default: http://localhost:3000)
     """
-    api_key = os.environ.get("VORTEX_API_KEY", "vortex_admin_key")
+    api_key = _get_api_key()
     base_url = os.environ.get("VORTEX_BASE_URL", "http://localhost:3000")
 
     url = f"{base_url}/api/pools/{pool_name}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError:
         return None
@@ -40,13 +47,13 @@ def list_pools():
         VORTEX_API_KEY   — API key for authentication (default: vortex_admin_key)
         VORTEX_BASE_URL  — Base URL of the VORTEX API server (default: http://localhost:3000)
     """
-    api_key = os.environ.get("VORTEX_API_KEY", "vortex_admin_key")
+    api_key = _get_api_key()
     base_url = os.environ.get("VORTEX_BASE_URL", "http://localhost:3000")
 
     url = f"{base_url}/api/pools"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError:
         return []

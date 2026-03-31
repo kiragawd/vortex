@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use tracing::{info, warn, error, debug};
 use anyhow::Result;
 use chrono::Utc;
@@ -277,6 +278,15 @@ impl Scheduler {
         self.db.create_dag_run(&dag_run_id, &self.dag.id, start_time, triggered_by).await?;
         self.db.update_dag_run_state(&dag_run_id, "Running").await?;
 
+        // Emit OpenLineage START event for the DAG run
+        if let Err(e) = self.db.store_lineage_event(
+            "START", &dag_run_id, &self.dag.id, None,
+            "vortex", &self.dag.id,
+            "[]", "[]", "{}",
+        ).await {
+            debug!("Lineage DAG START event error (non-fatal): {}", e);
+        }
+
         // Persist DAG and tasks to DB
         self.db.save_dag(&self.dag.id, self.dag.schedule_interval.as_deref()).await?;
         for task in self.dag.tasks.values() {
@@ -419,6 +429,16 @@ impl Scheduler {
 
         let final_state = if all_success { "Success" } else { "Failed" };
         self.db.update_dag_run_state(&dag_run_id, final_state).await?;
+
+        // Emit OpenLineage COMPLETE/FAIL event for the DAG run
+        let lineage_event_type = if all_success { "COMPLETE" } else { "FAIL" };
+        if let Err(e) = self.db.store_lineage_event(
+            lineage_event_type, &dag_run_id, &self.dag.id, None,
+            "vortex", &self.dag.id,
+            "[]", "[]", "{}",
+        ).await {
+            debug!("Lineage DAG {} event error (non-fatal): {}", lineage_event_type, e);
+        }
         
         if let Some(m) = &self.metrics {
             m.record_dag_run_complete(final_state);
@@ -496,6 +516,15 @@ impl Scheduler {
             }
             
             if let Some(m) = &metrics { m.record_task_start(); }
+
+            // Emit OpenLineage START event
+            if let Err(e) = db.store_lineage_event(
+                "START", &run_id, &dag.id, Some(&task_id),
+                "vortex", &format!("{}.{}", dag.id, task_id),
+                "[]", "[]", "{}",
+            ).await {
+                debug!("Lineage START event error (non-fatal): {}", e);
+            }
 
             // Prepare environment variables (secrets + XCom context)
             let mut env_vars = HashMap::new();
@@ -641,6 +670,16 @@ impl Scheduler {
                     error!("DB error logging success event: {}", e);
                 }
                 if let Some(m) = &metrics { m.record_task_success(duration as f64 / 1000.0); }
+
+                // Emit OpenLineage COMPLETE event
+                if let Err(e) = db.store_lineage_event(
+                    "COMPLETE", &run_id, &dag.id, Some(&task_id),
+                    "vortex", &format!("{}.{}", dag.id, task_id),
+                    "[]", "[]", "{}",
+                ).await {
+                    debug!("Lineage COMPLETE event error (non-fatal): {}", e);
+                }
+
                 final_success = true;
                 break; // Exit the retry loop on success
             } else if attempt < max_retries {
@@ -672,6 +711,16 @@ impl Scheduler {
                     error!("DB error logging failed event: {}", e);
                 }
                 if let Some(m) = &metrics { m.record_task_failure(duration as f64 / 1000.0); }
+
+                // Emit OpenLineage FAIL event
+                if let Err(e) = db.store_lineage_event(
+                    "FAIL", &run_id, &dag.id, Some(&task_id),
+                    "vortex", &format!("{}.{}", dag.id, task_id),
+                    "[]", "[]", "{}",
+                ).await {
+                    debug!("Lineage FAIL event error (non-fatal): {}", e);
+                }
+
                 break; // Exit the retry loop after final failure
             }
         }

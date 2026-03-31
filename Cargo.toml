@@ -1,6 +1,6 @@
 [package]
 name = "vortex"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 
 [dependencies]
@@ -47,6 +47,9 @@ serde_yaml = "0.9.34"
 lettre = { version = "0.11", features = ["smtp-transport", "tokio1", "tokio1-native-tls", "builder"] }
 lru = "0.16.3"
 syn = { version = "2.0", features = ["full"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"

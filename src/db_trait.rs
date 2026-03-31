@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // db_trait.rs — Database abstraction trait for VORTEX
 //
 // This trait defines the full interface that both the SQLite and PostgreSQL
@@ -180,6 +181,9 @@ pub trait DatabaseBackend: Send + Sync {
 
     /// Return the most-recent DAG runs for a DAG, newest first.
     async fn get_dag_runs(&self, dag_id: &str, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)>;
+
+    /// Return recent DAG runs across ALL DAGs, newest first.
+    async fn get_all_runs(&self, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)>;
 
     /// Set the SLA breached flag for a DAG run.
     async fn mark_sla_missed(&self, run_id: &str) -> Result<()>;
@@ -371,7 +375,187 @@ pub trait DatabaseBackend: Send + Sync {
 
     // ── Health ────────────────────────────────────────────────────────────────
 
-    /// Improvement 42: Lightweight connectivity check \u2014 returns true if the
+    /// Improvement 42: Lightweight connectivity check — returns true if the
     /// database is reachable.
     async fn ping(&self) -> bool;
+
+    // ── Auth Sessions (IAM) ─────────────────────────────────────────
+
+    /// Create a user session (for SSO flows).
+    async fn create_session(&self, session: &crate::auth::UserSession) -> Result<()>;
+
+    /// Retrieve a session by session ID.
+    async fn get_session(&self, session_id: &str) -> Result<Option<crate::auth::UserSession>>;
+
+    /// Delete a session (logout).
+    async fn delete_session(&self, session_id: &str) -> Result<()>;
+
+    /// Delete all expired sessions. Returns the number of deleted sessions.
+    async fn cleanup_expired_sessions(&self) -> Result<u64>;
+
+    /// List all configured auth providers.
+    async fn get_auth_providers(&self) -> Result<Vec<serde_json::Value>>;
+
+    /// Get a specific auth provider config.
+    async fn get_auth_provider(&self, provider_id: &str) -> Result<Option<serde_json::Value>>;
+
+    /// Create or update an auth provider.
+    async fn upsert_auth_provider(
+        &self,
+        id: &str,
+        provider_type: &str,
+        name: &str,
+        config: &str,
+        enabled: bool,
+        priority: i32,
+    ) -> Result<()>;
+
+    /// Delete an auth provider.
+    async fn delete_auth_provider(&self, provider_id: &str) -> Result<()>;
+
+    /// Update user's last login timestamp.
+    async fn update_user_last_login(&self, username: &str) -> Result<()>;
+
+    // ── Lineage (Observability) ─────────────────────────────────────
+
+    /// Store an OpenLineage event.
+    async fn store_lineage_event(
+        &self,
+        event_type: &str,
+        run_id: &str,
+        dag_id: &str,
+        task_id: Option<&str>,
+        job_namespace: &str,
+        job_name: &str,
+        inputs: &str,
+        outputs: &str,
+        facets: &str,
+    ) -> Result<()>;
+
+    /// Get lineage events for a DAG (optionally filtered by run_id).
+    async fn get_lineage_events(
+        &self,
+        dag_id: &str,
+        run_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<serde_json::Value>>;
+
+    /// Get lineage datasets.
+    async fn get_lineage_datasets(&self, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>>;
+
+    /// Get incident provider configurations.
+    async fn get_incident_configs(&self, team_id: Option<&str>) -> Result<Vec<serde_json::Value>>;
+
+    /// Create or update an incident provider configuration.
+    async fn upsert_incident_config(
+        &self,
+        id: &str,
+        team_id: Option<&str>,
+        provider: &str,
+        name: &str,
+        config: &str,
+        enabled: bool,
+    ) -> Result<()>;
+
+    /// Delete an incident provider configuration.
+    async fn delete_incident_config(&self, id: &str) -> Result<()>;
+
+    // ── Compliance & Governance ──────────────────────────────────
+
+    /// Insert an audit log entry.
+    async fn insert_audit_log(&self, entry: &crate::compliance::AuditEntry) -> Result<()>;
+
+    /// Query audit log with filters.
+    async fn get_audit_log(
+        &self,
+        event_type: Option<&str>,
+        actor: Option<&str>,
+        resource_type: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<serde_json::Value>>;
+
+    /// Find an approval gate matching a resource type and id (glob pattern match).
+    async fn find_matching_approval_gate(&self, resource_type: &str, resource_id: &str) -> Result<Option<serde_json::Value>>;
+
+    /// CRUD for approval gates.
+    async fn get_approval_gates(&self) -> Result<Vec<serde_json::Value>>;
+    async fn upsert_approval_gate(
+        &self, id: &str, name: &str, resource_type: &str, resource_pattern: &str,
+        required_approvers: i32, approver_roles: &[String], enabled: bool,
+    ) -> Result<()>;
+    async fn delete_approval_gate(&self, id: &str) -> Result<()>;
+
+    /// Approval requests.
+    async fn create_approval_request(
+        &self, gate_id: &str, requester: &str, resource_type: &str, resource_id: &str,
+        description: Option<&str>, diff: &serde_json::Value,
+    ) -> Result<String>;
+    async fn get_approval_requests(&self, status: Option<&str>, limit: i64) -> Result<Vec<serde_json::Value>>;
+    async fn add_approval_vote(&self, request_id: &str, approver: &str, comment: Option<&str>) -> Result<String>;
+    async fn reject_approval_request(&self, request_id: &str, rejector: &str, reason: Option<&str>) -> Result<()>;
+
+    /// Retention policies.
+    async fn get_retention_policies(&self, enabled_only: bool) -> Result<Vec<serde_json::Value>>;
+    async fn upsert_retention_policy(
+        &self, id: &str, name: &str, target_table: &str, retention_days: i32,
+        batch_size: i32, enabled: bool,
+    ) -> Result<()>;
+    async fn execute_retention_delete(&self, table: &str, retention_days: i64, batch_size: i64) -> Result<i64>;
+    async fn update_retention_last_run(&self, id: &str) -> Result<()>;
+
+    /// Compliance controls.
+    async fn get_compliance_controls(&self, framework: Option<&str>) -> Result<Vec<serde_json::Value>>;
+    async fn upsert_compliance_control(
+        &self, framework: &str, control_id: &str, description: &str,
+        status: &str, evidence: &serde_json::Value, assessor: &str,
+    ) -> Result<()>;
+
+    // ── Fine-Grained RBAC & Token Scoping ───────────────────────
+
+    /// Check if a user has a permission (via their roles).
+    async fn check_user_permission(&self, user_id: &str, permission: &str, team_id: Option<&str>) -> Result<bool>;
+
+    /// Get all effective permissions for a user.
+    async fn get_user_effective_permissions(&self, user_id: &str, team_id: Option<&str>) -> Result<Vec<String>>;
+
+    /// RBAC role CRUD.
+    async fn get_rbac_roles(&self) -> Result<Vec<serde_json::Value>>;
+    async fn get_rbac_role_permissions(&self, role_id: &str) -> Result<Vec<serde_json::Value>>;
+    async fn assign_user_role(&self, user_id: &str, role_id: &str, team_id: Option<&str>, granted_by: &str) -> Result<()>;
+    async fn revoke_user_role(&self, user_id: &str, role_id: &str, team_id: Option<&str>) -> Result<()>;
+    async fn get_user_roles(&self, user_id: &str) -> Result<Vec<serde_json::Value>>;
+
+    /// Scoped API tokens.
+    async fn create_api_token(&self, name: &str, token_hash: &str, user_id: &str, scopes: &[String], team_id: Option<&str>, expires_at: Option<&str>) -> Result<String>;
+    async fn get_api_tokens(&self, user_id: &str) -> Result<Vec<serde_json::Value>>;
+    async fn revoke_api_token(&self, token_id: &str) -> Result<()>;
+    async fn find_api_token_by_hash(&self, token_prefix: &str) -> Result<Option<serde_json::Value>>;
+    async fn update_token_last_used(&self, token_id: &str) -> Result<()>;
+
+    /// IP allowlist.
+    async fn get_ip_allowlist(&self) -> Result<Vec<serde_json::Value>>;
+    async fn upsert_ip_allowlist_rule(&self, id: &str, cidr: &str, description: &str, enabled: bool) -> Result<()>;
+    async fn delete_ip_allowlist_rule(&self, id: &str) -> Result<()>;
+
+    // ── Advanced Scheduling & Data-Aware Orchestration ──────────
+
+    /// Dataset CRUD.
+    async fn upsert_dataset(&self, id: &str, uri: &str, name: &str, description: Option<&str>, producer_dag_id: Option<&str>, metadata: &serde_json::Value) -> Result<()>;
+    async fn get_datasets(&self, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>>;
+
+    /// Dataset events.
+    async fn insert_dataset_event(&self, event: &crate::advanced_scheduler::DatasetEvent) -> Result<()>;
+    async fn get_dataset_events(&self, dataset_id: &str, limit: i64) -> Result<Vec<serde_json::Value>>;
+
+    /// Dataset triggers.
+    async fn upsert_dataset_trigger(&self, id: &str, dag_id: &str, dataset_ids: &[String], condition: &str, min_interval: Option<i32>, enabled: bool) -> Result<()>;
+    async fn get_dataset_triggers_for_dataset(&self, dataset_id: &str) -> Result<Vec<serde_json::Value>>;
+    async fn check_all_datasets_updated(&self, dataset_ids: &[String], trigger_id: &str) -> Result<bool>;
+
+    /// Cross-DAG dependencies.
+    async fn upsert_cross_dag_dependency(&self, id: &str, downstream: &str, upstream: &str, upstream_task: Option<&str>, condition: &str) -> Result<()>;
+    async fn get_cross_dag_dependencies(&self, dag_id: &str) -> Result<Vec<serde_json::Value>>;
+    async fn check_upstream_completed(&self, upstream_dag: &str, upstream_task: Option<&str>, condition: &str) -> Result<bool>;
+    async fn delete_cross_dag_dependency(&self, id: &str) -> Result<()>;
 }

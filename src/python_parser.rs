@@ -21,7 +21,7 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
             .unwrap_or_else(|_| "python".to_string());
         path.insert(0, python_shim_path)?;
 
-        // Phase 2.4: Clear registry before loading a new file
+        // Clear registry before loading a new file
         let vortex = py.import("vortex")?;
         let registry: Bound<'_, PyList> = vortex.getattr("_DAG_REGISTRY")?.downcast_into()?;
         debug!("🐍 PyO3: Registry count before clear: {}", registry.len());
@@ -105,7 +105,7 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
                     dag.add_task(&task_id, &task_id, "echo 'unknown operator'");
                 }
 
-                // Phase 2: Set pool if specified
+                // Set pool if specified
                 if let Some(pool_val) = task_dict.get_item("pool")? {
                     if let Ok(pool_str) = pool_val.extract::<String>() {
                         if let Some(task) = dag.tasks.get_mut(&task_id) {

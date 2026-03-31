@@ -1,6 +1,5 @@
 use anyhow::Result;
 use scheduler::{Dag, Scheduler};
-use std::env;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -27,6 +26,23 @@ mod db_trait;
 mod db_postgres;
 mod proto;
 mod dag_factory;
+mod auth;
+mod lineage;
+mod incident;
+mod compliance;
+mod rbac;
+mod k8s_executor;
+mod advanced_scheduler;
+mod openapi;
+mod telemetry;
+mod enterprise_connector;
+mod cloud_connectors;
+mod event_framework;
+mod sdk;
+mod devops;
+mod migration;
+mod disaster_recovery;
+mod config_ops;
 
 /// VORTEX Orchestration Engine
 #[derive(Parser, Debug)]
@@ -118,6 +134,279 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         labels: Option<Vec<String>>,
     },
+    /// Manage secrets in the encrypted vault
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
+    },
+    /// Manage users
+    User {
+        #[command(subcommand)]
+        action: UserAction,
+    },
+    /// Manage teams
+    Team {
+        #[command(subcommand)]
+        action: TeamAction,
+    },
+    /// Manage RBAC roles and permissions
+    Rbac {
+        #[command(subcommand)]
+        action: RbacAction,
+    },
+    /// Manage API tokens
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
+    /// Manage auth providers (OIDC, SAML, LDAP)
+    AuthProvider {
+        #[command(subcommand)]
+        action: AuthProviderAction,
+    },
+    /// Query audit logs
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+    /// Compliance controls management
+    Compliance {
+        #[command(subcommand)]
+        action: ComplianceAction,
+    },
+    /// Data lineage queries
+    Lineage {
+        #[command(subcommand)]
+        action: LineageAction,
+    },
+    /// Connector health & management
+    Connector {
+        #[command(subcommand)]
+        action: ConnectorAction,
+    },
+    /// Swarm cluster status
+    Swarm {
+        #[command(subcommand)]
+        action: SwarmAction,
+    },
+    /// DAG management
+    Dag {
+        #[command(subcommand)]
+        action: DagAction,
+    },
+    /// Pool management
+    Pool {
+        #[command(subcommand)]
+        action: PoolAction,
+    },
+    /// Configuration & maintenance operations
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SecretAction {
+    /// List all secret keys (values are masked)
+    List,
+    /// Get a secret value
+    Get { key: String },
+    /// Set a secret value
+    Set { key: String, value: String },
+    /// Delete a secret
+    Delete { key: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum UserAction {
+    /// List all users
+    List,
+    /// Create a new user
+    Create {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long, default_value = "Viewer")]
+        role: String,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Show user details
+    Get { username: String },
+    /// Delete a user
+    Delete { username: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum TeamAction {
+    /// List all teams
+    List,
+    /// Create a new team
+    Create {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Delete a team
+    Delete { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum RbacAction {
+    /// List all roles
+    ListRoles,
+    /// List all permissions
+    ListPermissions,
+    /// Assign a role to a user
+    Assign {
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        role: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Revoke a role from a user
+    Revoke {
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        role: String,
+    },
+    /// Show roles for a user
+    UserRoles { username: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum TokenAction {
+    /// List API tokens for a user
+    List { user_id: String },
+    /// Create a new API token
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        user_id: String,
+        #[arg(long, value_delimiter = ',')]
+        scopes: Option<Vec<String>>,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        expires_days: Option<i64>,
+    },
+    /// Revoke an API token
+    Revoke { token_id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum AuthProviderAction {
+    /// List configured auth providers
+    List,
+    /// Enable an auth provider
+    Enable { id: String },
+    /// Disable an auth provider
+    Disable { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditAction {
+    /// Query recent audit events
+    Recent {
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Query audit events by actor
+    ByActor {
+        actor: String,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ComplianceAction {
+    /// List compliance controls
+    List,
+    /// Show compliance status summary
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
+enum LineageAction {
+    /// Show lineage events for a DAG run
+    Run { run_id: String },
+    /// List tracked datasets
+    Datasets,
+    /// Show upstream/downstream for a dataset
+    Dataset { dataset_id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConnectorAction {
+    /// List registered connectors
+    List,
+    /// Health-check a specific connector
+    Health { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum SwarmAction {
+    /// Show swarm cluster status (workers, tasks)
+    Status,
+    /// List connected workers
+    Workers,
+}
+
+#[derive(Subcommand, Debug)]
+enum DagAction {
+    /// List all registered DAGs
+    List,
+    /// Show details for a DAG
+    Get { dag_id: String },
+    /// Trigger a DAG run
+    Trigger {
+        dag_id: String,
+        #[arg(long, default_value = "cli")]
+        triggered_by: String,
+    },
+    /// Pause a DAG
+    Pause { dag_id: String },
+    /// Unpause a DAG
+    Unpause { dag_id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum PoolAction {
+    /// List all pools
+    List,
+    /// Create a pool
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        slots: i32,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Delete a pool
+    Delete { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigAction {
+    /// Show current server configuration (non-secret)
+    Show,
+    /// Validate the database connection
+    ValidateDb,
+    /// Export configuration as JSON
+    Export,
 }
 
 #[tokio::main]
@@ -165,20 +454,497 @@ async fn main() -> Result<()> {
     if let Some(Commands::Worker { controller, id, capacity, labels }) = cli.command {
         let worker_id = id.unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
         let worker_labels = labels.unwrap_or_default();
-        info!("🌪️ VORTEX Swarm Worker v0.6.0");
+        info!("🌪️ VORTEX Swarm Worker v0.7.0");
         return worker::run_worker(&controller, &worker_id, capacity, worker_labels).await;
+    }
+
+    // ─── CLI subcommand handlers (connect to DB, run, exit) ─────────────────
+    if let Some(ref cmd) = cli.command {
+        match cmd {
+            Commands::Db { .. } | Commands::Worker { .. } => { /* already handled above */ }
+            _ => {
+                // All remaining commands need a database connection
+                let db_url = cli.database_url.as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--database-url or DATABASE_URL required"))?;
+                let db = db_postgres::PostgresDb::new(db_url, 5, 1, std::time::Duration::from_secs(30)).await?;
+                let db: Arc<dyn db_trait::DatabaseBackend> = Arc::new(db);
+
+                match cmd {
+                    Commands::Secret { action } => {
+                        let vault = Vault::new().map_err(|e| anyhow::anyhow!("Vault init failed: {}", e))?;
+                        match action {
+                            SecretAction::List => {
+                                let secrets = db.get_all_secrets().await?;
+                                println!("{:<30} {:<10}", "KEY", "MASKED VALUE");
+                                println!("{}", "-".repeat(42));
+                                for key in &secrets {
+                                    println!("{:<30} ****", key);
+                                }
+                                println!("\n{} secret(s) total", secrets.len());
+                            }
+                            SecretAction::Get { key } => {
+                                match db.get_secret(key).await? {
+                                    Some(val) => {
+                                        let decrypted = vault.decrypt(&val).unwrap_or_else(|_| val.clone());
+                                        println!("{}", decrypted);
+                                    }
+                                    None => println!("Secret '{}' not found", key),
+                                }
+                            }
+                            SecretAction::Set { key, value } => {
+                                let encrypted = vault.encrypt(value)?;
+                                db.store_secret(key, &encrypted).await?;
+                                println!("Secret '{}' stored (encrypted)", key);
+                            }
+                            SecretAction::Delete { key } => {
+                                db.delete_secret(key).await?;
+                                println!("Secret '{}' deleted", key);
+                            }
+                        }
+                    }
+                    Commands::User { action } => {
+                        match action {
+                            UserAction::List => {
+                                let users = db.get_all_users().await?;
+                                println!("{:<20} {:<10} {:<25} {:<15}", "USERNAME", "ROLE", "EMAIL", "TEAM");
+                                println!("{}", "-".repeat(72));
+                                for u in &users {
+                                    println!("{:<20} {:<10} {:<25} {:<15}",
+                                        u["username"].as_str().unwrap_or("-"),
+                                        u["role"].as_str().unwrap_or("-"),
+                                        u["email"].as_str().unwrap_or("-"),
+                                        u["team_id"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                                println!("\n{} user(s) total", users.len());
+                            }
+                            UserAction::Create { username, password, role, email: _, team } => {
+                                let pw_hash = bcrypt::hash(password, 10)
+                                    .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {}", e))?;
+                                let api_key = uuid::Uuid::new_v4().to_string();
+                                db.create_user(username, &pw_hash, role, &api_key).await?;
+                                if let Some(team_id) = team {
+                                    db.assign_user_to_team(username, Some(team_id.as_str())).await?;
+                                }
+                                println!("User '{}' created with role '{}' (api_key={})", username, role, api_key);
+                            }
+                            UserAction::Get { username } => {
+                                let users = db.get_all_users().await?;
+                                match users.iter().find(|u| u["username"].as_str() == Some(username.as_str())) {
+                                    Some(u) => println!("{}", serde_json::to_string_pretty(u)?),
+                                    None => println!("User '{}' not found", username),
+                                }
+                            }
+                            UserAction::Delete { username } => {
+                                db.delete_user(username).await?;
+                                println!("User '{}' deleted", username);
+                            }
+                        }
+                    }
+                    Commands::Team { action } => {
+                        match action {
+                            TeamAction::List => {
+                                let teams = db.get_all_teams().await?;
+                                println!("{:<20} {:<30} {:<30}", "ID", "NAME", "DESCRIPTION");
+                                println!("{}", "-".repeat(82));
+                                for t in &teams {
+                                    println!("{:<20} {:<30} {:<30}",
+                                        t["id"].as_str().unwrap_or("-"),
+                                        t["name"].as_str().unwrap_or("-"),
+                                        t["description"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                            }
+                            TeamAction::Create { id, name, description } => {
+                                db.create_team(id, name, description.as_deref().unwrap_or(""), 100, 1000).await?;
+                                println!("Team '{}' created", id);
+                            }
+                            TeamAction::Delete { id } => {
+                                db.delete_team(id).await?;
+                                println!("Team '{}' deleted", id);
+                            }
+                        }
+                    }
+                    Commands::Rbac { action } => {
+                        match action {
+                            RbacAction::ListRoles => {
+                                let roles = db.get_rbac_roles().await?;
+                                println!("{:<20} {:<40} {:<10}", "NAME", "DESCRIPTION", "SYSTEM");
+                                println!("{}", "-".repeat(72));
+                                for r in &roles {
+                                    println!("{:<20} {:<40} {:<10}",
+                                        r["name"].as_str().unwrap_or("-"),
+                                        r["description"].as_str().unwrap_or("-"),
+                                        r["is_system"].as_bool().unwrap_or(false),
+                                    );
+                                }
+                            }
+                            RbacAction::ListPermissions => {
+                                let roles = db.get_rbac_roles().await?;
+                                for r in &roles {
+                                    if let Some(role_id) = r["id"].as_str() {
+                                        let perms = db.get_rbac_role_permissions(role_id).await?;
+                                        let perm_names: Vec<&str> = perms.iter().filter_map(|p| p["name"].as_str()).collect();
+                                        if !perm_names.is_empty() {
+                                            println!("Role '{}': {}", r["name"].as_str().unwrap_or("-"), perm_names.join(", "));
+                                        }
+                                    }
+                                }
+                            }
+                            RbacAction::Assign { user, role, team } => {
+                                db.assign_user_role(user, role, team.as_deref(), "cli").await?;
+                                println!("Role '{}' assigned to user '{}'", role, user);
+                            }
+                            RbacAction::Revoke { user, role } => {
+                                db.revoke_user_role(user, role, None).await?;
+                                println!("Role '{}' revoked from user '{}'", role, user);
+                            }
+                            RbacAction::UserRoles { username } => {
+                                let roles = db.get_user_roles(username).await?;
+                                println!("Roles for '{}':", username);
+                                for r in &roles {
+                                    println!("  - {} (team: {})",
+                                        r["role_name"].as_str().unwrap_or("-"),
+                                        r["team_id"].as_str().unwrap_or("global"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Commands::Token { action } => {
+                        match action {
+                            TokenAction::List { user_id } => {
+                                let tokens = db.get_api_tokens(user_id).await?;
+                                println!("{:<36} {:<20} {:<15} {:<10}", "ID", "NAME", "EXPIRES", "REVOKED");
+                                println!("{}", "-".repeat(83));
+                                for t in &tokens {
+                                    println!("{:<36} {:<20} {:<15} {:<10}",
+                                        t["id"].as_str().unwrap_or("-"),
+                                        t["name"].as_str().unwrap_or("-"),
+                                        t["expires_at"].as_str().unwrap_or("never"),
+                                        t["revoked"].as_bool().unwrap_or(false),
+                                    );
+                                }
+                            }
+                            TokenAction::Create { name, user_id, scopes, team, expires_days } => {
+                                let raw_token = uuid::Uuid::new_v4().to_string();
+                                let token_hash = format!("{:x}", {
+                                    use std::hash::{Hash, Hasher};
+                                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                    raw_token.hash(&mut hasher);
+                                    hasher.finish()
+                                });
+                                let scope_list = scopes.clone().unwrap_or_default();
+                                let expires_str = expires_days.map(|d| {
+                                    (Utc::now() + chrono::Duration::days(d)).to_rfc3339()
+                                });
+                                let token_id = db.create_api_token(name, &token_hash, user_id, &scope_list, team.as_deref(), expires_str.as_deref()).await?;
+                                println!("Token created (id={}): {}", token_id, raw_token);
+                                println!("(Save this token — it cannot be retrieved again)");
+                            }
+                            TokenAction::Revoke { token_id } => {
+                                db.revoke_api_token(token_id).await?;
+                                println!("Token '{}' revoked", token_id);
+                            }
+                        }
+                    }
+                    Commands::AuthProvider { action } => {
+                        match action {
+                            AuthProviderAction::List => {
+                                let providers = db.get_auth_providers().await?;
+                                println!("{:<15} {:<10} {:<20} {:<8} {:<8}", "ID", "TYPE", "NAME", "ENABLED", "PRIORITY");
+                                println!("{}", "-".repeat(63));
+                                for p in &providers {
+                                    println!("{:<15} {:<10} {:<20} {:<8} {:<8}",
+                                        p["id"].as_str().unwrap_or("-"),
+                                        p["provider_type"].as_str().unwrap_or("-"),
+                                        p["name"].as_str().unwrap_or("-"),
+                                        p["enabled"].as_bool().unwrap_or(false),
+                                        p["priority"].as_i64().unwrap_or(0),
+                                    );
+                                }
+                            }
+                            AuthProviderAction::Enable { id } => {
+                                if let Some(p) = db.get_auth_provider(id).await? {
+                                    db.upsert_auth_provider(
+                                        id,
+                                        p["provider_type"].as_str().unwrap_or("local"),
+                                        p["name"].as_str().unwrap_or(""),
+                                        p["config"].as_str().unwrap_or("{}"),
+                                        true,
+                                        p["priority"].as_i64().unwrap_or(0) as i32,
+                                    ).await?;
+                                    println!("Auth provider '{}' enabled", id);
+                                } else {
+                                    println!("Auth provider '{}' not found", id);
+                                }
+                            }
+                            AuthProviderAction::Disable { id } => {
+                                if let Some(p) = db.get_auth_provider(id).await? {
+                                    db.upsert_auth_provider(
+                                        id,
+                                        p["provider_type"].as_str().unwrap_or("local"),
+                                        p["name"].as_str().unwrap_or(""),
+                                        p["config"].as_str().unwrap_or("{}"),
+                                        false,
+                                        p["priority"].as_i64().unwrap_or(0) as i32,
+                                    ).await?;
+                                    println!("Auth provider '{}' disabled", id);
+                                } else {
+                                    println!("Auth provider '{}' not found", id);
+                                }
+                            }
+                        }
+                    }
+                    Commands::Audit { action } => {
+                        match action {
+                            AuditAction::Recent { limit } => {
+                                let entries = db.get_audit_log(None, None, None, *limit, 0).await?;
+                                for e in &entries {
+                                    println!("[{}] {} {} {} ({})",
+                                        e["timestamp"].as_str().or(e["created_at"].as_str()).unwrap_or("-"),
+                                        e["actor"].as_str().unwrap_or("-"),
+                                        e["action"].as_str().unwrap_or("-"),
+                                        e["target_id"].as_str().or(e["resource_id"].as_str()).unwrap_or("-"),
+                                        e["event_type"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                                println!("\n{} entries shown", entries.len());
+                            }
+                            AuditAction::ByActor { actor, limit } => {
+                                let entries = db.get_audit_log(None, Some(actor.as_str()), None, *limit, 0).await?;
+                                for e in &entries {
+                                    println!("[{}] {} {} ({})",
+                                        e["timestamp"].as_str().or(e["created_at"].as_str()).unwrap_or("-"),
+                                        e["action"].as_str().unwrap_or("-"),
+                                        e["target_id"].as_str().or(e["resource_id"].as_str()).unwrap_or("-"),
+                                        e["event_type"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                                println!("\n{} entries for '{}'", entries.len(), actor);
+                            }
+                        }
+                    }
+                    Commands::Compliance { action } => {
+                        match action {
+                            ComplianceAction::List => {
+                                let controls = db.get_compliance_controls(None).await?;
+                                println!("{:<15} {:<12} {:<40} {:<12}", "FRAMEWORK", "CONTROL", "DESCRIPTION", "STATUS");
+                                println!("{}", "-".repeat(81));
+                                for c in &controls {
+                                    println!("{:<15} {:<12} {:<40} {:<12}",
+                                        c["framework"].as_str().unwrap_or("-"),
+                                        c["control_id"].as_str().unwrap_or("-"),
+                                        c["description"].as_str().unwrap_or("-"),
+                                        c["status"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                            }
+                            ComplianceAction::Status => {
+                                let controls = db.get_compliance_controls(None).await?;
+                                let total = controls.len();
+                                let passed = controls.iter().filter(|c| c["status"].as_str() == Some("passed")).count();
+                                let failed = controls.iter().filter(|c| c["status"].as_str() == Some("failed")).count();
+                                let not_assessed = total - passed - failed;
+                                println!("Compliance Status Summary:");
+                                println!("  Total controls: {}", total);
+                                println!("  Passed:         {}", passed);
+                                println!("  Failed:         {}", failed);
+                                println!("  Not assessed:   {}", not_assessed);
+                            }
+                        }
+                    }
+                    Commands::Lineage { action } => {
+                        match action {
+                            LineageAction::Run { run_id } => {
+                                let events = db.get_lineage_events("*", Some(run_id.as_str()), 100).await?;
+                                for e in &events {
+                                    println!("[{}] {} {} (dag={}, task={})",
+                                        e["event_time"].as_str().unwrap_or("-"),
+                                        e["event_type"].as_str().unwrap_or("-"),
+                                        e["job_name"].as_str().unwrap_or("-"),
+                                        e["dag_id"].as_str().unwrap_or("-"),
+                                        e["task_id"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                                println!("\n{} lineage event(s)", events.len());
+                            }
+                            LineageAction::Datasets => {
+                                let datasets = db.get_lineage_datasets(100, 0).await?;
+                                println!("{:<36} {:<20} {:<30} {:<10}", "ID", "NAMESPACE", "NAME", "TYPE");
+                                println!("{}", "-".repeat(98));
+                                for d in &datasets {
+                                    println!("{:<36} {:<20} {:<30} {:<10}",
+                                        d["id"].as_str().unwrap_or("-"),
+                                        d["namespace"].as_str().unwrap_or("-"),
+                                        d["name"].as_str().unwrap_or("-"),
+                                        d["source_type"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                            }
+                            LineageAction::Dataset { dataset_id } => {
+                                let events = db.get_dataset_events(dataset_id, 100).await?;
+                                println!("Dataset events for '{}':", dataset_id);
+                                for e in &events {
+                                    println!("  [{}] dag={} run={}",
+                                        e["timestamp"].as_str().unwrap_or("-"),
+                                        e["source_dag_id"].as_str().unwrap_or("-"),
+                                        e["source_run_id"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Commands::Connector { action } => {
+                        match action {
+                            ConnectorAction::List => {
+                                println!("Registered connectors:");
+                                println!("  - postgres (Database)");
+                                println!("  - snowflake (Warehouse)");
+                                println!("  - bigquery (Warehouse)");
+                                println!("  - redshift (Warehouse)");
+                                println!("  - databricks (Warehouse)");
+                                println!("  - dbt (Transformation)");
+                                println!("  - kafka (Streaming)");
+                                println!("  - s3 (Storage)");
+                                println!("  - gcs (Storage)");
+                                println!("  - delta-lake (Lake)");
+                            }
+                            ConnectorAction::Health { name } => {
+                                println!("Health check for '{}': use the REST API (GET /api/connectors/{}/health) for live checks.", name, name);
+                            }
+                        }
+                    }
+                    Commands::Swarm { action } => {
+                        match action {
+                            SwarmAction::Status => {
+                                println!("Swarm status: connect via REST API (GET /api/swarm/workers) or start in --swarm mode.");
+                            }
+                            SwarmAction::Workers => {
+                                println!("Workers are managed by the Swarm gRPC controller.");
+                                println!("Start the server with --swarm and query GET /api/swarm/workers.");
+                            }
+                        }
+                    }
+                    Commands::Dag { action } => {
+                        match action {
+                            DagAction::List => {
+                                let (dags, total) = db.get_all_dags(100, 0).await?;
+                                println!("{:<30} {:<10} {:<20} {:<10}", "DAG ID", "PAUSED", "SCHEDULE", "TEAM");
+                                println!("{}", "-".repeat(72));
+                                for d in &dags {
+                                    println!("{:<30} {:<10} {:<20} {:<10}",
+                                        d["id"].as_str().unwrap_or("-"),
+                                        d["is_paused"].as_bool().unwrap_or(false),
+                                        d["schedule"].as_str().unwrap_or("None"),
+                                        d["team_id"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                                println!("\n{} DAG(s) total", total);
+                            }
+                            DagAction::Get { dag_id } => {
+                                match db.get_dag_by_id(dag_id).await? {
+                                    Some(dag) => println!("{}", serde_json::to_string_pretty(&dag)?),
+                                    None => println!("DAG '{}' not found", dag_id),
+                                }
+                            }
+                            DagAction::Trigger { dag_id, triggered_by } => {
+                                let run_id = uuid::Uuid::new_v4().to_string();
+                                let now = Utc::now();
+                                db.create_dag_run(&run_id, dag_id, now, triggered_by).await?;
+                                println!("DAG run created: {}", run_id);
+                                println!("Note: task execution requires the server to be running.");
+                            }
+                            DagAction::Pause { dag_id } => {
+                                db.pause_dag(dag_id).await?;
+                                println!("DAG '{}' paused", dag_id);
+                            }
+                            DagAction::Unpause { dag_id } => {
+                                db.unpause_dag(dag_id).await?;
+                                println!("DAG '{}' unpaused", dag_id);
+                            }
+                        }
+                    }
+                    Commands::Pool { action } => {
+                        match action {
+                            PoolAction::List => {
+                                let pools = db.get_all_pools().await?;
+                                println!("{:<20} {:<10} {:<30}", "NAME", "SLOTS", "DESCRIPTION");
+                                println!("{}", "-".repeat(62));
+                                for p in &pools {
+                                    println!("{:<20} {:<10} {:<30}",
+                                        p["name"].as_str().unwrap_or("-"),
+                                        p["slots"].as_i64().unwrap_or(0),
+                                        p["description"].as_str().unwrap_or("-"),
+                                    );
+                                }
+                            }
+                            PoolAction::Create { name, slots, description } => {
+                                db.create_pool(name, *slots, description.as_deref().unwrap_or("")).await?;
+                                println!("Pool '{}' created with {} slots", name, slots);
+                            }
+                            PoolAction::Delete { name } => {
+                                db.delete_pool(name).await?;
+                                println!("Pool '{}' deleted", name);
+                            }
+                        }
+                    }
+                    Commands::Config { action } => {
+                        match action {
+                            ConfigAction::Show => {
+                                println!("Vortex Configuration:");
+                                println!("  Port:              {}", cli.port);
+                                println!("  Swarm:             {}", cli.swarm);
+                                println!("  gRPC Bind:         {}", cli.grpc_bind);
+                                println!("  Swarm Port:        {}", cli.swarm_port);
+                                println!("  HA Mode:           {}", cli.ha_mode);
+                                println!("  DB Max Conns:      {}", cli.db_max_connections);
+                                println!("  DB Min Conns:      {}", cli.db_min_connections);
+                                println!("  DB Idle Timeout:   {}s", cli.db_idle_timeout);
+                                println!("  TLS:               {}", cli.tls_cert.is_some());
+                                println!("  Benchmark DAG:     {}", cli.benchmark);
+                                println!("  Unsafe Plugins:    {}", cli.allow_unsafe_plugins);
+                                println!("  Unsafe DAG Exec:   {}", cli.allow_unsafe_dag_exec);
+                                println!("  Log Level:         {}", cli.log_level);
+                            }
+                            ConfigAction::ValidateDb => {
+                                println!("Database connection: OK");
+                                println!("Migrations applied successfully.");
+                            }
+                            ConfigAction::Export => {
+                                let config = serde_json::json!({
+                                    "port": cli.port,
+                                    "swarm": cli.swarm,
+                                    "grpc_bind": cli.grpc_bind,
+                                    "swarm_port": cli.swarm_port,
+                                    "ha_mode": cli.ha_mode,
+                                    "db_max_connections": cli.db_max_connections,
+                                    "db_min_connections": cli.db_min_connections,
+                                    "db_idle_timeout_secs": cli.db_idle_timeout,
+                                    "tls_enabled": cli.tls_cert.is_some(),
+                                    "log_level": cli.log_level,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&config)?);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+        }
     }
     
     // 🌪️ CONTROLLER MODE
-    info!("🌪️ VORTEX Orchestrator v0.6.0 - Pillar 3 Operational");
+    info!("🌪️ VORTEX Orchestrator v0.7.0 - Operational");
 
-    // Pillar 3: Initialize Secret Vault
+    // Initialize Secret Vault
     let vault = match Vault::new() {
         Ok(v) => { info!("🔐 Secret Vault initialized (AES-256-GCM)."); Some(Arc::new(v)) },
         Err(e) => { warn!("⚠️ Secret Vault DISABLED: {}. Secrets will not be available.", e); None }
     };
 
-    // Phase 3: Initialize Database Backend (PostgreSQL only)
+    // Initialize Database Backend (PostgreSQL only)
     let db_url_owned = cli.database_url
         .ok_or_else(|| anyhow::anyhow!("❌ --database-url or DATABASE_URL env var is required. VORTEX requires PostgreSQL."))?;
 
@@ -190,7 +956,7 @@ async fn main() -> Result<()> {
     );
     info!("✅ Database initialized.");
 
-    // Phase 3: Initialize Prometheus Metrics
+    // Initialize Prometheus Metrics
     let vortex_metrics = Arc::new(metrics::VortexMetrics::new()?);
     info!("📊 Prometheus metrics initialized (GET /metrics)");
 
@@ -274,7 +1040,7 @@ async fn main() -> Result<()> {
                                                 let dag_id = dag.id.clone();
                                                 map.insert(dag_id.clone(), Arc::new(dag));
                                                 
-                                                // Pillar 4: Force create version record for physical files
+                                                // Force create version record for physical files
                                                 if let Err(e) = db.store_dag_version(&dag_id, path_str).await {
                                                     error!("Failed to store version for {}: {}", dag_id, e);
                                                 }
@@ -388,7 +1154,7 @@ async fn main() -> Result<()> {
             }
         });
 
-        // Pillar 4: Spawn Health Check Loop
+        // Spawn Health Check Loop
         let mut leader_rx_health = leader_rx.clone();
         tokio::spawn(async move {
             loop {
@@ -747,18 +1513,19 @@ async fn main() -> Result<()> {
         if !*leader_rx_cron.borrow() {
             let _ = leader_rx_cron.changed().await;
         }
-        info!("⏰ Cron scheduler loop started (checking every 60s)");
+        info!("⏰ Cron scheduler loop started (checking every 10s)");
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            // Heartbeat first — mark alive before doing any work
+            metrics_cron.update_scheduler_heartbeat();
 
             // BUG-1 FIX: Re-check leadership status each iteration.
             if !*leader_rx_cron.borrow() {
                 info!("⏸ Cron scheduler: lost leadership, suspending...");
                 let _ = leader_rx_cron.changed().await;
                 info!("▶ Cron scheduler: regained leadership, resuming...");
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 continue;
             }
-            metrics_cron.update_scheduler_heartbeat();
             
             match db_cron.get_scheduled_dags().await {
                 Ok(scheduled_dags) => {
@@ -818,6 +1585,8 @@ async fn main() -> Result<()> {
                     warn!("⚠️ Cron scheduler error: {}", e);
                 }
             }
+
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     });
 

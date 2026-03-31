@@ -1,31 +1,23 @@
-from vortex import Dag, Task
+from vortex import DAG
+from vortex.operators.bash import BashOperator
 
-def create_dag():
-    dag = Dag(id="stress_test_dag")
-    
-    # Pillar 3: Secrets test
-    # We simulate secret requirement by adding a task that expects an env var
-    t1 = Task(id="secret_check", name="Secret Check", command="if [ -z \"$STRESS_TEST_SECRET\" ]; then echo 'Secret missing'; exit 1; else echo 'Secret present'; fi")
-    dag.add_task(t1)
-    
-    # Pillar 1 & 2: Complex dependencies
+# A small stress-test DAG using the Airflow-compatible shim so VORTEX can parse it
+with DAG(dag_id="stress_test_dag") as dag:
+    # Secrets test — task will fail if env var not set
+    t1 = BashOperator(task_id="secret_check", bash_command="if [ -z \"$STRESS_TEST_SECRET\" ]; then echo 'Secret missing'; exit 1; else echo 'Secret present'; fi")
+
+    # Complex layered dependencies
     prev_tasks = [t1]
     for i in range(1, 4):
         layer = []
         for j in range(3):
-            t = Task(id=f"task_{i}_{j}", name=f"Task {i}-{j}", command=f"sleep 2 && echo 'Layer {i} Task {j} complete'")
-            dag.add_task(t)
+            t = BashOperator(task_id=f"task_{i}_{j}", bash_command=f"sleep 2 && echo 'Layer {i} Task {j} complete'")
             for pt in prev_tasks:
-                dag.add_dependency(pt.id, t.id)
+                pt >> t
             layer.append(t)
         prev_tasks = layer
-        
-    final = Task(id="final", name="Final Task", command="echo 'Stress test complete'")
-    dag.add_task(final)
-    for pt in prev_tasks:
-        dag.add_dependency(pt.id, final.id)
-        
-    return dag
 
-# VORTEX looks for a function or global that returns Dags
-dags = [create_dag()]
+    final = BashOperator(task_id="final", bash_command="echo 'Stress test complete'")
+    for pt in prev_tasks:
+        pt >> final
+

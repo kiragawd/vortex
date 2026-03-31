@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -53,14 +54,17 @@ pub trait VortexOperator: Send + Sync {
 
 pub struct PluginRegistry {
     plugins: HashMap<String, Arc<dyn VortexOperator>>,
-    _libraries: Vec<Library>, // Keeps loaded shared libraries in memory
+    /// Retains loaded shared libraries so their symbols remain valid for the
+    /// lifetime of the registry. Dropping a `Library` would invalidate any
+    /// trait-object pointers created from its exported symbols.
+    loaded_libraries: Vec<Library>,
 }
 
 impl PluginRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
             plugins: HashMap::new(),
-            _libraries: Vec::new(),
+            loaded_libraries: Vec::new(),
         };
         registry.register("http", HttpOperator);
         registry
@@ -93,7 +97,7 @@ impl PluginRegistry {
         
         let boxed_plugin = unsafe { Box::from_raw(ptr) };
         self.plugins.insert(name.into(), Arc::from(boxed_plugin));
-        self._libraries.push(lib);
+        self.loaded_libraries.push(lib);
         
         Ok(())
     }

@@ -22,8 +22,9 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     info!("   └─ Controller: {}", controller_addr);
 
     // Connect to controller with retry
-    // TODO: Add --tls-ca flag for worker TLS: if provided, use tonic::transport::Channel
+    // FUTURE(mTLS): Add --tls-ca flag for worker TLS: if provided, use tonic::transport::Channel
     //       with ClientTlsConfig::new().ca_certificate(...) for mTLS/TLS to the controller.
+    //       Requires: Security + Infrastructure Integration
     let channel = loop {
         match tonic::transport::Endpoint::from_shared(controller_addr.to_string())?
             .connect()

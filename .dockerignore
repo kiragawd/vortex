@@ -1,0 +1,16 @@
+target/
+.git/
+.gitignore
+*.md
+!README.md
+logs/
+data/
+test-results/
+playwright-report/
+node_modules/
+dummy_plugin/target/
+__pycache__/
+*.pyc
+.env
+.env.*
+docker-compose.override.yml

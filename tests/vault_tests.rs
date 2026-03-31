@@ -1,4 +1,4 @@
-/// Pillar 3: Secrets Vault Tests
+/// Secrets Vault Tests
 /// Tests encryption/decryption, secret storage, and nonce uniqueness
 
 #[cfg(test)]

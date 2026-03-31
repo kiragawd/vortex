@@ -106,7 +106,7 @@ Unsupported `PythonOperator` logic is emitted as a strict migration placeholder 
 5. Ensure generated Rust passes syntax validation and strict graph-equivalence checks.
 6. For agentic conversions, review generated code for correctness and security before promoting to production.
 
-## Phased Cutover
+## Cutover Strategy
 1. Generate DAGs and validate topology.
 2. Run dry integration in staging.
 3. Replace unresolved placeholders incrementally (or use `--agentic` for automated resolution).

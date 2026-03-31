@@ -194,25 +194,169 @@ struct SnowflakeResponse {
     message: Option<String>,
 }
 
+/// Authentication method for Snowflake connections.
+#[derive(Debug, Clone)]
+pub enum SnowflakeAuth {
+    /// OAuth / PAT bearer token (default, from `ConnectorContext.auth.token`).
+    Bearer,
+    /// RSA keypair JWT authentication.
+    /// `private_key_pem` is the PKCS8 PEM-encoded private key content.
+    Keypair {
+        username: String,
+        private_key_pem: String,
+    },
+    /// Username + password (basic auth via Snowflake login endpoint).
+    Password,
+}
+
+/// Transport backend for the Snowflake connector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnowflakeTransport {
+    /// Snowflake SQL REST API (v2/statements) — default.
+    RestApi,
+    /// Shell out to the `snowsql` CLI (SnowSQL SDK).
+    SnowSql,
+}
+
 pub struct SnowflakeConnector {
     pub account: String,
     pub warehouse: Option<String>,
     pub database: Option<String>,
     pub schema: Option<String>,
+    pub role: Option<String>,
+    pub auth_method: SnowflakeAuth,
+    pub transport: SnowflakeTransport,
 }
 
 impl SnowflakeConnector {
+    pub fn new(account: &str) -> Self {
+        Self {
+            account: account.to_string(),
+            warehouse: None,
+            database: None,
+            schema: None,
+            role: None,
+            auth_method: SnowflakeAuth::Bearer,
+            transport: SnowflakeTransport::RestApi,
+        }
+    }
+
+    pub fn with_warehouse(mut self, wh: &str) -> Self {
+        self.warehouse = Some(wh.to_string());
+        self
+    }
+
+    pub fn with_database(mut self, db: &str) -> Self {
+        self.database = Some(db.to_string());
+        self
+    }
+
+    pub fn with_schema(mut self, s: &str) -> Self {
+        self.schema = Some(s.to_string());
+        self
+    }
+
+    pub fn with_role(mut self, role: &str) -> Self {
+        self.role = Some(role.to_string());
+        self
+    }
+
+    pub fn with_keypair_auth(mut self, username: &str, private_key_pem: &str) -> Self {
+        self.auth_method = SnowflakeAuth::Keypair {
+            username: username.to_string(),
+            private_key_pem: private_key_pem.to_string(),
+        };
+        self
+    }
+
+    pub fn with_password_auth(mut self) -> Self {
+        self.auth_method = SnowflakeAuth::Password;
+        self
+    }
+
+    pub fn with_snowsql_transport(mut self) -> Self {
+        self.transport = SnowflakeTransport::SnowSql;
+        self
+    }
+
     fn base_url(&self) -> String {
         format!("https://{}.snowflakecomputing.com", self.account)
     }
 
+    /// Build a JWT for keypair authentication (RS256).
+    /// The JWT is signed with the user's RSA private key and presented as a Bearer token.
+    fn build_keypair_jwt(account: &str, username: &str, private_key_pem: &str) -> Result<String> {
+        use jsonwebtoken::{EncodingKey, Header, Algorithm};
+
+        let qualified_username = format!(
+            "{}.{}",
+            account.split('.').next().unwrap_or(account).to_uppercase(),
+            username.to_uppercase()
+        );
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let claims = serde_json::json!({
+            "iss": format!("{}.SHA256:{}", qualified_username, "fingerprint"),
+            "sub": qualified_username,
+            "iat": now,
+            "exp": now + 3600,
+        });
+
+        let header = Header::new(Algorithm::RS256);
+        let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
+            .context("Invalid RSA private key PEM for Snowflake keypair auth")?;
+
+        jsonwebtoken::encode(&header, &claims, &key)
+            .context("Failed to sign Snowflake keypair JWT")
+    }
+
+    /// Resolve the authorization header value based on the configured auth method.
+    fn resolve_auth_token(&self, ctx: &ConnectorContext) -> Result<String> {
+        match &self.auth_method {
+            SnowflakeAuth::Bearer => {
+                let token = auth_token(ctx)
+                    .ok_or_else(|| anyhow!("Snowflake Bearer token required (set auth.token)"))?;
+                Ok(format!("Bearer {}", token))
+            }
+            SnowflakeAuth::Keypair {
+                username,
+                private_key_pem,
+            } => {
+                let jwt = Self::build_keypair_jwt(&self.account, username, private_key_pem)?;
+                Ok(format!("Bearer {}", jwt))
+            }
+            SnowflakeAuth::Password => {
+                let user = ctx
+                    .auth
+                    .username
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("Snowflake username required for password auth"))?;
+                let pass = ctx
+                    .auth
+                    .password
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("Snowflake password required for password auth"))?;
+                // Snowflake SQL API accepts basic auth via a login-token flow;
+                // here we obtain a session token first.
+                let basic = base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    format!("{}:{}", user, pass),
+                );
+                Ok(format!("Basic {}", basic))
+            }
+        }
+    }
+
     fn build_headers(&self, ctx: &ConnectorContext) -> Result<HeaderMap> {
-        let token = auth_token(ctx).ok_or_else(|| anyhow!("Snowflake token is required"))?;
+        let auth_value = self.resolve_auth_token(ctx)?;
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", token))
-                .context("invalid snowflake auth token")?,
+            HeaderValue::from_str(&auth_value).context("invalid snowflake auth header value")?,
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
         );
         Ok(headers)
     }
@@ -232,49 +376,167 @@ impl SnowflakeConnector {
             })
             .collect()
     }
-}
 
-#[async_trait]
-impl EnterpriseConnector for SnowflakeConnector {
-    fn name(&self) -> &'static str {
-        "snowflake"
-    }
+    // ─── SnowSQL SDK transport ───────────────────────────────────────────────
 
-    fn kind(&self) -> ConnectorKind {
-        ConnectorKind::Warehouse
-    }
+    /// Execute a query via the `snowsql` CLI tool.
+    async fn execute_via_snowsql(
+        &self,
+        ctx: &ConnectorContext,
+        sql: &str,
+    ) -> Result<QueryResult> {
+        // Verify snowsql is available
+        let check = Command::new("snowsql")
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("snowsql is not installed or not in PATH")?;
 
-    fn capabilities(&self) -> HashSet<ConnectorCapability> {
-        [
-            ConnectorCapability::BatchRead,
-            ConnectorCapability::ArrowZeroCopy,
-            ConnectorCapability::AsyncJobs,
-            ConnectorCapability::PushdownPredicates,
-        ]
-        .into_iter()
-        .collect()
-    }
-
-    async fn validate_config(&self) -> Result<()> {
-        if self.account.trim().is_empty() {
-            return Err(anyhow!("Snowflake account cannot be empty"));
+        if !check.status.success() {
+            return Err(anyhow!(
+                "snowsql --version failed: {}",
+                String::from_utf8_lossy(&check.stderr)
+            ));
         }
-        Ok(())
+
+        let mut args: Vec<String> = vec![
+            "--accountname".to_string(),
+            self.account.clone(),
+            "-o".to_string(),
+            "output_format=json".to_string(),
+            "-o".to_string(),
+            "friendly=false".to_string(),
+            "-o".to_string(),
+            "timing=false".to_string(),
+            "-o".to_string(),
+            "header=true".to_string(),
+        ];
+
+        // Auth: keypair or password
+        match &self.auth_method {
+            SnowflakeAuth::Keypair {
+                username,
+                private_key_pem,
+            } => {
+                // Write key to a temp file for snowsql --private-key-path
+                let key_path = std::env::temp_dir().join(format!(
+                    "vortex_sf_key_{}.pem",
+                    ctx.request_id
+                ));
+                tokio::fs::write(&key_path, private_key_pem)
+                    .await
+                    .context("Failed to write temp keypair file")?;
+                args.extend_from_slice(&[
+                    "--username".to_string(),
+                    username.clone(),
+                    "--private-key-path".to_string(),
+                    key_path.to_string_lossy().to_string(),
+                ]);
+            }
+            SnowflakeAuth::Password => {
+                let user = ctx
+                    .auth
+                    .username
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("SnowSQL: username required"))?;
+                args.extend_from_slice(&["--username".to_string(), user.to_string()]);
+                // Password via SNOWSQL_PWD env var (never pass on CLI)
+            }
+            SnowflakeAuth::Bearer => {
+                let token = auth_token(ctx)
+                    .ok_or_else(|| anyhow!("SnowSQL: token required for bearer auth"))?;
+                args.extend_from_slice(&["--token".to_string(), token]);
+            }
+        }
+
+        if let Some(w) = &self.warehouse {
+            args.extend_from_slice(&["--warehouse".to_string(), w.clone()]);
+        }
+        if let Some(d) = &self.database {
+            args.extend_from_slice(&["--dbname".to_string(), d.clone()]);
+        }
+        if let Some(s) = &self.schema {
+            args.extend_from_slice(&["--schemaname".to_string(), s.clone()]);
+        }
+        if let Some(r) = &self.role {
+            args.extend_from_slice(&["--rolename".to_string(), r.clone()]);
+        }
+
+        args.extend_from_slice(&["-q".to_string(), sql.to_string()]);
+
+        let mut cmd = Command::new("snowsql");
+        cmd.args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Pass password via env to avoid CLI argument exposure
+        if let SnowflakeAuth::Password = &self.auth_method {
+            if let Some(pass) = &ctx.auth.password {
+                cmd.env("SNOWSQL_PWD", pass);
+            }
+        }
+
+        let output = tokio::time::timeout(
+            Duration::from_millis(ctx.timeout_ms),
+            cmd.output(),
+        )
+        .await
+        .map_err(|_| anyhow!("SnowSQL query timed out after {}ms", ctx.timeout_ms))?
+        .context("Failed to execute snowsql command")?;
+
+        // Clean up temp key file if created
+        if let SnowflakeAuth::Keypair { .. } = &self.auth_method {
+            let key_path = std::env::temp_dir().join(format!(
+                "vortex_sf_key_{}.pem",
+                ctx.request_id
+            ));
+            let _ = tokio::fs::remove_file(&key_path).await;
+        }
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("SnowSQL query failed: {}", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Self::parse_snowsql_json(&stdout)
     }
 
-    async fn connect(&self, ctx: &ConnectorContext) -> Result<()> {
-        self.validate_config().await?;
-        let _ = self.build_headers(ctx)?;
-        Ok(())
+    /// Parse SnowSQL JSON output into a QueryResult.
+    fn parse_snowsql_json(raw: &str) -> Result<QueryResult> {
+        // SnowSQL JSON output is an array of objects
+        let rows: Vec<Value> = serde_json::from_str(raw.trim())
+            .context("Failed to parse SnowSQL JSON output")?;
+
+        let schema = rows
+            .first()
+            .and_then(|r| r.as_object())
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let row_count = rows.len();
+        Ok(QueryResult {
+            schema,
+            rows,
+            stats: [
+                ("connector".to_string(), json!("snowflake")),
+                ("transport".to_string(), json!("snowsql")),
+                ("row_count".to_string(), json!(row_count)),
+            ]
+            .into_iter()
+            .collect(),
+        })
     }
 
-    async fn health_check(&self, ctx: &ConnectorContext) -> Result<HealthStatus> {
-        self.connect(ctx).await?;
-        Ok(HealthStatus::healthy("snowflake connector ready"))
-    }
+    // ─── REST API transport ──────────────────────────────────────────────────
 
-    async fn execute(&self, ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
-        let sql = req.sql.ok_or_else(|| anyhow!("Missing SQL in request"))?;
+    async fn execute_via_rest_api(
+        &self,
+        ctx: &ConnectorContext,
+        sql: &str,
+    ) -> Result<QueryResult> {
         let headers = self.build_headers(ctx)?;
         let client = reqwest::Client::new();
         let base = self.base_url();
@@ -289,6 +551,9 @@ impl EnterpriseConnector for SnowflakeConnector {
         }
         if let Some(s) = &self.schema {
             body.insert("schema".to_string(), json!(s));
+        }
+        if let Some(r) = &self.role {
+            body.insert("role".to_string(), json!(r));
         }
 
         let first: SnowflakeResponse = with_retry(ctx, || {
@@ -322,7 +587,7 @@ impl EnterpriseConnector for SnowflakeConnector {
         let mut next_uri = first.next_uri;
         let mut pages = 1usize;
 
-        // If query was async, poll status endpoint once.
+        // If query was async, poll status endpoint.
         if raw_rows.is_empty()
             && first.statement_handle.is_some()
             && first.statement_status_url.is_some()
@@ -372,12 +637,99 @@ impl EnterpriseConnector for SnowflakeConnector {
             rows,
             stats: [
                 ("connector".to_string(), json!("snowflake")),
+                ("transport".to_string(), json!("rest_api")),
                 ("row_count".to_string(), json!(raw_rows.len())),
                 ("pages".to_string(), json!(pages)),
             ]
             .into_iter()
             .collect(),
         })
+    }
+}
+
+#[async_trait]
+impl EnterpriseConnector for SnowflakeConnector {
+    fn name(&self) -> &'static str {
+        "snowflake"
+    }
+
+    fn kind(&self) -> ConnectorKind {
+        ConnectorKind::Warehouse
+    }
+
+    fn capabilities(&self) -> HashSet<ConnectorCapability> {
+        [
+            ConnectorCapability::BatchRead,
+            ConnectorCapability::BatchWrite,
+            ConnectorCapability::ArrowZeroCopy,
+            ConnectorCapability::AsyncJobs,
+            ConnectorCapability::PushdownPredicates,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn validate_config(&self) -> Result<()> {
+        if self.account.trim().is_empty() {
+            return Err(anyhow!("Snowflake account cannot be empty"));
+        }
+        if let SnowflakeAuth::Keypair {
+            username,
+            private_key_pem,
+        } = &self.auth_method
+        {
+            if username.trim().is_empty() {
+                return Err(anyhow!("Snowflake keypair auth: username required"));
+            }
+            if !private_key_pem.contains("PRIVATE KEY") {
+                return Err(anyhow!(
+                    "Snowflake keypair auth: private_key_pem must be PEM-encoded"
+                ));
+            }
+        }
+        if self.transport == SnowflakeTransport::SnowSql {
+            let check = Command::new("snowsql")
+                .arg("--version")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await;
+            if check.is_err() || !check.unwrap().status.success() {
+                return Err(anyhow!(
+                    "SnowSQL CLI not found. Install from https://docs.snowflake.com/en/user-guide/snowsql-install-config"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn connect(&self, ctx: &ConnectorContext) -> Result<()> {
+        self.validate_config().await?;
+        if self.transport == SnowflakeTransport::RestApi {
+            let _ = self.build_headers(ctx)?;
+        }
+        Ok(())
+    }
+
+    async fn health_check(&self, ctx: &ConnectorContext) -> Result<HealthStatus> {
+        self.connect(ctx).await?;
+        let transport_name = match self.transport {
+            SnowflakeTransport::RestApi => "rest_api",
+            SnowflakeTransport::SnowSql => "snowsql",
+        };
+        Ok(HealthStatus::healthy(format!(
+            "snowflake connector ready (transport={})",
+            transport_name
+        )))
+    }
+
+    async fn execute(&self, ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
+        let sql = req.sql.ok_or_else(|| anyhow!("Missing SQL in request"))?;
+
+        match self.transport {
+            SnowflakeTransport::RestApi => self.execute_via_rest_api(ctx, &sql).await,
+            SnowflakeTransport::SnowSql => self.execute_via_snowsql(ctx, &sql).await,
+        }
     }
 
     async fn stream_execute(

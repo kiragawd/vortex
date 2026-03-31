@@ -7,7 +7,7 @@ Comprehensive end-to-end UI tests for the VORTEX distributed DAG orchestration p
 This test suite covers **10 test modules with 100+ test cases**, testing:
 - ✅ Dashboard rendering and responsiveness
 - ✅ DAG list, detail views, and actions
-- ✅ Secrets Vault (Pillar 3) management
+- ✅ Secrets Vault management
 - ✅ RBAC user management
 - ✅ Swarm monitoring and status
 - ✅ Task graph and instance views
@@ -77,7 +77,7 @@ Tests clicking DAG cards and viewing DAG details:
 
 ---
 
-#### 3. **03-secrets-management.spec.ts** — Secrets Vault (Pillar 3) (12 tests)
+#### 3. **03-secrets-management.spec.ts** — Secrets Vault (12 tests)
 Tests the enterprise secret vault:
 - "🔐 Secrets" button opens secrets section
 - Secrets list displays correctly

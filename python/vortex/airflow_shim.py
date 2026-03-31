@@ -10,6 +10,10 @@
 #   - BaseOperator  (>>, << dependency syntax, set_upstream/set_downstream)
 #   - BashOperator, PythonOperator, DummyOperator, EmptyOperator
 
+import threading
+
+_DAG_REGISTRY_LOCK = threading.Lock()
+
 
 class DAG:
     """Airflow-compatible DAG class for VORTEX."""
@@ -37,7 +41,8 @@ class DAG:
         self.owner = owner
         self.tasks = []
         self._task_dict = {}
-        _DAG_REGISTRY.append(self)
+        with _DAG_REGISTRY_LOCK:
+            _DAG_REGISTRY.append(self)
 
     def __enter__(self):
         from . import context

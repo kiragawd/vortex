@@ -47,7 +47,7 @@ message TaskAssignment {
   string task_id = 3;
   string command = 4;
   string dag_run_id = 5;
-  map<string, string> secrets = 6; // Pillar 3: Decrypted secrets injected here
+  map<string, string> secrets = 6; // Decrypted secrets injected here
   string task_type = 7;           // "bash" or "python"
   string config_json = 8;        // Serialized task config
   int32 max_retries = 9;

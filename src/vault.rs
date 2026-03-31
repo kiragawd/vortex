@@ -13,7 +13,7 @@ pub struct Vault {
 impl Vault {
     pub fn new() -> Result<Self> {
         let key_str = env::var("VORTEX_SECRET_KEY")
-            .map_err(|_| anyhow!("VORTEX_SECRET_KEY environment variable not set. Pillar 3 requires a 32-byte key."))?;
+            .map_err(|_| anyhow!("VORTEX_SECRET_KEY environment variable not set. A 32-byte key is required."))?;
         
         // BUG-14 FIX: Auto-detect key format to allow higher-entropy keys.
         // Supports: hex (64 hex chars → 32 bytes), base64 (44 chars → 32 bytes),

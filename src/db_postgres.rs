@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // db_postgres.rs — PostgreSQL backend for VORTEX
 //
 // Implements `DatabaseBackend` using `sqlx` with an async `PgPool`.
@@ -928,6 +929,35 @@ impl DatabaseBackend for PostgresDb {
         Ok((runs, total))
     }
 
+    async fn get_all_runs(&self, limit: i64, offset: i64) -> Result<(Vec<serde_json::Value>, i64)> {
+        let rows = sqlx::query(
+            "SELECT id, dag_id, state, execution_date, start_time, end_time, triggered_by, sla_missed,
+                    COUNT(*) OVER() as total_count
+             FROM dag_runs
+             ORDER BY execution_date DESC
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_all_runs")?;
+
+        use sqlx::Row;
+        let total = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        let runs = rows.iter().map(|r| serde_json::json!({
+            "id":             r.get::<String, _>("id"),
+            "dag_id":         r.get::<String, _>("dag_id"),
+            "state":          r.get::<String, _>("state"),
+            "execution_date": r.get::<DateTime<Utc>, _>("execution_date"),
+            "start_time":     r.get::<Option<DateTime<Utc>>, _>("start_time"),
+            "end_time":       r.get::<Option<DateTime<Utc>>, _>("end_time"),
+            "triggered_by":   r.get::<String, _>("triggered_by"),
+            "sla_missed":     r.try_get::<bool, _>("sla_missed").unwrap_or(false),
+        })).collect();
+        Ok((runs, total))
+    }
+
     async fn mark_sla_missed(&self, run_id: &str) -> Result<()> {
         sqlx::query("UPDATE dag_runs SET sla_missed = TRUE WHERE id = $1")
             .bind(run_id)
@@ -1814,5 +1844,964 @@ impl DatabaseBackend for PostgresDb {
             .execute(&self.pool)
             .await
             .is_ok()
+    }
+
+    // ── Auth Sessions (IAM) ─────────────────────────────────────────
+
+    async fn create_session(&self, session: &crate::auth::UserSession) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO user_sessions (session_id, username, provider_id, access_token, refresh_token, id_token, expires_at, created_at, ip_address, user_agent)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9)
+             ON CONFLICT (session_id) DO UPDATE SET expires_at = $7, access_token = $4, refresh_token = $5"
+        )
+        .bind(&session.session_id)
+        .bind(&session.username)
+        .bind(&session.provider_id)
+        .bind(&session.access_token)
+        .bind(&session.refresh_token)
+        .bind(&session.id_token)
+        .bind(session.expires_at)
+        .bind(&session.ip_address)
+        .bind(&session.user_agent)
+        .execute(&self.pool)
+        .await
+        .context("create_session")?;
+        Ok(())
+    }
+
+    async fn get_session(&self, session_id: &str) -> Result<Option<crate::auth::UserSession>> {
+        let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, Option<String>, chrono::DateTime<Utc>, Option<String>, Option<String>)>(
+            "SELECT session_id, username, provider_id, access_token, refresh_token, id_token, expires_at, ip_address, user_agent
+             FROM user_sessions WHERE session_id = $1"
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_session")?;
+
+        Ok(row.map(|(sid, username, provider_id, access_token, refresh_token, id_token, expires_at, ip_address, user_agent)| {
+            crate::auth::UserSession {
+                session_id: sid,
+                username,
+                provider_id,
+                access_token,
+                refresh_token,
+                id_token,
+                expires_at,
+                ip_address,
+                user_agent,
+            }
+        }))
+    }
+
+    async fn delete_session(&self, session_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM user_sessions WHERE session_id = $1")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await
+            .context("delete_session")?;
+        Ok(())
+    }
+
+    async fn cleanup_expired_sessions(&self) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM user_sessions WHERE expires_at < NOW()")
+            .execute(&self.pool)
+            .await
+            .context("cleanup_expired_sessions")?;
+        Ok(result.rows_affected())
+    }
+
+    async fn get_auth_providers(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, bool, i32)>(
+            "SELECT id, provider_type, name, config, enabled, priority FROM auth_providers ORDER BY priority ASC"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("get_auth_providers")?;
+
+        Ok(rows.iter().map(|(id, ptype, name, config, enabled, priority)| {
+            serde_json::json!({
+                "id": id,
+                "provider_type": ptype,
+                "name": name,
+                "config": serde_json::from_str::<serde_json::Value>(config).unwrap_or(serde_json::json!({})),
+                "enabled": enabled,
+                "priority": priority,
+            })
+        }).collect())
+    }
+
+    async fn get_auth_provider(&self, provider_id: &str) -> Result<Option<serde_json::Value>> {
+        let row = sqlx::query_as::<_, (String, String, String, String, bool, i32)>(
+            "SELECT id, provider_type, name, config, enabled, priority FROM auth_providers WHERE id = $1"
+        )
+        .bind(provider_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_auth_provider")?;
+
+        Ok(row.map(|(id, ptype, name, config, enabled, priority)| {
+            serde_json::json!({
+                "id": id,
+                "provider_type": ptype,
+                "name": name,
+                "config": serde_json::from_str::<serde_json::Value>(&config).unwrap_or(serde_json::json!({})),
+                "enabled": enabled,
+                "priority": priority,
+            })
+        }))
+    }
+
+    async fn upsert_auth_provider(
+        &self,
+        id: &str,
+        provider_type: &str,
+        name: &str,
+        config: &str,
+        enabled: bool,
+        priority: i32,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO auth_providers (id, provider_type, name, config, enabled, priority, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+             ON CONFLICT (id) DO UPDATE SET name = $3, config = $4, enabled = $5, priority = $6, updated_at = NOW()"
+        )
+        .bind(id)
+        .bind(provider_type)
+        .bind(name)
+        .bind(config)
+        .bind(enabled)
+        .bind(priority)
+        .execute(&self.pool)
+        .await
+        .context("upsert_auth_provider")?;
+        Ok(())
+    }
+
+    async fn delete_auth_provider(&self, provider_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM auth_providers WHERE id = $1 AND id != 'local'")
+            .bind(provider_id)
+            .execute(&self.pool)
+            .await
+            .context("delete_auth_provider")?;
+        Ok(())
+    }
+
+    async fn update_user_last_login(&self, username: &str) -> Result<()> {
+        sqlx::query("UPDATE users SET last_login = NOW() WHERE username = $1")
+            .bind(username)
+            .execute(&self.pool)
+            .await
+            .context("update_user_last_login")?;
+        Ok(())
+    }
+
+    // ── Lineage (Observability) ─────────────────────────────────────
+
+    async fn store_lineage_event(
+        &self,
+        event_type: &str,
+        run_id: &str,
+        dag_id: &str,
+        task_id: Option<&str>,
+        job_namespace: &str,
+        job_name: &str,
+        inputs: &str,
+        outputs: &str,
+        facets: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO lineage_events (id, event_type, event_time, run_id, dag_id, task_id, job_namespace, job_name, producer, inputs, outputs, facets)
+             VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, 'vortex', $8::jsonb, $9::jsonb, $10::jsonb)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(event_type)
+        .bind(run_id)
+        .bind(dag_id)
+        .bind(task_id)
+        .bind(job_namespace)
+        .bind(job_name)
+        .bind(inputs)
+        .bind(outputs)
+        .bind(facets)
+        .execute(&self.pool)
+        .await
+        .context("store_lineage_event")?;
+        Ok(())
+    }
+
+    async fn get_lineage_events(
+        &self,
+        dag_id: &str,
+        run_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = if let Some(rid) = run_id {
+            sqlx::query_as::<_, (String, String, chrono::DateTime<Utc>, String, String, Option<String>, String, String, serde_json::Value, serde_json::Value)>(
+                "SELECT id, event_type, event_time, run_id, dag_id, task_id, job_name, producer, inputs, outputs
+                 FROM lineage_events WHERE dag_id = $1 AND run_id = $2 ORDER BY event_time DESC LIMIT $3"
+            )
+            .bind(dag_id)
+            .bind(rid)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .context("get_lineage_events")?
+        } else {
+            sqlx::query_as::<_, (String, String, chrono::DateTime<Utc>, String, String, Option<String>, String, String, serde_json::Value, serde_json::Value)>(
+                "SELECT id, event_type, event_time, run_id, dag_id, task_id, job_name, producer, inputs, outputs
+                 FROM lineage_events WHERE dag_id = $1 ORDER BY event_time DESC LIMIT $2"
+            )
+            .bind(dag_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .context("get_lineage_events")?
+        };
+
+        Ok(rows.iter().map(|(id, event_type, event_time, run_id, dag_id, task_id, job_name, producer, inputs, outputs)| {
+            serde_json::json!({
+                "id": id,
+                "event_type": event_type,
+                "event_time": event_time.to_rfc3339(),
+                "run_id": run_id,
+                "dag_id": dag_id,
+                "task_id": task_id,
+                "job_name": job_name,
+                "producer": producer,
+                "inputs": inputs,
+                "outputs": outputs,
+            })
+        }).collect())
+    }
+
+    async fn get_lineage_datasets(&self, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, serde_json::Value)>(
+            "SELECT id, namespace, name, source_type, facets FROM lineage_datasets ORDER BY updated_at DESC LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_lineage_datasets")?;
+
+        Ok(rows.iter().map(|(id, namespace, name, source_type, facets)| {
+            serde_json::json!({
+                "id": id,
+                "namespace": namespace,
+                "name": name,
+                "source_type": source_type,
+                "facets": facets,
+            })
+        }).collect())
+    }
+
+    async fn get_incident_configs(&self, team_id: Option<&str>) -> Result<Vec<serde_json::Value>> {
+        let rows = if let Some(tid) = team_id {
+            sqlx::query_as::<_, (String, Option<String>, String, String, serde_json::Value, bool)>(
+                "SELECT id, team_id, provider, name, config, enabled FROM incident_configs WHERE team_id = $1 OR team_id IS NULL ORDER BY name"
+            )
+            .bind(tid)
+            .fetch_all(&self.pool)
+            .await
+            .context("get_incident_configs")?
+        } else {
+            sqlx::query_as::<_, (String, Option<String>, String, String, serde_json::Value, bool)>(
+                "SELECT id, team_id, provider, name, config, enabled FROM incident_configs ORDER BY name"
+            )
+            .fetch_all(&self.pool)
+            .await
+            .context("get_incident_configs")?
+        };
+
+        Ok(rows.iter().map(|(id, team_id, provider, name, config, enabled)| {
+            serde_json::json!({
+                "id": id,
+                "team_id": team_id,
+                "provider": provider,
+                "name": name,
+                "config": config,
+                "enabled": enabled,
+            })
+        }).collect())
+    }
+
+    async fn upsert_incident_config(
+        &self,
+        id: &str,
+        team_id: Option<&str>,
+        provider: &str,
+        name: &str,
+        config: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO incident_configs (id, team_id, provider, name, config, enabled, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW(), NOW())
+             ON CONFLICT (id) DO UPDATE SET name = $4, config = $5::jsonb, enabled = $6, updated_at = NOW()"
+        )
+        .bind(id)
+        .bind(team_id)
+        .bind(provider)
+        .bind(name)
+        .bind(config)
+        .bind(enabled)
+        .execute(&self.pool)
+        .await
+        .context("upsert_incident_config")?;
+        Ok(())
+    }
+
+    async fn delete_incident_config(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM incident_configs WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("delete_incident_config")?;
+        Ok(())
+    }
+
+    // ── Compliance & Governance ──────────────────────────────────
+
+    async fn insert_audit_log(&self, entry: &crate::compliance::AuditEntry) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO audit_log (event_type, actor, actor_ip, resource_type, resource_id, action, details, team_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        )
+        .bind(&entry.event_type)
+        .bind(&entry.actor)
+        .bind(&entry.actor_ip)
+        .bind(&entry.resource_type)
+        .bind(&entry.resource_id)
+        .bind(&entry.action)
+        .bind(&entry.details)
+        .bind(&entry.team_id)
+        .execute(&self.pool)
+        .await
+        .context("insert_audit_log")?;
+        Ok(())
+    }
+
+    async fn get_audit_log(
+        &self,
+        event_type: Option<&str>,
+        actor: Option<&str>,
+        resource_type: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT id, event_type, actor, actor_ip, resource_type, resource_id, action, details, team_id, created_at
+                FROM audit_log
+                WHERE ($1::text IS NULL OR event_type = $1)
+                  AND ($2::text IS NULL OR actor = $2)
+                  AND ($3::text IS NULL OR resource_type = $3)
+                ORDER BY created_at DESC
+                LIMIT $4 OFFSET $5
+            ) t"
+        )
+        .bind(event_type)
+        .bind(actor)
+        .bind(resource_type)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_audit_log")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn find_matching_approval_gate(&self, resource_type: &str, resource_id: &str) -> Result<Option<serde_json::Value>> {
+        let row = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM approval_gates
+                WHERE enabled = TRUE AND resource_type = $1 AND $2 LIKE replace(replace(resource_pattern, '*', '%'), '?', '_')
+                LIMIT 1
+            ) t"
+        )
+        .bind(resource_type)
+        .bind(resource_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("find_matching_approval_gate")?;
+        Ok(row.map(|r| r.0))
+    }
+
+    async fn get_approval_gates(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (SELECT * FROM approval_gates ORDER BY created_at DESC) t"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("get_approval_gates")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn upsert_approval_gate(
+        &self, id: &str, name: &str, resource_type: &str, resource_pattern: &str,
+        required_approvers: i32, approver_roles: &[String], enabled: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO approval_gates (id, name, resource_type, resource_pattern, required_approvers, approver_roles, enabled, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+             ON CONFLICT (id) DO UPDATE SET
+               name = EXCLUDED.name, resource_type = EXCLUDED.resource_type,
+               resource_pattern = EXCLUDED.resource_pattern, required_approvers = EXCLUDED.required_approvers,
+               approver_roles = EXCLUDED.approver_roles, enabled = EXCLUDED.enabled, updated_at = NOW()"
+        )
+        .bind(id)
+        .bind(name)
+        .bind(resource_type)
+        .bind(resource_pattern)
+        .bind(required_approvers)
+        .bind(approver_roles)
+        .bind(enabled)
+        .execute(&self.pool)
+        .await
+        .context("upsert_approval_gate")?;
+        Ok(())
+    }
+
+    async fn delete_approval_gate(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM approval_gates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("delete_approval_gate")?;
+        Ok(())
+    }
+
+    async fn create_approval_request(
+        &self, gate_id: &str, requester: &str, resource_type: &str, resource_id: &str,
+        description: Option<&str>, diff: &serde_json::Value,
+    ) -> Result<String> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "INSERT INTO approval_requests (gate_id, requester, resource_type, resource_id, change_description, change_diff)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id"
+        )
+        .bind(gate_id)
+        .bind(requester)
+        .bind(resource_type)
+        .bind(resource_id)
+        .bind(description)
+        .bind(diff)
+        .fetch_one(&self.pool)
+        .await
+        .context("create_approval_request")?;
+        Ok(row.0)
+    }
+
+    async fn get_approval_requests(&self, status: Option<&str>, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM approval_requests
+                WHERE ($1::text IS NULL OR status = $1)
+                ORDER BY created_at DESC LIMIT $2
+            ) t"
+        )
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_approval_requests")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn add_approval_vote(&self, request_id: &str, approver: &str, comment: Option<&str>) -> Result<String> {
+        // Add the approval vote to the JSONB array
+        let vote = serde_json::json!({
+            "approver": approver,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "comment": comment.unwrap_or("")
+        });
+        sqlx::query(
+            "UPDATE approval_requests SET approvals = approvals || $2::jsonb WHERE id = $1"
+        )
+        .bind(request_id)
+        .bind(&vote)
+        .execute(&self.pool)
+        .await
+        .context("add_approval_vote")?;
+
+        // Check if we have enough approvals to auto-approve
+        let row = sqlx::query_as::<_, (String, i64, i32)>(
+            "SELECT ar.status, jsonb_array_length(ar.approvals), ag.required_approvers
+             FROM approval_requests ar JOIN approval_gates ag ON ar.gate_id = ag.id
+             WHERE ar.id = $1"
+        )
+        .bind(request_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("check_approval_count")?;
+
+        let (status, approval_count, required) = row;
+        if status == "pending" && approval_count >= required as i64 {
+            sqlx::query("UPDATE approval_requests SET status = 'approved', resolved_at = NOW() WHERE id = $1")
+                .bind(request_id)
+                .execute(&self.pool)
+                .await?;
+            return Ok("approved".to_string());
+        }
+        Ok("pending".to_string())
+    }
+
+    async fn reject_approval_request(&self, request_id: &str, rejector: &str, reason: Option<&str>) -> Result<()> {
+        let rejection = serde_json::json!({
+            "rejector": rejector,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "reason": reason.unwrap_or("")
+        });
+        sqlx::query(
+            "UPDATE approval_requests SET status = 'rejected', rejections = rejections || $2::jsonb, resolved_at = NOW() WHERE id = $1"
+        )
+        .bind(request_id)
+        .bind(&rejection)
+        .execute(&self.pool)
+        .await
+        .context("reject_approval_request")?;
+        Ok(())
+    }
+
+    async fn get_retention_policies(&self, enabled_only: bool) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM retention_policies WHERE ($1 = FALSE OR enabled = TRUE) ORDER BY created_at
+            ) t"
+        )
+        .bind(enabled_only)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_retention_policies")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn upsert_retention_policy(
+        &self, id: &str, name: &str, target_table: &str, retention_days: i32,
+        batch_size: i32, enabled: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO retention_policies (id, name, target_table, retention_days, delete_batch_size, enabled)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO UPDATE SET
+               name = EXCLUDED.name, target_table = EXCLUDED.target_table,
+               retention_days = EXCLUDED.retention_days, delete_batch_size = EXCLUDED.delete_batch_size,
+               enabled = EXCLUDED.enabled"
+        )
+        .bind(id)
+        .bind(name)
+        .bind(target_table)
+        .bind(retention_days)
+        .bind(batch_size)
+        .bind(enabled)
+        .execute(&self.pool)
+        .await
+        .context("upsert_retention_policy")?;
+        Ok(())
+    }
+
+    async fn execute_retention_delete(&self, table: &str, retention_days: i64, batch_size: i64) -> Result<i64> {
+        // Only allow known tables to prevent SQL injection
+        let allowed = ["dag_runs", "task_instances", "audit_log", "lineage_events"];
+        if !allowed.contains(&table) {
+            anyhow::bail!("Retention delete not allowed on table: {}", table);
+        }
+        let query = format!(
+            "DELETE FROM {} WHERE ctid IN (SELECT ctid FROM {} WHERE created_at < NOW() - INTERVAL '{} days' LIMIT {})",
+            table, table, retention_days, batch_size
+        );
+        let result = sqlx::query(&query)
+            .execute(&self.pool)
+            .await
+            .context("execute_retention_delete")?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    async fn update_retention_last_run(&self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE retention_policies SET last_run_at = NOW() WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("update_retention_last_run")?;
+        Ok(())
+    }
+
+    async fn get_compliance_controls(&self, framework: Option<&str>) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM compliance_controls
+                WHERE ($1::text IS NULL OR framework = $1)
+                ORDER BY framework, control_id
+            ) t"
+        )
+        .bind(framework)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_compliance_controls")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn upsert_compliance_control(
+        &self, framework: &str, control_id: &str, description: &str,
+        status: &str, evidence: &serde_json::Value, assessor: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO compliance_controls (framework, control_id, description, status, evidence, assessed_by, assessed_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+             ON CONFLICT (framework, control_id) DO UPDATE SET
+               description = CASE WHEN EXCLUDED.description = '' THEN compliance_controls.description ELSE EXCLUDED.description END,
+               status = EXCLUDED.status, evidence = EXCLUDED.evidence,
+               assessed_by = EXCLUDED.assessed_by, assessed_at = NOW(), updated_at = NOW()"
+        )
+        .bind(framework)
+        .bind(control_id)
+        .bind(description)
+        .bind(status)
+        .bind(evidence)
+        .bind(assessor)
+        .execute(&self.pool)
+        .await
+        .context("upsert_compliance_control")?;
+        Ok(())
+    }
+
+    // ── Fine-Grained RBAC & Token Scoping ───────────────────────
+
+    async fn check_user_permission(&self, user_id: &str, permission: &str, team_id: Option<&str>) -> Result<bool> {
+        let row = sqlx::query_as::<_, (bool,)>(
+            "SELECT EXISTS(
+                SELECT 1 FROM rbac_user_roles ur
+                JOIN rbac_role_permissions rp ON ur.role_id = rp.role_id
+                JOIN rbac_permissions p ON rp.permission_id = p.id
+                WHERE ur.user_id = $1 AND p.name = $2
+                  AND (ur.team_id IS NULL OR ur.team_id = $3)
+            )"
+        )
+        .bind(user_id)
+        .bind(permission)
+        .bind(team_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("check_user_permission")?;
+        Ok(row.0)
+    }
+
+    async fn get_user_effective_permissions(&self, user_id: &str, team_id: Option<&str>) -> Result<Vec<String>> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT p.name FROM rbac_user_roles ur
+             JOIN rbac_role_permissions rp ON ur.role_id = rp.role_id
+             JOIN rbac_permissions p ON rp.permission_id = p.id
+             WHERE ur.user_id = $1 AND (ur.team_id IS NULL OR ur.team_id = $2)
+             ORDER BY p.name"
+        )
+        .bind(user_id)
+        .bind(team_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_user_effective_permissions")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn get_rbac_roles(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (SELECT * FROM rbac_roles ORDER BY name) t"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("get_rbac_roles")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn get_rbac_role_permissions(&self, role_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT p.* FROM rbac_role_permissions rp
+                JOIN rbac_permissions p ON rp.permission_id = p.id
+                WHERE rp.role_id = $1 ORDER BY p.name
+            ) t"
+        )
+        .bind(role_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_rbac_role_permissions")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn assign_user_role(&self, user_id: &str, role_id: &str, team_id: Option<&str>, granted_by: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO rbac_user_roles (user_id, role_id, team_id, granted_by)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id, role_id, COALESCE(team_id, '__global__')) DO NOTHING"
+        )
+        .bind(user_id)
+        .bind(role_id)
+        .bind(team_id)
+        .bind(granted_by)
+        .execute(&self.pool)
+        .await
+        .context("assign_user_role")?;
+        Ok(())
+    }
+
+    async fn revoke_user_role(&self, user_id: &str, role_id: &str, team_id: Option<&str>) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM rbac_user_roles WHERE user_id = $1 AND role_id = $2 AND (($3::text IS NULL AND team_id IS NULL) OR team_id = $3)"
+        )
+        .bind(user_id)
+        .bind(role_id)
+        .bind(team_id)
+        .execute(&self.pool)
+        .await
+        .context("revoke_user_role")?;
+        Ok(())
+    }
+
+    async fn get_user_roles(&self, user_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT r.*, ur.team_id, ur.granted_by, ur.granted_at
+                FROM rbac_user_roles ur JOIN rbac_roles r ON ur.role_id = r.id
+                WHERE ur.user_id = $1
+                ORDER BY r.name
+            ) t"
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_user_roles")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn create_api_token(&self, name: &str, token_hash: &str, user_id: &str, scopes: &[String], team_id: Option<&str>, expires_at: Option<&str>) -> Result<String> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "INSERT INTO api_tokens (name, token_hash, user_id, scopes, team_id, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
+             RETURNING id"
+        )
+        .bind(name)
+        .bind(token_hash)
+        .bind(user_id)
+        .bind(scopes)
+        .bind(team_id)
+        .bind(expires_at)
+        .fetch_one(&self.pool)
+        .await
+        .context("create_api_token")?;
+        Ok(row.0)
+    }
+
+    async fn get_api_tokens(&self, user_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT id, name, user_id, scopes, team_id, expires_at, last_used_at, created_at, revoked
+                FROM api_tokens WHERE user_id = $1 ORDER BY created_at DESC
+            ) t"
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_api_tokens")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn revoke_api_token(&self, token_id: &str) -> Result<()> {
+        sqlx::query("UPDATE api_tokens SET revoked = TRUE WHERE id = $1")
+            .bind(token_id)
+            .execute(&self.pool)
+            .await
+            .context("revoke_api_token")?;
+        Ok(())
+    }
+
+    async fn find_api_token_by_hash(&self, _token_prefix: &str) -> Result<Option<serde_json::Value>> {
+        // For token lookup, we need to check all non-revoked, non-expired tokens
+        // In production, store a prefix index for faster lookup
+        let row = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM api_tokens
+                WHERE revoked = FALSE AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY created_at DESC LIMIT 100
+            ) t"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("find_api_token_by_hash")?;
+        // Caller will verify bcrypt hash against each candidate
+        // Return first match or None; actual matching done in rbac module
+        Ok(row.into_iter().map(|r| r.0).next())
+    }
+
+    async fn update_token_last_used(&self, token_id: &str) -> Result<()> {
+        sqlx::query("UPDATE api_tokens SET last_used_at = NOW() WHERE id = $1")
+            .bind(token_id)
+            .execute(&self.pool)
+            .await
+            .context("update_token_last_used")?;
+        Ok(())
+    }
+
+    async fn get_ip_allowlist(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (SELECT * FROM ip_allowlist ORDER BY created_at) t"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("get_ip_allowlist")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn upsert_ip_allowlist_rule(&self, id: &str, cidr: &str, description: &str, enabled: bool) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO ip_allowlist (id, cidr, description, enabled)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO UPDATE SET cidr = EXCLUDED.cidr, description = EXCLUDED.description, enabled = EXCLUDED.enabled"
+        )
+        .bind(id)
+        .bind(cidr)
+        .bind(description)
+        .bind(enabled)
+        .execute(&self.pool)
+        .await
+        .context("upsert_ip_allowlist_rule")?;
+        Ok(())
+    }
+
+    async fn delete_ip_allowlist_rule(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM ip_allowlist WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("delete_ip_allowlist_rule")?;
+        Ok(())
+    }
+
+    // ── Advanced Scheduling & Data-Aware Orchestration ──────────
+
+    async fn upsert_dataset(&self, id: &str, uri: &str, name: &str, description: Option<&str>, producer_dag_id: Option<&str>, metadata: &serde_json::Value) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO datasets (id, uri, name, description, producer_dag_id, metadata, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             ON CONFLICT (id) DO UPDATE SET uri = EXCLUDED.uri, name = EXCLUDED.name,
+               description = EXCLUDED.description, producer_dag_id = EXCLUDED.producer_dag_id,
+               metadata = EXCLUDED.metadata, updated_at = NOW()"
+        )
+        .bind(id).bind(uri).bind(name).bind(description).bind(producer_dag_id).bind(metadata)
+        .execute(&self.pool).await.context("upsert_dataset")?;
+        Ok(())
+    }
+
+    async fn get_datasets(&self, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (SELECT * FROM datasets ORDER BY name LIMIT $1 OFFSET $2) t"
+        ).bind(limit).bind(offset).fetch_all(&self.pool).await.context("get_datasets")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn insert_dataset_event(&self, event: &crate::advanced_scheduler::DatasetEvent) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO dataset_events (dataset_id, source_dag_id, source_task_id, source_run_id, event_type, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6)"
+        )
+        .bind(&event.dataset_id).bind(&event.source_dag_id).bind(&event.source_task_id)
+        .bind(&event.source_run_id).bind(&event.event_type).bind(&event.metadata)
+        .execute(&self.pool).await.context("insert_dataset_event")?;
+        Ok(())
+    }
+
+    async fn get_dataset_events(&self, dataset_id: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM dataset_events WHERE dataset_id = $1 ORDER BY created_at DESC LIMIT $2
+            ) t"
+        ).bind(dataset_id).bind(limit).fetch_all(&self.pool).await.context("get_dataset_events")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn upsert_dataset_trigger(&self, id: &str, dag_id: &str, dataset_ids: &[String], condition: &str, min_interval: Option<i32>, enabled: bool) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO dataset_triggers (id, dag_id, dataset_ids, condition, min_interval_seconds, enabled)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO UPDATE SET dag_id = EXCLUDED.dag_id, dataset_ids = EXCLUDED.dataset_ids,
+               condition = EXCLUDED.condition, min_interval_seconds = EXCLUDED.min_interval_seconds, enabled = EXCLUDED.enabled"
+        )
+        .bind(id).bind(dag_id).bind(dataset_ids).bind(condition).bind(min_interval).bind(enabled)
+        .execute(&self.pool).await.context("upsert_dataset_trigger")?;
+        Ok(())
+    }
+
+    async fn get_dataset_triggers_for_dataset(&self, dataset_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM dataset_triggers WHERE enabled = TRUE AND $1 = ANY(dataset_ids)
+            ) t"
+        ).bind(dataset_id).fetch_all(&self.pool).await.context("get_dataset_triggers_for_dataset")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn check_all_datasets_updated(&self, dataset_ids: &[String], _trigger_id: &str) -> Result<bool> {
+        // Check that each dataset has at least one recent event
+        for ds_id in dataset_ids {
+            let row = sqlx::query_as::<_, (bool,)>(
+                "SELECT EXISTS(SELECT 1 FROM dataset_events WHERE dataset_id = $1 AND created_at > NOW() - INTERVAL '24 hours')"
+            ).bind(ds_id).fetch_one(&self.pool).await.context("check_dataset_updated")?;
+            if !row.0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    async fn upsert_cross_dag_dependency(&self, id: &str, downstream: &str, upstream: &str, upstream_task: Option<&str>, condition: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO cross_dag_dependencies (id, downstream_dag_id, upstream_dag_id, upstream_task_id, condition)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (downstream_dag_id, upstream_dag_id, COALESCE(upstream_task_id, '__all__'))
+             DO UPDATE SET condition = EXCLUDED.condition"
+        )
+        .bind(id).bind(downstream).bind(upstream).bind(upstream_task).bind(condition)
+        .execute(&self.pool).await.context("upsert_cross_dag_dependency")?;
+        Ok(())
+    }
+
+    async fn get_cross_dag_dependencies(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT * FROM cross_dag_dependencies WHERE downstream_dag_id = $1 AND enabled = TRUE
+            ) t"
+        ).bind(dag_id).fetch_all(&self.pool).await.context("get_cross_dag_dependencies")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn check_upstream_completed(&self, upstream_dag: &str, upstream_task: Option<&str>, condition: &str) -> Result<bool> {
+        let status_check = match condition {
+            "success" => "'success'",
+            "complete" => "'success', 'failed'",
+            _ => "'success', 'failed', 'running'",
+        };
+        let query = if upstream_task.is_some() {
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM task_instances WHERE dag_id = $1 AND task_id = $2 AND status IN ({}) AND updated_at > NOW() - INTERVAL '24 hours')",
+                status_check
+            )
+        } else {
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM dag_runs WHERE dag_id = $1 AND status IN ({}) AND updated_at > NOW() - INTERVAL '24 hours')",
+                status_check
+            )
+        };
+        let row = sqlx::query_as::<_, (bool,)>(&query)
+            .bind(upstream_dag)
+            .bind(upstream_task.unwrap_or(""))
+            .fetch_one(&self.pool)
+            .await
+            .context("check_upstream_completed")?;
+        Ok(row.0)
+    }
+
+    async fn delete_cross_dag_dependency(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM cross_dag_dependencies WHERE id = $1")
+            .bind(id).execute(&self.pool).await.context("delete_cross_dag_dependency")?;
+        Ok(())
     }
 }

@@ -1,0 +1,91 @@
+id: rust_etl_pipeline
+schedule_interval: "0 */6 * * *"
+timezone: UTC
+max_active_runs: 2
+catchup: false
+sla_seconds: 3600
+tasks:
+  - id: extract_api_data
+    name: Extract API Data
+    type: bash
+    command: "echo 'Extracting data from REST API...'"
+    dependencies: []
+
+  - id: extract_db_snapshot
+    name: Extract DB Snapshot
+    type: bash
+    command: "echo 'Extracting database snapshot...'"
+    dependencies: []
+
+  - id: validate_api_data
+    name: Validate API Data
+    type: bash
+    command: "echo 'Validating API payload schema...'"
+    dependencies:
+      - extract_api_data
+
+  - id: validate_db_snapshot
+    name: Validate DB Snapshot
+    type: bash
+    command: "echo 'Validating DB snapshot integrity...'"
+    dependencies:
+      - extract_db_snapshot
+
+  - id: transform_merge
+    name: Transform & Merge
+    type: python
+    code: "print('Merging API + DB datasets...')"
+    dependencies:
+      - validate_api_data
+      - validate_db_snapshot
+
+  - id: data_quality_check
+    name: Data Quality Check
+    type: python
+    code: "print('Running data quality assertions...')"
+    dependencies:
+      - transform_merge
+
+  - id: load_warehouse
+    name: Load to Warehouse
+    type: bash
+    command: "echo 'Loading into data warehouse...'"
+    dependencies:
+      - data_quality_check
+
+  - id: load_cache
+    name: Load to Cache
+    type: bash
+    command: "echo 'Populating Redis cache layer...'"
+    dependencies:
+      - data_quality_check
+
+  - id: generate_report
+    name: Generate Report
+    type: python
+    code: "print('Generating ETL summary report...')"
+    dependencies:
+      - load_warehouse
+      - load_cache
+
+  - id: notify_stakeholders
+    name: Notify Stakeholders
+    type: bash
+    command: "echo 'Sending Slack + email notifications...'"
+    dependencies:
+      - generate_report
+
+  - id: archive_raw_data
+    name: Archive Raw Data
+    type: bash
+    command: "echo 'Archiving raw files to S3 Glacier...'"
+    dependencies:
+      - load_warehouse
+
+  - id: cleanup_staging
+    name: Cleanup Staging
+    type: bash
+    command: "echo 'Dropping staging tables...'"
+    dependencies:
+      - notify_stakeholders
+      - archive_raw_data

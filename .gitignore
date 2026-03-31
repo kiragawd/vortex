@@ -1,20 +1,43 @@
+# Rust build artifacts
 /target
+dummy_plugin/target/
+
+# Logs
+logs/
 *.log
+
+# Database
 vortex.db
+vortex.db-shm
+vortex.db-wal
+
+# Environment
+.env
 .env.local
+.env.*
+
+# Node
 node_modules/
 dist/
+package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
 *.swp
 *.swo
 .DS_Store
 .idea/
 *.iml
-vortex.db-shm
-vortex.db-wal
-*.pyc
+.vscode/
 
+# Test artifacts
 playwright-report/
 test-results/
-__pycache__/
-*.pyc
-ENTERPRISE_ARCHITECTURE_REPORT.md
+auth.json
+
+# Data directory
+data/

@@ -1,0 +1,17 @@
+{{- if eq .Values.dagStorage.type "pvc" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vortex.fullname" . }}-dags
+  labels:
+    {{- include "vortex.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.dagStorage.pvc.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.dagStorage.pvc.size }}
+  {{- if .Values.dagStorage.pvc.storageClass }}
+  storageClassName: {{ .Values.dagStorage.pvc.storageClass | quote }}
+  {{- end }}
+{{- end }}

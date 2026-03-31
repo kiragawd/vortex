@@ -54,9 +54,13 @@ impl LlmProvider for OpenAiProvider {
             return Err(anyhow!("OpenAI request failed: {}", status));
         }
 
-        let content = v["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
+        let content = v.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|msg| msg.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
             .to_string();
         Ok(CompletionResponse {
             content,
@@ -94,9 +98,12 @@ impl LlmProvider for AnthropicProvider {
         if !status.is_success() {
             return Err(anyhow!("Anthropic request failed: {}", status));
         }
-        let content = v["content"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
+        let content = v.get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|item| item.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
             .to_string();
         Ok(CompletionResponse {
             content,

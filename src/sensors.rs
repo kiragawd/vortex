@@ -275,8 +275,13 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
     };
     drop(cache); // Release lock before awaiting query
 
-    // Wrap user query as a subquery and count rows — we only care if ≥1 row exists.
-    let count_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_sensor_q", query);
+    // SECURITY: Reject queries with multiple statements or dangerous patterns
+    let trimmed = query.trim().trim_end_matches(';');
+    if trimmed.contains(';') {
+        warn!("🗄️  SqlSensor: query rejected — multiple statements not allowed");
+        return false;
+    }
+    let count_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_sensor_q", trimmed);
     match sqlx::query_scalar::<_, i64>(&count_query)
         .fetch_one(&pool)
         .await

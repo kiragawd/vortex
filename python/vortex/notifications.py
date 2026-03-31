@@ -68,7 +68,7 @@ def set_dag_callbacks(dag_id: str, config: dict):
         method="PUT",
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Failed to set callbacks: {e.read().decode()}") from e
@@ -97,7 +97,7 @@ def get_dag_callbacks(dag_id: str):
         headers={"Authorization": f"Bearer {api_key}"},
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError:
         return None
@@ -125,7 +125,7 @@ def delete_dag_callbacks(dag_id: str):
         method="DELETE",
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError:
         return None

@@ -1,8 +1,8 @@
 import { Page, expect } from '@playwright/test';
 
 /**
- * VORTEX Test Helpers
- * Utility functions for API calls, auth, and common operations
+ * VORTEX Test Helpers — React UI
+ * Utility functions for the new React/TypeScript/Vite UI at localhost:3000
  */
 
 export class VortexHelpers {
@@ -21,10 +21,10 @@ export class VortexHelpers {
     method: string = 'GET',
     body?: Record<string, unknown>
   ): Promise<unknown> {
-    const response = await this.page.request.fetch(path, {
+    const response = await this.page.request.fetch(`http://localhost:3000${path}`, {
       method,
       headers: {
-        'Authorization': this.apiKey,
+        Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
       data: body ? JSON.stringify(body) : undefined,
@@ -46,37 +46,50 @@ export class VortexHelpers {
    */
   async loginAsAdmin(): Promise<void> {
     this.apiKey = 'vortex_admin_key';
-    // Verify admin access
-    const response = await this.page.request.fetch('/api/dags', {
+    const response = await this.page.request.fetch('http://localhost:3000/api/dags', {
       headers: {
-        'Authorization': this.apiKey,
+        Authorization: `Bearer ${this.apiKey}`,
       },
     });
     expect(response.ok()).toBeTruthy();
   }
 
   /**
-   * Create a test DAG via API
+   * Navigate to a page via sidebar link
    */
-  async createTestDAG(dagId: string = `test_dag_${Date.now()}`): Promise<string> {
-    const payload = {
-      dag_id: dagId,
-      description: `Test DAG - ${new Date().toISOString()}`,
-      owner: 'test_user',
-      schedule_interval: '@daily',
-      is_paused: false,
-      tags: ['test'],
-    };
+  async navigateTo(href: string): Promise<void> {
+    await this.page.locator(`a[href="${href}"]`).click();
+    await this.page.waitForURL(`**${href}`, { timeout: 10000 });
+  }
 
-    // Note: This assumes a POST /api/dags endpoint exists
-    // If not, the test will fail gracefully
-    try {
-      await this.api('/api/dags', 'POST', payload);
-    } catch (e) {
-      console.log('Note: POST /api/dags not implemented, using existing DAGs for tests');
-    }
+  /**
+   * Navigate to a page and wait for heading text
+   */
+  async navigateAndExpectHeading(href: string, heading: string | RegExp): Promise<void> {
+    await this.navigateTo(href);
+    await expect(this.page.locator('h1')).toContainText(heading, { timeout: 10000 });
+  }
 
-    return dagId;
+  /**
+   * Fetch all DAGs from paginated API
+   */
+  async fetchDAGs(): Promise<Array<Record<string, unknown>>> {
+    const res = (await this.api('/api/dags')) as { data: Array<Record<string, unknown>> };
+    return res.data ?? [];
+  }
+
+  /**
+   * Fetch a specific DAG's tasks
+   */
+  async fetchDAGTasks(dagId: string): Promise<Record<string, unknown>> {
+    return (await this.api(`/api/dags/${encodeURIComponent(dagId)}/tasks`)) as Record<string, unknown>;
+  }
+
+  /**
+   * Fetch all secrets
+   */
+  async fetchSecrets(): Promise<Record<string, unknown>> {
+    return (await this.api('/api/secrets')) as Record<string, unknown>;
   }
 
   /**
@@ -90,166 +103,67 @@ export class VortexHelpers {
    * Delete a test secret
    */
   async deleteTestSecret(key: string): Promise<void> {
-    await this.api(`/api/secrets/${key}`, 'DELETE');
+    await this.api(`/api/secrets/${encodeURIComponent(key)}`, 'DELETE');
   }
 
   /**
-   * Create a test user
+   * Click the first DAG row in the table and wait for detail page
    */
-  async createTestUser(
-    username: string,
-    password: string,
-    role: string = 'Operator'
-  ): Promise<void> {
-    await this.api('/api/users', 'POST', {
-      username,
-      password: password,
-      role,
-    });
+  async clickFirstDagRow(): Promise<void> {
+    const dagRows = this.page.locator('table tbody tr');
+    await expect(dagRows.first()).toBeVisible({ timeout: 10000 });
+    await dagRows.first().click();
+    await this.page.waitForURL(/\/dags\/.+/);
   }
 
   /**
-   * Delete a test user
-   */
-  async deleteTestUser(username: string): Promise<void> {
-    await this.api(`/api/users/${username}`, 'DELETE');
-  }
-
-  /**
-   * Fetch all DAGs
-   */
-  async fetchDAGs(): Promise<Array<Record<string, unknown>>> {
-    return (await this.api('/api/dags')) as Array<Record<string, unknown>>;
-  }
-
-  /**
-   * Fetch a specific DAG's tasks
-   */
-  async fetchDAGTasks(dagId: string): Promise<Record<string, unknown>> {
-    return (await this.api(`/api/dags/${dagId}/tasks`)) as Record<string, unknown>;
-  }
-
-  /**
-   * Fetch all secrets
-   */
-  async fetchSecrets(): Promise<Record<string, unknown>> {
-    return (await this.api('/api/secrets')) as Record<string, unknown>;
-  }
-
-  /**
-   * Fetch all users
-   */
-  async fetchUsers(): Promise<Array<Record<string, unknown>>> {
-    return (await this.api('/api/users')) as Array<Record<string, unknown>>;
-  }
-
-  /**
-   * Wait for API call to complete
-   */
-  async waitForApiCall(path: string, method: string = 'GET'): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error(`API call timeout: ${method} ${path}`)),
-        5000
-      );
-
-      this.page.on('response', (response) => {
-        if (response.url().includes(path) && response.request().method() === method) {
-          clearTimeout(timeout);
-          response.json().then(resolve).catch(() => resolve(null));
-        }
-      });
-    });
-  }
-
-  /**
-   * Wait for a specific element with text
-   */
-  async waitForElementWithText(selector: string, text: string): Promise<void> {
-    await this.page.locator(`${selector}:has-text("${text}")`).waitFor({ timeout: 5000 });
-  }
-
-  /**
-   * Get all visible DAG cards from list
-   */
-  async getVisibleDAGCards(): Promise<number> {
-    return await this.page.locator('#dag-list > div').count();
-  }
-
-  /**
-   * Click on a DAG card by ID
-   */
-  async clickDAGCard(dagId: string): Promise<void> {
-    await this.page.locator(`#dag-list > div:has-text("${dagId}")`).click();
-  }
-
-  /**
-   * Check if detail view is visible
-   */
-  async isDetailViewVisible(): Promise<boolean> {
-    const detailDiv = this.page.locator('#view-details');
-    return await detailDiv.isVisible();
-  }
-
-  /**
-   * Check if secrets section is visible
-   */
-  async isSecretsSectionVisible(): Promise<boolean> {
-    return await this.page.locator('#view-secrets').isVisible();
-  }
-
-  /**
-   * Check if users section is visible
-   */
-  async isUsersSectionVisible(): Promise<boolean> {
-    return await this.page.locator('#view-users').isVisible();
-  }
-
-  /**
-   * Get current pause button text
-   */
-  async getPauseButtonText(): Promise<string> {
-    return await this.page.locator('#btn-pause').textContent() || '';
-  }
-
-  /**
-   * Get swarm status text
-   */
-  async getSwarmStatus(): Promise<string> {
-    return await this.page.locator('#swarm-status-badge').textContent() || '';
-  }
-
-  /**
-   * Toggle swarm panel
-   */
-  async toggleSwarmPanel(): Promise<void> {
-    await this.page.click('[id="swarm-panel"] > div');
-  }
-
-  /**
-   * Check if swarm details are visible
-   */
-  async areSwarmDetailsVisible(): Promise<boolean> {
-    const details = this.page.locator('#swarm-details');
-    return await details.isVisible();
-  }
-
-  /**
-   * Get visible element count by selector
-   */
-  async getElementCount(selector: string): Promise<number> {
-    return await this.page.locator(selector).count();
-  }
-
-  /**
-   * Wait for loading to complete (look for spinners/placeholders)
+   * Wait for loading to complete (spinners gone, network idle)
    */
   async waitForLoadingComplete(): Promise<void> {
     await this.page.waitForLoadState('networkidle');
-    // Also wait for any animate-pulse to finish
-    await this.page.locator('.animate-pulse').first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {
-      // Some pages might not have pulse elements
-    });
+    // Wait for any spinners to disappear
+    await this.page
+      .locator('.animate-spin')
+      .first()
+      .waitFor({ state: 'hidden', timeout: 10000 })
+      .catch(() => {
+        // Some pages might not have spinners
+      });
+  }
+
+  /**
+   * Get count of table rows in the main content area
+   */
+  async getTableRowCount(): Promise<number> {
+    return await this.page.locator('table tbody tr').count();
+  }
+
+  /**
+   * Check if sidebar is visible
+   */
+  async isSidebarVisible(): Promise<boolean> {
+    return await this.page.locator('aside').isVisible();
+  }
+
+  /**
+   * Toggle the sidebar via header button
+   */
+  async toggleSidebar(): Promise<void> {
+    await this.page.locator('button[aria-label="Toggle sidebar"]').click();
+  }
+
+  /**
+   * Toggle dark mode via header button
+   */
+  async toggleTheme(): Promise<void> {
+    await this.page.locator('button[aria-label="Toggle theme"]').click();
+  }
+
+  /**
+   * Check if dark mode is active
+   */
+  async isDarkMode(): Promise<boolean> {
+    return await this.page.locator('html.dark').count() > 0;
   }
 }
 

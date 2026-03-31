@@ -187,7 +187,18 @@ Open **http://localhost:3000** for the built-in dashboard featuring:
 - Monthly schedule Calendar
 - Side-by-side version diffing and rollbacks
 - Audit logging (Accountability trail)
-- Prometheus metrics endpoint (`/metrics`)
+- Prometheus metrics endpoint (`/metrics` on the HTTP port, e.g., `http://localhost:8080/metrics`)
+
+### Prometheus Configuration
+
+Ensure your `prometheus.yml` scrape target points to the Vortex controller's HTTP port:
+
+```yaml
+scrape_configs:
+  - job_name: "vortex"
+    static_configs:
+      - targets: ["controller:8080"]  # Use hostname:port in Docker, localhost:8080 for local dev
+```
 
 ### Server Logs
 
@@ -274,7 +285,7 @@ To use AI-assisted migration for converting Airflow DAGs or dbt projects to nati
    vortex-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
    ```
 
-See the [Migration Guide](./MIGRATION_GUIDE.md) for full details on flags, validation, and phased cutover.
+See the [Migration Guide](./MIGRATION_GUIDE.md) for full details on flags, validation, and cutover strategy.
 
 ---
 
@@ -336,7 +347,7 @@ VORTEX workers currently connect to the controller's gRPC port over **plaintext 
 - [Architecture](./ARCHITECTURE.md) — System design
 - [API Reference](./API_REFERENCE.md) — REST API endpoints
 - [CLI Reference](./CLI_REFERENCE.md) — CLI commands
-- [Python Integration](./PHASE_2_PYTHON_INTEGRATION.md) — DAG authoring
-- [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Secret management
-- [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery on worker failure
+- [Python Integration](./PYTHON_INTEGRATION.md) — DAG authoring
+- [Secrets Vault](./SECRETS_VAULT.md) — Secret management
+- [Resilience](./RESILIENCE.md) — Auto-recovery on worker failure
 - [High Availability](./high-availability.md) — HA deployment

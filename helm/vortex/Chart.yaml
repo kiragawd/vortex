@@ -1,0 +1,13 @@
+apiVersion: v2
+name: vortex
+description: Vortex — Enterprise-Grade Workflow Orchestration Platform
+type: application
+version: 0.6.0
+appVersion: "0.6.0"
+keywords:
+  - orchestration
+  - workflow
+  - scheduler
+  - data-pipeline
+maintainers:
+  - name: Vortex Team

@@ -82,7 +82,7 @@ def xcom_push(key: str, value, dag_id: str = None, task_id: str = None, run_id: 
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"XCom push failed: {e.read().decode()}") from e
@@ -135,7 +135,7 @@ def xcom_pull(
     )
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
             raw = data.get("value")
             if raw is not None:
@@ -175,7 +175,7 @@ def xcom_pull_all(dag_id: str = None, run_id: str = None):
     url = f"{base_url}/api/dags/{dag_id}/runs/{run_id}/xcom"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError:
         return []

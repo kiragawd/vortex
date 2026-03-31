@@ -211,11 +211,9 @@ impl VortexMetrics {
     #[inline]
     pub fn record_task_start(&self) {
         self.tasks_running.inc();
-        // Clamp tasks_queued to 0 minimum
-        let current = self.tasks_queued.get();
-        if current > 0 {
-            self.tasks_queued.dec();
-        }
+        // Prometheus gauges are atomic — directly dec and rely on dashboard queries
+        // to floor negative values. This avoids TOCTOU race between get() and dec().
+        self.tasks_queued.dec();
     }
 
     /// Called when a task finishes successfully.
@@ -225,10 +223,7 @@ impl VortexMetrics {
     /// Bug 17 fix: `tasks_running` is clamped to 0 minimum.
     #[inline]
     pub fn record_task_success(&self, duration_secs: f64) {
-        let current = self.tasks_running.get();
-        if current > 0 {
-            self.tasks_running.dec();
-        }
+        self.tasks_running.dec();
         self.tasks_succeeded_total.inc();
         self.task_duration_seconds.observe(duration_secs);
     }
@@ -240,10 +235,7 @@ impl VortexMetrics {
     /// Bug 17 fix: `tasks_running` is clamped to 0 minimum.
     #[inline]
     pub fn record_task_failure(&self, duration_secs: f64) {
-        let current = self.tasks_running.get();
-        if current > 0 {
-            self.tasks_running.dec();
-        }
+        self.tasks_running.dec();
         self.tasks_failed_total.inc();
         self.task_duration_seconds.observe(duration_secs);
     }

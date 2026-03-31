@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use tracing::{info, warn};
 use tonic::{Request, Response, Status};
 use std::sync::Arc;
@@ -32,11 +33,11 @@ pub struct PendingTask {
     pub task_id: String,
     pub command: String,
     pub dag_run_id: String,
-    pub task_type: String,      // Phase 2.5
-    pub config_json: String,    // Phase 2.5
-    pub max_retries: i32,       // Phase 2.5
-    pub retry_delay_secs: i32,  // Phase 2.5
-    pub required_secrets: Vec<String>, // Pillar 3
+    pub task_type: String,
+    pub config_json: String,
+    pub max_retries: i32,
+    pub retry_delay_secs: i32,
+    pub required_secrets: Vec<String>,
     pub execution_timeout_secs: i32,  // BUG-16: Per-task timeout
 }
 
@@ -44,8 +45,8 @@ pub struct SwarmState {
     pub workers: RwLock<HashMap<String, WorkerState>>,
     pub task_queue: RwLock<Vec<PendingTask>>,
     pub db: Arc<dyn DatabaseBackend>,
-    pub vault: Option<Arc<Vault>>, // Pillar 3
-    pub metrics: Option<Arc<crate::metrics::VortexMetrics>>, // Phase 3
+    pub vault: Option<Arc<Vault>>,
+    pub metrics: Option<Arc<crate::metrics::VortexMetrics>>,
     pub enabled: bool,
 }
 
@@ -111,7 +112,7 @@ impl SwarmState {
     pub async fn health_check_cycle(&self) {
         if !self.enabled { return; }
 
-        // Phase 3 Metrics
+        // Metrics
         if let Some(m) = &self.metrics {
             m.set_workers_active(self.active_worker_count().await as i64);
             m.set_queue_depth(self.queue_depth().await as i64);
@@ -145,6 +146,7 @@ impl SwarmState {
                                     required_secrets: vec![], // Resolved at poll time
                                     execution_timeout_secs: 0,  // BUG-16: not available in re-queue path, worker uses default
                                 });
+                                warn!("Task re-queued without original execution_timeout_secs — using default");
                             }
                         }
                         let _ = self.db.clear_worker_id_from_queued_tasks(&worker_id).await;
@@ -169,7 +171,7 @@ impl SwarmController for SwarmService {
         let mut workers = self.state.workers.write().await;
         info!("🐝 Swarm: Worker registered: {}", info.worker_id);
         
-        // Pillar 4: Persistent Worker State
+        // Persistent Worker State
         let labels_str = info.labels.join(",");
         let _ = self.state.db.upsert_worker(&info.worker_id, &info.hostname, info.capacity, &labels_str).await;
 
@@ -184,7 +186,7 @@ impl SwarmController for SwarmService {
         let hb = request.into_inner();
         let mut workers = self.state.workers.write().await;
         
-        // Pillar 4: DB Heartbeat
+        // DB Heartbeat
         let _ = self.state.db.update_worker_heartbeat(&hb.worker_id, hb.active_tasks).await;
 
         let should_drain = if let Some(worker) = workers.get_mut(&hb.worker_id) {
@@ -203,22 +205,36 @@ impl SwarmController for SwarmService {
         let mut tasks = Vec::new();
         for t in queue.drain(..count) {
             info!("🐝 Swarm: Dispatching {}/{} to worker {}", t.dag_id, t.task_id, poll.worker_id);
-            // Pillar 4: Assign task to worker in DB
+            // Assign task to worker in DB
             let _ = self.state.db.assign_task_to_worker(&t.task_instance_id, &poll.worker_id).await;
             let _ = self.state.db.log_task_event(&t.task_instance_id, &t.dag_id, &t.task_id, &t.dag_run_id, "started", None, Some(&poll.worker_id)).await;
 
             if let Some(m) = &self.state.metrics { m.record_task_start(); }
 
-            // Pillar 3: Resolve and Decrypt Secrets
+            // Resolve and Decrypt Secrets
             let mut resolved_secrets = HashMap::new();
+            let mut secret_errors: Vec<String> = Vec::new();
             if let Some(vault) = &self.state.vault {
-                for secret_key in t.required_secrets {
-                    if let Ok(Some(encrypted)) = self.state.db.get_secret(&secret_key).await {
-                        if let Ok(decrypted) = vault.decrypt(&encrypted) {
-                            resolved_secrets.insert(secret_key, decrypted);
+                for secret_key in &t.required_secrets {
+                    match self.state.db.get_secret(secret_key).await {
+                        Ok(Some(encrypted)) => {
+                            match vault.decrypt(&encrypted) {
+                                Ok(decrypted) => { resolved_secrets.insert(secret_key.clone(), decrypted); }
+                                Err(e) => { secret_errors.push(format!("{}: decryption failed: {}", secret_key, e)); }
+                            }
                         }
+                        Ok(None) => { secret_errors.push(format!("{}: not found in vault", secret_key)); }
+                        Err(e) => { secret_errors.push(format!("{}: lookup failed: {}", secret_key, e)); }
                     }
                 }
+            }
+            if !secret_errors.is_empty() {
+                warn!(task = %t.task_id, dag = %t.dag_id, "Failed to resolve required secrets: {:?}", secret_errors);
+                let _ = self.state.db.log_task_event(
+                    &t.task_instance_id, &t.dag_id, &t.task_id, &t.dag_run_id,
+                    "failed", Some(&format!("Secret resolution failed: {}", secret_errors.join(", "))), None
+                ).await;
+                continue; // Skip this task — don't dispatch without its secrets
             }
 
             tasks.push(TaskAssignment {
@@ -257,7 +273,7 @@ impl SwarmController for SwarmService {
             if let Some(m) = &self.state.metrics { m.record_task_success(result.duration_ms as f64 / 1000.0); }
         }
 
-        // Phase 2.5: Retry Logic
+        // Retry Logic
         if !result.success {
             let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "failed", Some("Task failed on worker"), Some(&result.worker_id)).await;
             if let Some(m) = &self.state.metrics { m.record_task_failure(result.duration_ms as f64 / 1000.0); }
@@ -292,6 +308,7 @@ impl SwarmController for SwarmService {
                                 required_secrets,
                                 execution_timeout_secs: 0,  // BUG-16: not available in retry path, worker uses default
                             }).await;
+                            warn!("Task re-queued without original execution_timeout_secs — using default");
                         }
                     });
                 }

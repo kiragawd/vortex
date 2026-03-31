@@ -285,17 +285,17 @@ pub async fn send_notification(
             match mailer.send(email).await {
                 Ok(_) => {
                     info!(smtp_host = %smtp_host, to = ?to, "email notification sent");
+                    Ok(())
                 }
                 Err(e) => {
-                    warn!(
+                    error!(
                         smtp_host = %smtp_host,
                         error = %e,
-                        "email notification may have failed (best effort)"
+                        "email notification failed"
                     );
-                    // Don't hard-error on email — it's best effort.
+                    Err(anyhow!("email send via {} failed: {}", smtp_host, e))
                 }
             }
-            Ok(())
         }
     }
 }

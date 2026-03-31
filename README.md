@@ -93,15 +93,35 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 - **Task Pools** — Concurrency-limiting resource pools for shared resources
 - **Webhook Callbacks** — Configurable notifications on success/failure/retry/SLA miss (Webhook, Slack, Email)
 
-### Web Dashboard (Built-in)
+### Web Dashboard
+- **React SPA** — React 18 + TypeScript + Vite 5 with Tailwind CSS, dark/light mode
 - **Visual DAG graphs** — Interactive D3.js + Dagre dependency visualization
+- **14 pages** — Dashboard, DAGs, Runs, Compliance, RBAC, Monitoring, Settings, Swarm, Lineage, Connectors, Events, and more
 - **Status Aggregation** — Real-time state coloring for Task Groups and DAGs
 - **Run History** — Collapsible accordion with per-run graph snapshots
 - **Code Editor** — In-browser DAG source editing with live re-parse
 - **Audit Log** — Comprehensive trail of user actions (logins, triggers, DAG updates)
 - **Temporal Analysis** — Gantt charts for execution bottlenecks and Calendar for scheduling
-- **RBAC** — Admin / Operator / Viewer role-based access control
-- **Team Isolation** — Multi-tenant support with per-team quotas and RBAC
+
+### Authentication & Access Control
+- **Local auth** — Username/password with bcrypt hashing
+- **OIDC** — OpenID Connect integration (Okta, Azure AD, PingIdentity)
+- **Fine-grained RBAC** — Role-based permissions with resource-level scoping
+- **API token scoping** — Tokens restricted by action/resource with wildcard matching
+- **IP allowlisting** — CIDR-based network access control (IPv4/IPv6)
+- **Team isolation** — Multi-tenant support with per-team quotas and resource partitioning
+
+### Compliance & Governance
+- **Audit logging** — Detailed event tracking for all user and system actions
+- **Approval workflows** — DAG change approval gates for change management
+- **Retention policies** — Configurable time/count-based retention for logs and history
+- **Compliance tracking** — SOC 2, GDPR, HIPAA control mapping
+
+### Observability
+- **Data lineage** — OpenLineage-compliant event emission (HTTP and log emitters)
+- **Incident management** — PagerDuty integration with trigger/acknowledge/resolve
+- **OpenTelemetry** — W3C TraceContext propagation and span builders
+- **Prometheus metrics** — Built-in `/metrics` endpoint for Grafana dashboards
 
 ### Distributed Execution (Swarm)
 - **gRPC worker protocol** — Workers register, poll, execute, and report via Protobuf
@@ -134,19 +154,17 @@ For true active-standby High Availability (HA) across multiple machines, VORTEX 
 
 See the [High Availability Guide](./docs/high-availability.md) for full setup instructions and architectural details.
 
-## Current Limitations & Roadmap
+## Current Limitations & Future Enhancements
 
-While VORTEX provides a highly performant execution engine, it intentionally foregoes some of the larger ecosystem features found in legacy orchestrators like Airflow. The following features are currently missing or planned for future releases:
+While VORTEX provides a comprehensive orchestration platform, some features are scaffolded for future completion:
 
-- **Provider/Connector Ecosystem:** VORTEX ships with native enterprise connectors for PostgreSQL, Snowflake, Databricks, MySQL, MS SQL, and dbt. Additional cloud-native integrations (AWS, GCP, etc.) can be added via the `EnterpriseConnector` trait or the plugin system.
-- **Dataset-Triggered Scheduling:** Data-aware scheduling and Dataset triggers are not currently implemented, but are on the **Roadmap**.
-- **Dynamic Task Mapping:** Runtime task fan-out (e.g., `task.expand()`) is not yet supported. Static DAGs cover the vast majority of use cases; dynamic mapping is on the **Roadmap**.
-- **Authentication (SSO/LDAP):** Authentication is handled natively via API keys, which is appropriate for a v1 OSS release. OAuth 2.0, SAML, and LDAP integrations are not included.
-- **Kubernetes Executor:** VORTEX scales horizontally via its built-in gRPC Swarm (Worker/Controller pattern), which efficiently manages multi-node workloads. A native pod-per-task K8s executor is considered **v2 territory**.
-- **Quality of Life Enhancements:** 
-  - **Data Lineage:** OpenLineage / Atlas integrations are not supported.
-  - **Connection UI:** connection management is scoped to the Secrets Vault; named connections with UI builder are not implemented.
-  - **Custom Timetables:** Schedules rely on cron and standard presets rather than custom timetable classes.
+- **Kubernetes Executor:** Pod spec generation is implemented, but full `kube-rs` client integration for pod submission and status polling is pending. VORTEX scales horizontally via its built-in gRPC Swarm in the meantime.
+- **SSO (SAML/LDAP):** Local and OIDC authentication are functional. SAML and LDAP providers have configuration types defined but lack full provider implementations.
+- **Disaster Recovery:** Backup metadata tracking and failover types exist, but end-to-end backup I/O and automated restore are not yet operational.
+- **OpenTelemetry Export:** W3C TraceContext propagation and span types are complete but the OTLP exporter (HTTP/gRPC sender) is not yet wired.
+- **Dynamic Task Mapping:** Runtime task fan-out (e.g., `task.expand()`) has expand/reduce logic but is not fully integrated with the scheduler loop.
+- **Connection UI:** Connection management is scoped to the Secrets Vault; named connections with a UI builder are not implemented.
+- **Custom Timetables:** Schedules rely on cron and standard presets rather than custom timetable classes.
 
 ## Getting Started
 
@@ -235,57 +253,103 @@ Run `vortex-cli --help` for full command reference. See [CLI Reference](./docs/C
 
 VORTEX uses PostgreSQL with the following tables:
 
+**Core:**
 - **`dags`** — DAG definitions, schedule, team assignment, pause state
 - **`tasks`** — Task definitions (id, command, type, config, group, timeout, retry)
 - **`task_instances`** — Execution records with state, logs, duration, run_id, worker_id
 - **`dag_runs`** — Run records with state, triggered_by, timestamps
 - **`dag_versions`** — Snapshots linking DAGs to source files for rollbacks
-- **`audit_log`** — Permanent trail of security and operational events
 - **`workers`** — Worker registrations, heartbeats, capacity
-- **`users`** — RBAC user accounts with API keys and team IDs
-- **`teams`** — Multi-tenancy isolation with resource quotas
 - **`secrets`** — AES-256-GCM encrypted key-value secrets
 - **`task_xcom`** — Cross-task communication key-value store
-- **`pools`** — Concurrency-limiting resource pools
-- **`pool_slots`** — Active slot allocations for pools
+- **`pools`** / **`pool_slots`** — Concurrency-limiting resource pools
+
+**IAM & Access Control:**
+- **`users`** — User accounts with bcrypt-hashed passwords and team IDs
+- **`teams`** — Multi-tenancy isolation with resource quotas
+- **`auth_providers`** — OIDC/SAML/LDAP/Local provider configurations
+- **`user_sessions`** — SSO session tracking with token storage
+- **`rbac_permissions`** / **`rbac_roles`** / **`rbac_role_permissions`** / **`rbac_user_roles`** — Permission matrix
+- **`api_tokens`** — Scoped API tokens with hash verification and expiry
+- **`ip_allowlist`** — CIDR-based network access rules
+
+**Compliance & Governance:**
+- **`audit_log`** — Permanent trail of security and operational events
+- **`approval_gates`** / **`approval_requests`** — Change management workflow
+- **`retention_policies`** — Data retention configuration
+- **`compliance_controls`** — Regulatory control mapping (SOC 2, GDPR, etc.)
 - **`dag_callbacks`** — Per-DAG webhook/notification configuration
+
+**Observability:**
+- **`lineage_events`** / **`lineage_datasets`** — OpenLineage data tracking
+- **`incident_configs`** — PagerDuty/Opsgenie/Datadog alert configuration
+
+**Scheduling:**
+- **`datasets`** / **`dataset_events`** / **`dataset_triggers`** — Data-aware scheduling
+- **`cross_dag_dependencies`** — Cross-DAG dependency management
+- **`task_map_templates`** — Dynamic task mapping configuration
 
 ## Project Structure
 
 ```
 vortex/
 ├── src/
-│   ├── main.rs           # Entry point, CLI parsing, orchestration loop
-│   ├── scheduler.rs      # DAG/Task structs, dependency-aware scheduler
-│   ├── db_trait.rs       # Unified database abstraction trait
-│   ├── db_postgres.rs    # PostgreSQL implementation
-│   ├── web.rs            # Axum REST API + static asset serving
-│   ├── swarm.rs          # gRPC Swarm controller
-│   ├── worker.rs         # gRPC Swarm worker
-│   ├── proto.rs          # Consolidated gRPC definitions
-│   ├── executor.rs       # Plugin-based task execution (bash/python/http)
-│   ├── vault.rs          # AES-256-GCM encryption for secrets
-│   ├── python_parser.rs  # PyO3 + Dynamic DAG logic
-│   ├── dag_factory.rs    # YAML/JSON DAG generation
-│   ├── metrics.rs        # Prometheus instrumentation
-│   ├── xcom.rs           # Cross-task communication (XCom)
-│   ├── pools.rs          # Task pool management
-│   ├── airflow_ast_parser.rs # Static Python AST parser for Airflow DAGs
-│   ├── dag_codegen.rs    # Rust DAG code generator from parsed AST
+│   ├── main.rs               # Entry point, CLI parsing, orchestration loop
+│   ├── lib.rs                 # Library exports
+│   ├── scheduler.rs           # DAG/Task structs, dependency-aware scheduler
+│   ├── advanced_scheduler.rs  # Dataset triggers, cross-DAG deps, dynamic mapping
+│   ├── db_trait.rs            # Unified database abstraction trait
+│   ├── db_postgres.rs         # PostgreSQL implementation
+│   ├── web.rs                 # Axum REST API + static asset serving
+│   ├── swarm.rs               # gRPC Swarm controller
+│   ├── worker.rs              # gRPC Swarm worker
+│   ├── proto.rs               # Consolidated gRPC definitions
+│   ├── executor.rs            # Plugin-based task execution (bash/python/http)
+│   ├── vault.rs               # AES-256-GCM encryption for secrets
+│   ├── python_parser.rs       # PyO3 + Dynamic DAG logic
+│   ├── dag_factory.rs         # YAML/JSON DAG generation
+│   ├── metrics.rs             # Prometheus instrumentation
+│   ├── xcom.rs                # Cross-task communication (XCom)
+│   ├── pools.rs               # Task pool management
+│   ├── auth.rs                # SSO/OIDC/SAML/LDAP authentication
+│   ├── rbac.rs                # Fine-grained RBAC, API tokens, IP allowlisting
+│   ├── compliance.rs          # Audit logging, approval workflows, retention
+│   ├── lineage.rs             # OpenLineage data lineage emission
+│   ├── incident.rs            # PagerDuty/Opsgenie/Datadog incident triggers
+│   ├── telemetry.rs           # OpenTelemetry tracing and APM
+│   ├── openapi.rs             # OpenAPI 3.1 spec generation
+│   ├── connectors.rs          # Core connector implementations (Postgres, Snowflake, Databricks, dbt, MySQL, MSSQL)
+│   ├── cloud_connectors.rs    # Cloud connectors (BigQuery, Redshift, Kafka, S3, GCS)
 │   ├── enterprise_connector.rs # Unified connector trait and registry
-│   ├── connectors.rs     # Connector implementations (Postgres, Snowflake, Databricks, dbt, MySQL, MSSQL)
-│   ├── agentic.rs        # LLM-assisted migration (OpenAI/Anthropic providers)
-│   ├── sensors.rs        # SQL/HTTP sensor operators
-│   ├── notifications.rs  # Webhook/Slack/Email callback notifications
-│   └── lib.rs            # Library exports
-├── python/vortex/        # Python Airflow-compatibility shim
-├── assets/index.html     # Single-file Web Dashboard (D3 + Dagre)
-├── plugins/              # Dynamic .so/.dylib operator plugins
-├── migrations/           # SQLx database migration scripts
-├── dags/                 # DAG files (auto-loaded on startup)
-├── proto/                # gRPC Protobuf definitions
-├── tests/                # Unit + integration tests
-└── docs/                 # Full documentation
+│   ├── airflow_ast_parser.rs  # Static Python AST parser for Airflow DAGs
+│   ├── dag_codegen.rs         # Rust DAG code generator from parsed AST
+│   ├── agentic.rs             # LLM-assisted migration (OpenAI/Anthropic)
+│   ├── migration.rs           # TWS/Autosys JIL parsers and migration CLI
+│   ├── sensors.rs             # SQL/HTTP sensor operators
+│   ├── notifications.rs       # Webhook/Slack/Email callback notifications
+│   ├── event_framework.rs     # Event bus, webhook receiver, sensor registry
+│   ├── k8s_executor.rs        # Kubernetes pod-per-task executor
+│   ├── disaster_recovery.rs   # Backup/restore, failover orchestration
+│   ├── config_ops.rs          # Configuration management, feature flags
+│   ├── devops.rs              # Git-sync, CI/CD pipeline tooling
+│   ├── sdk.rs                 # Plugin SDK scaffolding and marketplace
+│   └── bin/                   # CLI binary entry points
+├── ui/                        # React 18 + TypeScript + Vite 5 SPA
+│   ├── src/                   # Components, pages, stores, API clients
+│   ├── package.json           # Node dependencies
+│   └── vite.config.ts         # Build configuration
+├── python/vortex/             # Python Airflow-compatibility shim
+├── assets/                    # Compiled static assets (embedded via rust-embed)
+├── plugins/                   # Dynamic .so/.dylib operator plugins
+├── migrations/                # PostgreSQL migration scripts
+├── dags/                      # DAG files (auto-loaded on startup)
+├── proto/                     # gRPC Protobuf definitions
+├── helm/vortex/               # Helm chart for Kubernetes deployment
+├── tests/                     # Unit + integration + E2E tests
+├── docs/                      # Documentation
+├── Dockerfile                 # Multi-stage production build
+├── docker-compose.yml         # Local dev stack (Vortex + PostgreSQL + Prometheus)
+└── prometheus.yml             # Prometheus scrape configuration
 ```
 
 ## Documentation
@@ -294,13 +358,13 @@ vortex/
 - **[API Reference](./docs/API_REFERENCE.md)** — Complete REST API with examples
 - **[CLI Reference](./docs/CLI_REFERENCE.md)** — CLI command reference
 - **[Deployment Guide](./docs/DEPLOYMENT.md)** — Build, configure, and run in production
-- **[Python Integration](./docs/PHASE_2_PYTHON_INTEGRATION.md)** — DAG authoring with Python
-- **[Secrets Vault](./docs/PILLAR_3_SECRETS_VAULT.md)** — Encrypted secret management
-- **[Resilience](./docs/PILLAR_4_RESILIENCE.md)** — Auto-recovery and health monitoring
+- **[Python Integration](./docs/PYTHON_INTEGRATION.md)** — DAG authoring with Python
+- **[Secrets Vault](./docs/SECRETS_VAULT.md)** — Encrypted secret management
+- **[Resilience](./docs/RESILIENCE.md)** — Auto-recovery and health monitoring
 - **[Plugins](./docs/PLUGINS.md)** — Custom operator development
 - **[High Availability](./docs/high-availability.md)** — HA deployment with leader election
 - **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow-to-Vortex DAG migration
-- **[Connector API](./docs/CONNECTOR_API.md)** — Enterprise connector trait and implementations
+- **[Connector API](./docs/CONNECTOR_API.md)** — Connector trait and implementations
 
 ## Testing
 

@@ -15,7 +15,13 @@ mod db_tests {
     /// Returns None if `DATABASE_URL` is not set, allowing tests to be skipped
     /// gracefully in CI environments without a live database.
     async fn try_postgres_db() -> Option<std::sync::Arc<vortex::db_postgres::PostgresDb>> {
-        let url = std::env::var("DATABASE_URL").ok()?;
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(u) => u,
+            Err(_) => {
+                eprintln!("SKIPPING: DATABASE_URL not set — db tests require a live database");
+                return None;
+            }
+        };
         let db = vortex::db_postgres::PostgresDb::new(
             &url, 2, 1, std::time::Duration::from_secs(30),
         )

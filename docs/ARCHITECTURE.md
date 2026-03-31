@@ -53,11 +53,14 @@ VORTEX uses PostgreSQL as its primary (and only production) database, accessed t
 
 ### 4. Web Dashboard
 
-Single-page application embedded in the binary via `rust-embed`:
+Enterprise single-page application embedded in the binary via `rust-embed`:
 
-- **Technology:** Vanilla JavaScript + Tailwind CSS + D3.js + Dagre-D3
-- **Features:** Visual DAG graphs, Gantt timelines, calendar views, rollbacks, secret/user/team management
-- **Auth:** Login form → API key stored in `localStorage`
+- **Technology:** React 18 + TypeScript + Vite 5 + Tailwind CSS 3.4
+- **State Management:** Zustand for global state, TanStack React Query for server state
+- **Features:** Dark/light theme toggle, DAG management, run monitoring, compliance dashboard, RBAC management, monitoring, settings
+- **SPA Routing:** React Router v6 with server-side fallback (serves `index.html` for all non-API, non-file paths)
+- **Auth:** Login form → API token stored in Zustand/localStorage
+- **Pages:** Dashboard, DAGs, DAG Detail, Runs, Compliance, RBAC, Monitoring, Settings
 - **RBAC:** Admin sees all DAGs; Operator/Viewer with a `team_id` sees only their team's DAGs; Operator/Viewer with no team sees only unassigned DAGs (Bug #14 fix)
 - **Auto-refresh:** 5-second polling for DAG status and Swarm health
 ### 5. Enterprise Connector Subsystem
@@ -218,9 +221,9 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 - [API Reference](./API_REFERENCE.md) — Complete REST API documentation
 - [CLI Reference](./CLI_REFERENCE.md) — CLI command reference
 - [Deployment Guide](./DEPLOYMENT.md) — Build, configure, and run
-- [Python Integration](./PHASE_2_PYTHON_INTEGRATION.md) — DAG authoring
-- [Secrets Vault](./PILLAR_3_SECRETS_VAULT.md) — Encrypted secrets
-- [Resilience](./PILLAR_4_RESILIENCE.md) — Auto-recovery
+- [Python Integration](./PYTHON_INTEGRATION.md) — DAG authoring
+- [Secrets Vault](./SECRETS_VAULT.md) — Encrypted secrets
+- [Resilience](./RESILIENCE.md) — Auto-recovery
 - [High Availability](./high-availability.md) — HA deployment with leader election
 - [Migration Guide](./MIGRATION_GUIDE.md) — Airflow-to-Vortex DAG migration
 - [Connector API](./CONNECTOR_API.md) — Enterprise connector trait and implementations
