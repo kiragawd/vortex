@@ -31,6 +31,21 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  # ─── Database Migrations (init container — runs once, then exits) ──────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["vortex", "db", "--migrate"]
+    environment:
+      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD}@postgres:5432/vortex
+      VORTEX_SECRET_KEY: ${VORTEX_SECRET_KEY:-change_me_32_char_secret_key_000}
+      RUST_LOG: vortex=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   # ─── Vortex Controller ──────────────────────────────────────────────────
   controller:
     build:
@@ -47,12 +62,20 @@ services:
       VORTEX_LOG_LEVEL: info
       VORTEX_LOG_FORMAT: json
       RUST_LOG: vortex=info
+      # Migrations already applied by the `migrate` init service above
+      VORTEX_SKIP_AUTO_MIGRATE: "true"
+      # Allow Python DAG files to be loaded via PyO3.
+      # These DAGs are trusted developer-owned files mounted read-only from ./dags.
+      # Do NOT set this if dag files come from untrusted external sources.
+      VORTEX_ALLOW_PYTHON_DAGS: "true"
     ports:
       - "3000:3000"     # HTTP API & Web UI
       - "50051:50051"   # gRPC swarm
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 15s
@@ -87,6 +110,8 @@ services:
       VORTEX_LOG_LEVEL: info
       VORTEX_LOG_FORMAT: json
       RUST_LOG: vortex=info
+      # Migrations already applied by the `migrate` init service
+      VORTEX_SKIP_AUTO_MIGRATE: "true"
     depends_on:
       controller:
         condition: service_healthy

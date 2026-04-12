@@ -11,7 +11,7 @@ import { showToast } from '../components/Toast';
 export function DagsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: dags = [], isLoading } = useQuery({ queryKey: ['dags'], queryFn: dagsApi.list });
+  const { data: dags = [], isLoading, isError, error } = useQuery({ queryKey: ['dags'], queryFn: dagsApi.list });
   const [triggerTarget, setTriggerTarget] = useState<string | null>(null);
 
   const triggerMutation = useMutation({
@@ -80,6 +80,11 @@ export function DagsPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+        </div>
+      ) : isError ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/20 dark:text-red-400">
+          <p className="font-semibold">Failed to load DAGs</p>
+          <p className="mt-1 opacity-75">{String(error)}</p>
         </div>
       ) : (
         <DataTable

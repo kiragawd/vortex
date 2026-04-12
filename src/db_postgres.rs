@@ -97,10 +97,18 @@ impl PostgresDb {
 
     /// Create all tables via migrations.
     async fn init(&self) -> Result<()> {
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
-            .await
-            .context("Failed to run PostgreSQL migrations")?;
+        // Allow Docker / production deployments to skip automatic migrations
+        // when a dedicated `migrate` init-container has already applied them.
+        let skip_migrate = std::env::var("VORTEX_SKIP_AUTO_MIGRATE")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
+        if !skip_migrate {
+            sqlx::migrate!("./migrations")
+                .run(&self.pool)
+                .await
+                .context("Failed to run PostgreSQL migrations")?;
+        }
 
         // ── Sprint 2: Create task_events table if no migration exists yet ───────
         sqlx::query(
@@ -158,6 +166,51 @@ impl PostgresDb {
             .await
             .context("Failed to seed admin user")?;
         }
+
+        // Seed RBAC permissions (idempotent — safety net for existing DBs that
+        // ran migration 002 before seed data was added to the file).
+        sqlx::query(
+            "INSERT INTO rbac_permissions (id, name, description, category) VALUES
+                 ('perm_dag_read',     'dag.read',          'View DAGs and their runs',      'dag'),
+                 ('perm_dag_write',    'dag.write',         'Create and modify DAGs',        'dag'),
+                 ('perm_dag_execute',  'dag.execute',       'Trigger DAG runs',              'dag'),
+                 ('perm_dag_delete',   'dag.delete',        'Delete DAGs',                   'dag'),
+                 ('perm_admin_users',  'admin.users',       'Manage users and roles',        'admin'),
+                 ('perm_admin_system', 'admin.system',      'System configuration',          'admin'),
+                 ('perm_secrets_read', 'secrets.read',      'Read secrets (masked)',         'secrets'),
+                 ('perm_secrets_write','secrets.write',     'Create and update secrets',     'secrets'),
+                 ('perm_conn_read',    'connectors.read',   'View connectors',               'connectors'),
+                 ('perm_conn_write',   'connectors.write',  'Manage connectors',             'connectors'),
+                 ('perm_audit_read',   'audit.read',        'View audit logs',               'compliance'),
+                 ('perm_compliance',   'compliance.manage', 'Manage compliance controls',    'compliance')
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to seed RBAC permissions")?;
+
+        // Seed RBAC system roles (idempotent)
+        sqlx::query(
+            "INSERT INTO rbac_roles (id, name, description, is_system) VALUES
+                 ('role_admin',  'Admin',  'Full system access',                           TRUE),
+                 ('role_editor', 'Editor', 'Read/write DAGs and connectors',              TRUE),
+                 ('role_viewer', 'Viewer', 'Read-only access to DAGs and runs',           TRUE),
+                 ('role_ops',    'Ops',    'Operational access: execute, secrets, audit', TRUE)
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to seed RBAC roles")?;
+
+        // Seed Admin role → all permissions (idempotent)
+        sqlx::query(
+            "INSERT INTO rbac_role_permissions (role_id, permission_id)
+             SELECT 'role_admin', id FROM rbac_permissions
+             ON CONFLICT DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to seed Admin role permissions")?;
 
         Ok(())
     }

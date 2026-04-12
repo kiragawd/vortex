@@ -5,12 +5,26 @@ import { rbacApi, type RbacRole, type ApiToken, type IpAllowlistRule } from '../
 
 type Tab = 'roles' | 'tokens' | 'network';
 
+const TOKEN_SCOPE_OPTIONS = [
+  { value: 'dag:read',         label: 'dag:read',         description: 'View DAGs and runs' },
+  { value: 'dag:write',        label: 'dag:write',        description: 'Create and modify DAGs' },
+  { value: 'dag:execute',      label: 'dag:execute',      description: 'Trigger DAG runs' },
+  { value: 'dag:delete',       label: 'dag:delete',       description: 'Delete DAGs' },
+  { value: 'secrets:read',     label: 'secrets:read',     description: 'Read secrets (masked)' },
+  { value: 'secrets:write',    label: 'secrets:write',    description: 'Create/update secrets' },
+  { value: 'connectors:read',  label: 'connectors:read',  description: 'View connectors' },
+  { value: 'connectors:write', label: 'connectors:write', description: 'Manage connectors' },
+  { value: 'tokens:manage',    label: 'tokens:manage',    description: 'Manage API tokens' },
+  { value: 'admin',            label: 'admin',            description: 'Full system access' },
+] as const;
+
 export function RBACPage() {
   const [tab, setTab] = useState<Tab>('roles');
   const [newCidr, setNewCidr] = useState('');
   const [newCidrDesc, setNewCidrDesc] = useState('');
   const [tokenName, setTokenName] = useState('');
-  const [tokenScopes, setTokenScopes] = useState('read');
+  const [tokenScopes, setTokenScopes] = useState<string[]>(['dag:read']);
+  const [scopesOpen, setScopesOpen] = useState(false);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -40,7 +54,7 @@ export function RBACPage() {
     mutationFn: () =>
       rbacApi.createToken({
         name: tokenName || 'New Token',
-        scopes: tokenScopes.split(',').map((s) => s.trim()).filter(Boolean),
+        scopes: tokenScopes,
       }),
     onSuccess: (data) => {
       setCreatedToken(data.token);
@@ -139,13 +153,59 @@ export function RBACPage() {
                 onChange={(e) => setTokenName(e.target.value)}
                 className="flex-1 min-w-[160px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               />
-              <input
-                type="text"
-                placeholder="Scopes (comma-separated)"
-                value={tokenScopes}
-                onChange={(e) => setTokenScopes(e.target.value)}
-                className="flex-1 min-w-[160px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-              />
+              {/* Scope multi-select */}
+              <div className="relative min-w-[200px]">
+                <button
+                  type="button"
+                  onClick={() => setScopesOpen((o) => !o)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                >
+                  {tokenScopes.length === 0
+                    ? 'Select scopes…'
+                    : tokenScopes.join(', ')}
+                  <span className="float-right text-gray-400">▾</span>
+                </button>
+                {scopesOpen && (
+                  <div className="absolute z-20 mt-1 w-full rounded-xl border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                    {TOKEN_SCOPE_OPTIONS.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className="flex cursor-pointer items-start gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={tokenScopes.includes(opt.value)}
+                          onChange={(e) =>
+                            setTokenScopes((prev) =>
+                              e.target.checked
+                                ? [...prev, opt.value]
+                                : prev.filter((s) => s !== opt.value)
+                            )
+                          }
+                          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-vortex-600"
+                        />
+                        <span>
+                          <span className="block font-mono text-xs font-semibold text-gray-800 dark:text-gray-200">
+                            {opt.label}
+                          </span>
+                          <span className="block text-xs text-gray-500 dark:text-gray-400">
+                            {opt.description}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                    <div className="border-t border-gray-100 px-4 py-2 dark:border-gray-800">
+                      <button
+                        type="button"
+                        onClick={() => setScopesOpen(false)}
+                        className="text-xs text-vortex-600 hover:underline dark:text-vortex-400"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 onClick={() => createTokenMutation.mutate()}
                 disabled={createTokenMutation.isPending}

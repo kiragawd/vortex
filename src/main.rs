@@ -1067,8 +1067,14 @@ async fn main() -> Result<()> {
                         if let Some(path_str) = path.to_str() {
                             if ext == "py" {
                                 // BUG-18 FIX: Gate Python DAG exec behind --allow-unsafe-dag-exec
-                                if !cli.allow_unsafe_dag_exec {
-                                    warn!("⚠️ Skipping Python DAG file {} — use --allow-unsafe-dag-exec to enable (SECURITY RISK)", path_str);
+                                // Also accept VORTEX_ALLOW_PYTHON_DAGS=true env var so the flag
+                                // can be toggled per-environment without rebuilding the image.
+                                let python_enabled = cli.allow_unsafe_dag_exec
+                                    || std::env::var("VORTEX_ALLOW_PYTHON_DAGS")
+                                        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                                        .unwrap_or(false);
+                                if !python_enabled {
+                                    warn!("⚠️ Skipping Python DAG file {} — set VORTEX_ALLOW_PYTHON_DAGS=true or use --allow-unsafe-dag-exec to enable (SECURITY RISK)", path_str);
                                 } else {
                                     info!("🐍 Loading DAG file: {}", path_str);
                                     match python_parser::parse_python_dag(path_str) {

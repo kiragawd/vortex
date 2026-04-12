@@ -182,16 +182,19 @@ const CONNECTORS: Connector[] = [
     description: 'Query execution, data loading/unloading, warehouse sizing, and result caching.',
     icon: BarChart2,
     color: 'bg-cyan-50 text-cyan-600 dark:bg-cyan-950/30 dark:text-cyan-400',
-    status: 'beta',
+    status: 'available',
     docs: {
       overview: 'The Snowflake connector supports SQL query execution, COPY INTO data loading/unloading, warehouse auto-scaling, and result caching. Supports both REST API and SnowSQL SDK modes.',
-      authentication: 'Supports username/password, key-pair authentication (RSA), and OAuth. Store credentials in the Vortex vault: `snowflake_account`, `snowflake_user`, `snowflake_private_key` or `snowflake_password`.',
-      capabilities: ['BatchRead', 'BatchWrite', 'AsyncJobs', 'ArrowZeroCopy', 'Warehouse Management', 'Key-Pair Auth', 'Result Caching'],
+      authentication: 'Supports three authentication methods: (1) Bearer/OAuth token — store token in vault as `snowflake_token`; (2) Key-pair (RSA JWT) — store the PEM private key in vault as `snowflake_private_key` with an optional passphrase in `snowflake_private_key_passphrase` (required for PKCS#8 encrypted keys); (3) Username/password — store credentials as `snowflake_user` and `snowflake_password`. Key-pair authentication is recommended for production: it supports both unencrypted PKCS#8, encrypted PKCS#8, and traditional PKCS#1 PEM formats.',
+      capabilities: ['BatchRead', 'BatchWrite', 'AsyncJobs', 'ArrowZeroCopy', 'Warehouse Management', 'Key-Pair Auth', 'Encrypted Key Auth', 'Result Caching'],
       configExample: `connector:
   type: snowflake
   account_vault_key: snowflake_account
+  # Key-pair auth (recommended)
   user_vault_key: snowflake_user
   private_key_vault_key: snowflake_private_key
+  # Optional: required only for PKCS#8 encrypted keys
+  private_key_passphrase_vault_key: snowflake_private_key_passphrase
   warehouse: COMPUTE_WH
   database: ANALYTICS
   schema: PUBLIC

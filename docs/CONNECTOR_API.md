@@ -96,20 +96,62 @@ Each connector declares its supported capabilities:
 
 ### Snowflake — `SnowflakeConnector`
 **Kind:** Warehouse
-**Capabilities:** BatchRead, AsyncJobs, ArrowZeroCopy, PushdownPredicates
+**Status:** Available
+**Capabilities:** BatchRead, BatchWrite, AsyncJobs, ArrowZeroCopy, PushdownPredicates
 
 **Auth strategies:**
-- Username/password
-- Key-pair authentication (enterprise preferred)
-- OAuth bearer token
 
-**Execution flow:**
-1. Submit SQL query via Snowflake REST API
-2. Poll async query status until terminal (SUCCESS/FAILED/CANCELED)
-3. Fetch results — prefers Arrow record batches when available, falls back to JSON pages
-4. Convert Arrow batches to Vortex generic row model lazily
+| Method | PEM header | Notes |
+|--------|-----------|-------|
+| **Key-pair (recommended)** | `BEGIN PRIVATE KEY` (PKCS#8 unencrypted) | No passphrase needed |
+| **Key-pair + passphrase** | `BEGIN ENCRYPTED PRIVATE KEY` (PKCS#8 encrypted) | Passphrase passed via `SNOWSQL_PRIVATE_KEY_PASSPHRASE` env; never on CLI |
+| **Key-pair (PEM legacy)** | `BEGIN RSA PRIVATE KEY` (PKCS#1 traditional) | Supported for backwards compatibility |
+| Username/password | — | `Basic` auth header; password passed via `SNOWSQL_PWD` env for SnowSQL transport |
+| OAuth bearer token | — | `Bearer` auth header; from `ConnectorContext.auth.token` |
 
-**Arrow optimization:** When the Snowflake endpoint supports Arrow result format, results are fetched as Arrow record batches and converted lazily, avoiding full materialization for streaming workloads.
+**JWT fingerprint:** The `iss` JWT claim is `<ACCOUNT>.<USER>.SHA256:<base64(sha256(SPKI DER))>` where the fingerprint is computed from the DER-encoded SubjectPublicKeyInfo of the RSA public key — matching Snowflake's required format exactly.
+
+**Vault configuration:**
+```yaml
+snowflake_account:                  # Account identifier e.g. "xy12345.us-east-1"
+snowflake_user:                     # Snowflake username
+snowflake_private_key:              # PEM-encoded RSA private key (any supported format)
+snowflake_private_key_passphrase:   # Optional — required only for PKCS#8 encrypted keys
+snowflake_password:                 # Used with Password auth method
+snowflake_token:                    # Used with Bearer/OAuth auth method
+```
+
+**Builder API:**
+```rust
+// Key-pair, unencrypted
+SnowflakeConnector::new("xy12345.us-east-1")
+    .with_keypair_auth("MY_USER", &pem, None)
+    .with_warehouse("COMPUTE_WH");
+
+// Key-pair, encrypted PKCS#8 (passphrase required)
+SnowflakeConnector::new("xy12345.us-east-1")
+    .with_keypair_auth("MY_USER", &encrypted_pem, Some("my_passphrase"))
+    .with_warehouse("COMPUTE_WH");
+
+// OAuth bearer
+SnowflakeConnector::new("xy12345.us-east-1")
+    .with_warehouse("COMPUTE_WH")
+    // auth.token set in ConnectorContext
+```
+
+**Transport modes:**
+| Mode | Default | Notes |
+|------|---------|-------|
+| `RestApi` | ✓ | Snowflake SQL REST API v2 (`/api/v2/statements`), no external binaries |
+| `SnowSql` | — | Shells out to `snowsql` CLI; requires `snowsql` in PATH |
+
+**Execution flow (REST API):**
+1. Submit SQL via `POST /api/v2/statements` with warehouse/db/schema/role
+2. If async, poll `statementStatusUrl` until terminal (SUCCESS / FAILED / CANCELED)
+3. Paginate `nextUri` to collect all result pages
+4. Map column names from `resultSetMetaData.rowType` into `QueryResult.schema`
+
+**Arrow optimization:** When the Snowflake endpoint returns Arrow record batches, results are fetched and converted lazily to avoid full JSON materialization.
 
 ---
 
@@ -204,14 +246,14 @@ The following connectors have configuration types defined but are awaiting full 
 
 | Connector | Status | Driver |
 |-----------|--------|--------|
-| PostgreSQL | **Functional** | `sqlx::PgPool` (async) |
-| Snowflake | **Functional** | REST API + Arrow |
-| Databricks | **Functional** | REST API (SQL Warehouse + Jobs) |
-| BigQuery | **Functional** | REST API + OAuth |
-| Redshift | **Functional** | `sqlx` PostgreSQL wire |
+| PostgreSQL | **Available** | `sqlx::PgPool` (async) |
+| Snowflake | **Available** | REST API + Arrow; PKCS#8 encrypted/plain + PKCS#1 keypair auth |
+| Databricks | **Available** | REST API (SQL Warehouse + Jobs) |
+| BigQuery | **Available** | REST API + OAuth |
+| Redshift | **Available** | `sqlx` PostgreSQL wire |
 | MySQL | **Scaffolded** | `sqlx` MySQL (async) |
 | MS SQL | **Scaffolded** | `tiberius` TDS (async) |
-| dbt | **Functional** | CLI shell |
+| dbt | **Available** | CLI shell |
 | Kafka | **Scaffolded** | Config types only |
 | S3/GCS | **Scaffolded** | Config types only |
 | Delta Lake | **Scaffolded** | Config types only |

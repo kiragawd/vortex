@@ -53,6 +53,7 @@ sha2 = "0.10"
 hex = "0.4"
 sqlparser = "0.41"
 subtle = "2"
+rsa = { version = "0.9", features = ["pem", "pkcs5"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

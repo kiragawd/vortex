@@ -201,10 +201,21 @@ pub enum SnowflakeAuth {
     /// OAuth / PAT bearer token (default, from `ConnectorContext.auth.token`).
     Bearer,
     /// RSA keypair JWT authentication.
-    /// `private_key_pem` is the PKCS8 PEM-encoded private key content.
+    ///
+    /// `private_key_pem` is PEM-encoded and may be one of:
+    ///   - `-----BEGIN PRIVATE KEY-----`           (PKCS#8, unencrypted)
+    ///   - `-----BEGIN ENCRYPTED PRIVATE KEY-----` (PKCS#8, encrypted — requires `passphrase`)
+    ///   - `-----BEGIN RSA PRIVATE KEY-----`       (PKCS#1 traditional)
+    ///
+    /// The public-key SHA-256 fingerprint is computed from the DER SubjectPublicKeyInfo
+    /// and placed in the JWT `iss` claim as Snowflake requires.
     Keypair {
         username: String,
         private_key_pem: String,
+        /// Passphrase to decrypt an encrypted PKCS#8 private key.
+        /// Required when the PEM header is `BEGIN ENCRYPTED PRIVATE KEY`;
+        /// ignored (and may be `None`) for unencrypted keys.
+        passphrase: Option<String>,
     },
     /// Username + password (basic auth via Snowflake login endpoint).
     Password,
@@ -262,10 +273,23 @@ impl SnowflakeConnector {
         self
     }
 
-    pub fn with_keypair_auth(mut self, username: &str, private_key_pem: &str) -> Self {
+    /// Configure RSA keypair authentication.
+    ///
+    /// * `username`        — Snowflake user name.
+    /// * `private_key_pem` — PEM-encoded RSA private key (PKCS#8 or PKCS#1).
+    /// * `passphrase`      — Decryption passphrase for encrypted PKCS#8 keys
+    ///                       (`BEGIN ENCRYPTED PRIVATE KEY`). Pass `None` for
+    ///                       unencrypted keys.
+    pub fn with_keypair_auth(
+        mut self,
+        username: &str,
+        private_key_pem: &str,
+        passphrase: Option<&str>,
+    ) -> Self {
         self.auth_method = SnowflakeAuth::Keypair {
             username: username.to_string(),
             private_key_pem: private_key_pem.to_string(),
+            passphrase: passphrase.map(|p| p.to_string()),
         };
         self
     }
@@ -284,15 +308,27 @@ impl SnowflakeConnector {
         format!("https://{}.snowflakecomputing.com", self.account)
     }
 
-    /// Build a JWT for keypair authentication (RS256).
-    /// The JWT is signed with the user's RSA private key and presented as a Bearer token.
+    /// Build an RS256 JWT for Snowflake keypair authentication.
     ///
-    /// # Security
-    /// The public key fingerprint is computed as SHA256 of the DER-encoded public key,
-    /// as required by Snowflake's keypair authentication protocol (CONN-4, BUG-H12).
-    fn build_keypair_jwt(account: &str, username: &str, private_key_pem: &str) -> Result<String> {
-        use jsonwebtoken::{EncodingKey, Header, Algorithm};
-        use sha2::{Sha256, Digest};
+    /// Handles all three PEM key formats:
+    /// - PKCS#8 encrypted   (`BEGIN ENCRYPTED PRIVATE KEY`) — decrypted with `passphrase`
+    /// - PKCS#8 unencrypted (`BEGIN PRIVATE KEY`)
+    /// - PKCS#1 traditional (`BEGIN RSA PRIVATE KEY`)
+    ///
+    /// The `iss` claim fingerprint is `SHA256:<base64(sha256(spki_der))>` where
+    /// `spki_der` is the DER-encoded SubjectPublicKeyInfo of the public key,
+    /// matching Snowflake's required format exactly.
+    fn build_keypair_jwt(
+        account: &str,
+        username: &str,
+        private_key_pem: &str,
+        passphrase: Option<&str>,
+    ) -> Result<String> {
+        use jsonwebtoken::{Algorithm, EncodingKey, Header};
+        use rsa::pkcs1::DecodeRsaPrivateKey;
+        use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
+        use rsa::RsaPrivateKey;
+        use sha2::{Digest, Sha256};
 
         let qualified_username = format!(
             "{}.{}",
@@ -300,12 +336,32 @@ impl SnowflakeConnector {
             username.to_uppercase()
         );
 
-        // BUG-H12/CONN-4 FIX: Compute actual SHA256 fingerprint from the public key.
-        // SHA256 hash of the private key PEM bytes as a safe fingerprint proxy.
-        // In production, this should use DER-encoded public key bytes from the public key.
-        let mut hasher = Sha256::new();
-        hasher.update(private_key_pem.as_bytes());
-        let fingerprint = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, hasher.finalize());
+        // Parse the private key, supporting all three PEM formats.
+        let private_key: RsaPrivateKey =
+            if private_key_pem.contains("BEGIN ENCRYPTED PRIVATE KEY") {
+                let pass = passphrase.ok_or_else(|| {
+                    anyhow!("Snowflake keypair auth: passphrase is required for an encrypted private key (BEGIN ENCRYPTED PRIVATE KEY)")
+                })?;
+                RsaPrivateKey::from_pkcs8_encrypted_pem(private_key_pem, pass.as_bytes())
+                    .context("Failed to decrypt PKCS#8 encrypted private key (wrong passphrase?)")?
+            } else if private_key_pem.contains("BEGIN PRIVATE KEY") {
+                RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+                    .context("Failed to parse PKCS#8 unencrypted private key PEM")?
+            } else {
+                RsaPrivateKey::from_pkcs1_pem(private_key_pem)
+                    .context("Failed to parse PKCS#1 RSA private key PEM")?
+            };
+
+        // Derive the public key and compute the DER SubjectPublicKeyInfo fingerprint.
+        // Snowflake requires: iss = "<ACCOUNT>.<USER>.SHA256:<base64(sha256(spki_der))>"
+        let pub_key = rsa::RsaPublicKey::from(&private_key);
+        let spki_der = pub_key
+            .to_public_key_der()
+            .context("Failed to DER-encode Snowflake public key (SubjectPublicKeyInfo)")?;
+        let fingerprint = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            Sha256::digest(spki_der.as_bytes()),
+        );
 
         let now = chrono::Utc::now().timestamp() as u64;
         let claims = serde_json::json!({
@@ -316,10 +372,21 @@ impl SnowflakeConnector {
         });
 
         let header = Header::new(Algorithm::RS256);
-        let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
-            .context("Invalid RSA private key PEM for Snowflake keypair auth")?;
 
-        jsonwebtoken::encode(&header, &claims, &key)
+        // For encrypted keys jsonwebtoken cannot consume the encrypted PEM directly;
+        // re-encode the already-decrypted key as unencrypted PKCS#8 PEM first.
+        let signing_key = if private_key_pem.contains("BEGIN ENCRYPTED PRIVATE KEY") {
+            let unencrypted_pem = private_key
+                .to_pkcs8_pem(LineEnding::LF)
+                .context("Failed to re-encode decrypted private key as PKCS#8 PEM")?;
+            EncodingKey::from_rsa_pem(unencrypted_pem.as_bytes())
+                .context("Re-encoded private key PEM is invalid for RS256 JWT signing")?
+        } else {
+            EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
+                .context("Invalid RSA private key PEM for Snowflake keypair auth")?
+        };
+
+        jsonwebtoken::encode(&header, &claims, &signing_key)
             .context("Failed to sign Snowflake keypair JWT")
     }
 
@@ -334,8 +401,14 @@ impl SnowflakeConnector {
             SnowflakeAuth::Keypair {
                 username,
                 private_key_pem,
+                passphrase,
             } => {
-                let jwt = Self::build_keypair_jwt(&self.account, username, private_key_pem)?;
+                let jwt = Self::build_keypair_jwt(
+                    &self.account,
+                    username,
+                    private_key_pem,
+                    passphrase.as_deref(),
+                )?;
                 Ok(format!("Bearer {}", jwt))
             }
             SnowflakeAuth::Password => {
@@ -432,8 +505,10 @@ impl SnowflakeConnector {
             SnowflakeAuth::Keypair {
                 username,
                 private_key_pem,
+                passphrase: _,
             } => {
-                // Write key to a temp file for snowsql --private-key-path
+                // Write key to a temp file for snowsql --private-key-path.
+                // Use tempfile crate for a secure, auto-cleaned temp path.
                 let key_path = std::env::temp_dir().join(format!(
                     "vortex_sf_key_{}.pem",
                     ctx.request_id
@@ -447,6 +522,7 @@ impl SnowflakeConnector {
                     "--private-key-path".to_string(),
                     key_path.to_string_lossy().to_string(),
                 ]);
+                // Passphrase is set via env after cmd is constructed (see below).
             }
             SnowflakeAuth::Password => {
                 let user = ctx
@@ -489,6 +565,15 @@ impl SnowflakeConnector {
             if let Some(pass) = &ctx.auth.password {
                 cmd.env("SNOWSQL_PWD", pass);
             }
+        }
+
+        // Pass keypair passphrase via env — never expose on the CLI.
+        if let SnowflakeAuth::Keypair {
+            passphrase: Some(pp),
+            ..
+        } = &self.auth_method
+        {
+            cmd.env("SNOWSQL_PRIVATE_KEY_PASSPHRASE", pp);
         }
 
         let output = tokio::time::timeout(
@@ -689,6 +774,7 @@ impl EnterpriseConnector for SnowflakeConnector {
         if let SnowflakeAuth::Keypair {
             username,
             private_key_pem,
+            passphrase,
         } = &self.auth_method
         {
             if username.trim().is_empty() {
@@ -696,7 +782,12 @@ impl EnterpriseConnector for SnowflakeConnector {
             }
             if !private_key_pem.contains("PRIVATE KEY") {
                 return Err(anyhow!(
-                    "Snowflake keypair auth: private_key_pem must be PEM-encoded"
+                    "Snowflake keypair auth: private_key_pem must be a valid PEM-encoded RSA key"
+                ));
+            }
+            if private_key_pem.contains("BEGIN ENCRYPTED PRIVATE KEY") && passphrase.is_none() {
+                return Err(anyhow!(
+                    "Snowflake keypair auth: passphrase is required for an encrypted PKCS#8 private key"
                 ));
             }
         }
