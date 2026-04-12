@@ -17,6 +17,11 @@ pub fn generate_rust_dag_source(dag: &AstDag) -> (String, GenerationSummary) {
     generate_rust_dag_source_with_overrides(dag, &HashMap::new())
 }
 
+/// Generates a Rust source file that builds a [`Dag`] from the parsed Airflow AST.
+///
+/// `python_overrides` maps task IDs to translated command strings for PythonOperator
+/// tasks. Tasks without an override emit a failing error stub so the unresolved
+/// operator is immediately visible at runtime.
 pub fn generate_rust_dag_source_with_overrides(
     dag: &AstDag,
     python_overrides: &HashMap<String, String>,
@@ -51,12 +56,11 @@ pub fn generate_rust_dag_source_with_overrides(
             } else {
                 placeholders += 1;
                 source.push_str(&format!(
-                    "    // strict migration placeholder for task {}\n",
-                    t.task_id
+                    "    // ERROR: unresolved PythonOperator — run migration with --python-overrides\n"
                 ));
                 source.push_str(&format!(
-                    "    dag.add_python_task(\"{}\", \"{}\", \"TODO!() unresolved PythonOperator fallback to shim\");\n",
-                    t.task_id, t.task_id
+                    "    dag.add_python_task(\"{}\", \"{}\", \"echo 'ERROR: Unresolved PythonOperator for task {}. Run migration with --python-overrides to provide implementation.' && exit 1\");\n",
+                    t.task_id, t.task_id, t.task_id
                 ));
             }
         } else {

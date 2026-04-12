@@ -1,6 +1,7 @@
 use tracing::{info, warn, error};
 use anyhow::Result;
 use std::time::Duration;
+use tonic::{Request, Status};
 
 use crate::executor::TaskExecutor;
 
@@ -21,15 +22,35 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     info!("   ├─ Labels: {:?}", labels);
     info!("   └─ Controller: {}", controller_addr);
 
+    // BUG-C7: Load auth token for gRPC requests
+    let grpc_auth_token = std::env::var("VORTEX_GRPC_AUTH_TOKEN").ok();
+    if grpc_auth_token.is_some() {
+        info!("   🔑 gRPC auth token configured");
+    } else {
+        warn!("   ⚠️ No VORTEX_GRPC_AUTH_TOKEN set — running without gRPC auth (dev mode only)");
+    }
+
+    // ENT-1: Configure TLS channel if VORTEX_GRPC_TLS_CA is set (mTLS to controller)
+    let ca_path_opt = std::env::var("VORTEX_GRPC_TLS_CA").ok();
+    let endpoint = {
+        let ep = tonic::transport::Endpoint::from_shared(controller_addr.to_string())?;
+        if let Some(ref ca_path) = ca_path_opt {
+            let ca_pem = tokio::fs::read(ca_path).await
+                .map_err(|e| anyhow::anyhow!("Failed to read CA cert '{}': {}", ca_path, e))?;
+            let tls = tonic::transport::ClientTlsConfig::new()
+                .ca_certificate(tonic::transport::Certificate::from_pem(ca_pem));
+            ep.tls_config(tls)
+                .map_err(|e| anyhow::anyhow!("Failed to configure gRPC TLS: {}", e))?
+        } else {
+            ep
+        }
+    };
+    if ca_path_opt.is_some() {
+        info!("   🔒 gRPC TLS (mTLS) configured");
+    }
     // Connect to controller with retry
-    // FUTURE(mTLS): Add --tls-ca flag for worker TLS: if provided, use tonic::transport::Channel
-    //       with ClientTlsConfig::new().ca_certificate(...) for mTLS/TLS to the controller.
-    //       Requires: Security + Infrastructure Integration
     let channel = loop {
-        match tonic::transport::Endpoint::from_shared(controller_addr.to_string())?
-            .connect()
-            .await 
-        {
+        match endpoint.connect().await {
             Ok(c) => break c,
             Err(e) => {
                 warn!("⚠️ Cannot connect to controller: {}. Retrying in 5s...", e);
@@ -37,6 +58,19 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
             }
         }
     };
+
+    // BUG-C7: Inject auth token into every gRPC request via interceptor
+    let auth_token_for_client = grpc_auth_token.clone();
+    let channel = tonic::service::interceptor::InterceptedService::new(channel, move |mut req: Request<()>| {
+        if let Some(ref token) = auth_token_for_client {
+            let bearer = format!("Bearer {}", token);
+            req.metadata_mut().insert(
+                "authorization",
+                bearer.parse().map_err(|_| Status::internal("Invalid auth token format"))?,
+            );
+        }
+        Ok(req)
+    });
     let mut client = SwarmControllerClient::new(channel.clone());
 
     // Register
@@ -238,6 +272,7 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
         task_instance_id: task.task_instance_id.clone(),
         dag_id: task.dag_id.clone(),
         task_id: task.task_id.clone(),
+        dag_run_id: task.dag_run_id.clone(),
         success: result.success,
         stdout: result.stdout,
         stderr: result.stderr,

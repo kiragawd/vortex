@@ -1,5 +1,6 @@
 # ─── Stage 1: Builder ───────────────────────────────────────────────────────
-FROM rust:latest AS builder
+# INFRA-1: Pinned to specific stable Rust version
+FROM rust:1.88-bookworm AS builder
 
 # Install protobuf compiler and Python dev headers (needed for pyo3)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,7 +44,7 @@ RUN touch src/main.rs src/lib.rs src/bin/vortex-cli.rs
 RUN cargo build --release --bin vortex --bin vortex-cli
 
 # ─── Stage 2: Runtime ──────────────────────────────────────────────────────
-FROM debian:trixie-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -84,5 +85,7 @@ EXPOSE 3000 50051 9090
 
 USER vortex
 
+# INFRA-7: Explicit STOPSIGNAL for graceful shutdown
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["tini", "--"]
 CMD ["vortex"]

@@ -3,6 +3,7 @@ use tracing::{info, warn, error, debug};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 // Bug 11 fix: use tokio::sync::Mutex instead of std::sync::Mutex to avoid
 // blocking tokio worker threads when acquiring the lock across async boundaries.
@@ -169,6 +170,35 @@ impl Dag {
 pub enum RunType {
     Full,
     RetryFromFailure,
+}
+
+/// ARCH-4: Centralized retry policy for consistent behavior across components.
+/// Use this instead of ad-hoc `retry_delay_secs` integers scattered through the codebase.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum RetryPolicy {
+    /// Fixed delay between retries.
+    Fixed { delay_secs: u64 },
+    /// Exponential backoff with a configurable multiplier and cap.
+    Exponential { base_secs: u64, max_secs: u64, multiplier: f64 },
+    /// No retries — fail immediately on first error.
+    NoRetry,
+}
+
+impl RetryPolicy {
+    /// Calculate the delay before the given attempt number (0-indexed).
+    pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
+        match self {
+            RetryPolicy::Fixed { delay_secs } => {
+                std::time::Duration::from_secs(*delay_secs)
+            }
+            RetryPolicy::Exponential { base_secs, max_secs, multiplier } => {
+                let delay = (*base_secs as f64 * multiplier.powi(attempt as i32))
+                    .min(*max_secs as f64);
+                std::time::Duration::from_secs(delay as u64)
+            }
+            RetryPolicy::NoRetry => std::time::Duration::ZERO,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -729,6 +759,55 @@ impl Scheduler {
     }
 }
 
+// ───────────── ENT-17: Cross-DAG Dependency Cycle Detection ──────────────────
+
+/// ENT-17: Detect cycles in cross-DAG dependencies using iterative DFS.
+///
+/// `dag_dependencies` maps each dag_id to the list of upstream dag_ids it
+/// depends on.  Returns an error describing the first cycle found.
+pub fn detect_cross_dag_cycles(
+    dag_dependencies: &HashMap<String, Vec<String>>,
+) -> anyhow::Result<()> {
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut rec_stack: HashSet<String> = HashSet::new();
+
+    for dag_id in dag_dependencies.keys() {
+        if !visited.contains(dag_id.as_str()) {
+            if has_cycle(dag_id, dag_dependencies, &mut visited, &mut rec_stack) {
+                return Err(anyhow::anyhow!(
+                    "Cross-DAG dependency cycle detected involving DAG '{}'", dag_id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn has_cycle(
+    node: &str,
+    graph: &HashMap<String, Vec<String>>,
+    visited: &mut HashSet<String>,
+    rec_stack: &mut HashSet<String>,
+) -> bool {
+    visited.insert(node.to_string());
+    rec_stack.insert(node.to_string());
+
+    if let Some(neighbors) = graph.get(node) {
+        for neighbor in neighbors {
+            if !visited.contains(neighbor.as_str()) {
+                if has_cycle(neighbor, graph, visited, rec_stack) {
+                    return true;
+                }
+            } else if rec_stack.contains(neighbor.as_str()) {
+                return true;
+            }
+        }
+    }
+
+    rec_stack.remove(node);
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,5 +831,30 @@ mod tests {
         assert_eq!(dag.tasks.len(), 2);
         assert_eq!(dag.dependencies.len(), 1);
         assert_eq!(dag.dependencies[0], ("t1".to_string(), "t2".to_string()));
+    }
+
+    #[test]
+    fn test_detect_cross_dag_cycles_no_cycle() {
+        let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+        deps.insert("dag_a".into(), vec!["dag_b".into()]);
+        deps.insert("dag_b".into(), vec!["dag_c".into()]);
+        deps.insert("dag_c".into(), vec![]);
+        assert!(detect_cross_dag_cycles(&deps).is_ok());
+    }
+
+    #[test]
+    fn test_detect_cross_dag_cycles_with_cycle() {
+        let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+        deps.insert("dag_a".into(), vec!["dag_b".into()]);
+        deps.insert("dag_b".into(), vec!["dag_c".into()]);
+        deps.insert("dag_c".into(), vec!["dag_a".into()]); // cycle: a→b→c→a
+        assert!(detect_cross_dag_cycles(&deps).is_err());
+    }
+
+    #[test]
+    fn test_detect_cross_dag_cycles_self_loop() {
+        let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+        deps.insert("dag_a".into(), vec!["dag_a".into()]); // self-loop
+        assert!(detect_cross_dag_cycles(&deps).is_err());
     }
 }

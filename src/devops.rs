@@ -424,7 +424,17 @@ impl CiPipelineManager {
         run.status = if all_passed { PipelineStatus::Success } else { PipelineStatus::Failed };
         run.completed_at = Some(Utc::now());
 
-        self.runs.write().await.push(run.clone());
+        {
+            // PERF-10: Cap in-memory pipeline run history to prevent unbounded growth.
+            const MAX_PIPELINE_RUNS: usize = 500;
+            let mut runs = self.runs.write().await;
+            if runs.len() >= MAX_PIPELINE_RUNS {
+                // Remove oldest entries to stay within the cap (keep newest MAX-1 + new one).
+                let drain_count = runs.len().saturating_sub(MAX_PIPELINE_RUNS - 1);
+                runs.drain(..drain_count);
+            }
+            runs.push(run.clone());
+        }
         info!(pipeline = %pipeline_id, status = ?run.status, "Pipeline execution completed");
         Ok(run)
     }
@@ -472,8 +482,43 @@ impl CiPipelineManager {
                 }
             }
             CiCommand::RunTests { test_path, pattern } => {
-                let _ = (test_path, pattern);
-                (true, "Tests passed (stub)".to_string())
+                // ENT-7: Run actual tests via subprocess, auto-detecting framework from path.
+                let path = Path::new(test_path.as_str());
+                let (program, args): (&str, Vec<String>) = if test_path.ends_with(".py")
+                    || (path.is_dir() && path.join("conftest.py").exists())
+                    || (path.is_dir() && path.join("pytest.ini").exists())
+                    || (path.is_dir() && path.join("setup.cfg").exists())
+                {
+                    let mut a = vec![
+                        "-m".to_string(), "pytest".to_string(),
+                        test_path.clone(), "-v".to_string(),
+                    ];
+                    if let Some(p) = pattern { a.extend(["-k".to_string(), p.clone()]); }
+                    ("python3", a)
+                } else if path.is_dir() && path.join("package.json").exists() {
+                    ("npm", vec!["test".to_string(), "--prefix".to_string(), test_path.clone()])
+                } else {
+                    // Default: cargo test
+                    let mut a = vec!["test".to_string()];
+                    if let Some(p) = pattern { a.extend(["--".to_string(), p.clone()]); }
+                    ("cargo", a)
+                };
+
+                debug!(step = %step.name, framework = %program, "ENT-7: running_tests");
+                match tokio::process::Command::new(program)
+                    .args(&args)
+                    .envs(env)
+                    .output()
+                    .await
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let combined = format!("{}{}", stdout, stderr);
+                        (output.status.success(), combined)
+                    }
+                    Err(e) => (false, format!("Test runner '{}' failed to start: {}", program, e)),
+                }
             }
             CiCommand::Notify { channel, message } => {
                 info!(channel = %channel, "CI Notification: {}", message);

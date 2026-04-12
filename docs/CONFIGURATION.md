@@ -122,3 +122,68 @@ DAG repository synchronization for team-based DAG management.
 - [Deployment](./DEPLOYMENT.md) — Environment variables and server configuration
 - [Scheduling](./SCHEDULING.md) — Scheduler configuration and dataset triggers
 - [Architecture](./ARCHITECTURE.md) — System design overview
+
+---
+
+## Environment Variables Reference
+
+Complete reference for all supported environment variables.
+
+### Required
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | required | PostgreSQL connection URL (`postgres://user:pass@host/db`) |
+
+### Security & Vault
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VORTEX_SECRET_KEY` | none (vault disabled) | AES-256-GCM vault master key — must be exactly 32 bytes. Without it, secret storage is disabled. |
+
+### Server & API
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VORTEX_BASE_URL` | `http://localhost:3000` | Base URL injected into task processes as `VORTEX_BASE_URL` for API callbacks |
+| `VORTEX_TASK_API_KEY` | none | Scoped API key injected into task processes for task-to-server API access |
+| `VORTEX_NODE_ID` | auto-generated UUID | Unique identifier for this controller node (used in HA mode) |
+
+### gRPC / Swarm
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VORTEX_GRPC_AUTH_TOKEN` | none | Bearer token workers must supply when connecting to the controller gRPC endpoint |
+| `VORTEX_GRPC_TLS_CERT` | none | Path to PEM TLS certificate for gRPC mTLS |
+| `VORTEX_GRPC_TLS_KEY` | none | Path to PEM TLS private key for gRPC mTLS |
+| `VORTEX_GRPC_TLS_CA` | none | Path to PEM CA certificate — when set, workers enable mTLS validation against this CA |
+
+### CORS & Rate Limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VORTEX_CORS_ORIGINS` | none (same-origin only) | Comma-separated list of allowed CORS origins. Set to `*` for open access (dev only — logs a warning). |
+| `VORTEX_RATE_LIMIT_MAX` | `100` | Maximum requests per rate-limit window per `(IP, username)` key |
+| `VORTEX_RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |
+
+### Python Execution
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VORTEX_PYTHON_TIMEOUT` | `30` | Python task execution timeout in seconds |
+| `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | none | Set to `1` when using Python 3.14+ for PyO3 ABI compatibility |
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | none | OTLP HTTP/gRPC endpoint for distributed tracing export (e.g., `http://jaeger:4318`) |
+
+### Agentic Migration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | none | API key for OpenAI LLM provider (used by `vortex-cli migrate --agentic --llm-provider openai`) |
+| `OPENAI_ENDPOINT` | OpenAI default | Custom OpenAI-compatible API base URL |
+| `ANTHROPIC_API_KEY` | none | API key for Anthropic LLM provider |
+| `ANTHROPIC_ENDPOINT` | Anthropic default | Custom Anthropic-compatible API base URL |

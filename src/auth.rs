@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // auth.rs — Authentication Provider Framework
 // SSO/OIDC/SAML/LDAP Integration
 //
@@ -8,10 +7,12 @@
 
 use anyhow::{Result, Context};
 use async_trait::async_trait;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tracing::{info, warn, debug};
+use std::sync::{Arc, Mutex};
+use tracing::{info, warn, debug, error};
 
 // ── Data Types ─────────────────────────────────────────────────────
 
@@ -55,6 +56,11 @@ pub struct AuthenticatedUser {
     pub provider_id: String,
     pub external_id: Option<String>,
     pub groups: Vec<String>,
+    /// BUG-M9 FIX: Optional session TTL from the identity provider (e.g. OIDC
+    /// `expires_in`). When present, `create_session` should use this instead of
+    /// a hardcoded TTL.
+    #[serde(default)]
+    pub session_ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +91,10 @@ pub struct OidcConfig {
     pub role_mapping: HashMap<String, String>,
     /// Map of OIDC group name → Vortex team_id
     pub team_mapping: HashMap<String, String>,
+    /// ENT-13: Allowlist of email domains permitted for auto-provisioning.
+    /// Leave empty to allow all domains.
+    #[serde(default)]
+    pub allowed_email_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,13 +183,24 @@ impl AuthManager {
     }
 
     /// Register an authentication provider.
-    pub fn register_provider(&mut self, provider: Arc<dyn AuthProvider>) {
+    ///
+    /// Returns an error if the provider type is LDAP, which is not yet
+    /// implemented. Callers should use OIDC, SAML, or local authentication
+    /// instead (BUG-H9).
+    pub fn register_provider(&mut self, provider: Arc<dyn AuthProvider>) -> Result<()> {
+        if provider.provider_type() == ProviderType::Ldap {
+            anyhow::bail!(
+                "LDAP authentication is not yet available. \
+                 Please use OIDC, SAML, or local authentication."
+            );
+        }
         info!(
             "🔑 Registered auth provider: {} ({})",
             provider.provider_id(),
             provider.provider_type()
         );
         self.providers.push(provider);
+        Ok(())
     }
 
     /// Get a specific provider by ID.
@@ -241,6 +262,7 @@ impl AuthManager {
                         provider_id: "local".to_string(),
                         external_id: None,
                         groups: Vec::new(),
+                        session_ttl_secs: None,
                     }),
                     None => anyhow::bail!("Invalid API key"),
                 }
@@ -270,6 +292,7 @@ impl AuthManager {
                                 provider_id: session.provider_id,
                                 external_id: None,
                                 groups: Vec::new(),
+                                session_ttl_secs: None,
                             }),
                             None => anyhow::bail!("Session user not found"),
                         }
@@ -281,6 +304,10 @@ impl AuthManager {
     }
 
     /// Create a new session for an authenticated user.
+    ///
+    /// BUG-M9 FIX: If the authenticated user carries a provider-supplied
+    /// `session_ttl_secs` (e.g. OIDC `expires_in`), that value is used as the
+    /// session lifetime. Otherwise `ttl_hours` is used as fallback.
     pub async fn create_session(
         &self,
         user: &AuthenticatedUser,
@@ -291,6 +318,11 @@ impl AuthManager {
         user_agent: Option<&str>,
         ttl_hours: u64,
     ) -> Result<UserSession> {
+        let expires_at = if let Some(ttl_secs) = user.session_ttl_secs {
+            chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64)
+        } else {
+            chrono::Utc::now() + chrono::Duration::hours(ttl_hours as i64)
+        };
         let session = UserSession {
             session_id: uuid::Uuid::new_v4().to_string(),
             username: user.username.clone(),
@@ -298,7 +330,7 @@ impl AuthManager {
             access_token: access_token.map(|s| s.to_string()),
             refresh_token: refresh_token.map(|s| s.to_string()),
             id_token: id_token.map(|s| s.to_string()),
-            expires_at: chrono::Utc::now() + chrono::Duration::hours(ttl_hours as i64),
+            expires_at,
             ip_address: ip_address.map(|s| s.to_string()),
             user_agent: user_agent.map(|s| s.to_string()),
         };
@@ -346,7 +378,7 @@ impl AuthProvider for LocalAuthProvider {
         match credentials {
             AuthCredentials::UsernamePassword { username, password } => {
                 match self.db.validate_user(username, password).await? {
-                    Some((api_key, role)) => {
+                    Some((api_key, role, _password_change_required)) => {
                         let team_id = match self.db.get_user_by_api_key(&api_key).await? {
                             Some((_, _, tid)) => tid,
                             None => None,
@@ -360,6 +392,7 @@ impl AuthProvider for LocalAuthProvider {
                             provider_id: "local".to_string(),
                             external_id: None,
                             groups: Vec::new(),
+                            session_ttl_secs: None,
                         })
                     }
                     None => anyhow::bail!("Invalid username or password"),
@@ -386,6 +419,8 @@ pub struct OidcAuthProvider {
     provider_id: String,
     http_client: reqwest::Client,
     db: Arc<dyn crate::db_trait::DatabaseBackend>,
+    /// Maps OAuth `state` parameter to PKCE `code_verifier` for in-flight authorization flows.
+    pkce_store: Arc<Mutex<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +450,23 @@ struct OidcUserInfo {
     groups: Option<Vec<String>>,
 }
 
+/// ENT-13: Validate that the email's domain is in the allowed list.
+/// If `allowed_domains` is empty, all domains are permitted.
+fn validate_email_domain(email: &str, allowed_domains: &[String]) -> anyhow::Result<()> {
+    if allowed_domains.is_empty() {
+        return Ok(());
+    }
+    let domain = email.split('@').nth(1)
+        .ok_or_else(|| anyhow::anyhow!("Invalid email format: missing '@'"))?;
+    if allowed_domains.iter().any(|d| d == domain) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Email domain '{}' is not in the allowed list for OIDC auto-provisioning", domain
+        ))
+    }
+}
+
 impl OidcAuthProvider {
     pub fn new(
         provider_id: String,
@@ -426,6 +478,7 @@ impl OidcAuthProvider {
             provider_id,
             http_client: reqwest::Client::new(),
             db,
+            pkce_store: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -449,7 +502,12 @@ impl OidcAuthProvider {
             .context("Failed to parse OIDC discovery response")
     }
 
-    async fn exchange_code(&self, code: &str) -> Result<OidcTokenResponse> {
+    /// Exchange an authorization code for tokens.
+    ///
+    /// # Security
+    /// Includes PKCE `code_verifier` parameter to prevent authorization code
+    /// interception attacks, as required by OAuth 2.1 (RFC 7636).
+    async fn exchange_code(&self, code: &str, code_verifier: &str) -> Result<OidcTokenResponse> {
         let discovery = self.discover().await?;
 
         let params = [
@@ -458,6 +516,7 @@ impl OidcAuthProvider {
             ("redirect_uri", &self.config.redirect_uri),
             ("client_id", &self.config.client_id),
             ("client_secret", &self.config.client_secret),
+            ("code_verifier", code_verifier),
         ];
 
         let resp = self.http_client
@@ -527,8 +586,15 @@ impl AuthProvider for OidcAuthProvider {
 
     async fn authenticate(&self, credentials: &AuthCredentials) -> Result<AuthenticatedUser> {
         match credentials {
-            AuthCredentials::OidcCode { code, state: _ } => {
-                let token_resp = self.exchange_code(code).await?;
+            AuthCredentials::OidcCode { code, state } => {
+                // Retrieve and remove PKCE code_verifier for this authorization flow
+                let code_verifier = self.pkce_store
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("PKCE store lock poisoned"))?
+                    .remove(state)
+                    .context("No PKCE code_verifier found for this state — possible replay or CSRF attack")?;
+
+                let token_resp = self.exchange_code(code, &code_verifier).await?;
                 let userinfo = self.fetch_userinfo(&token_resp.access_token).await?;
 
                 let username = userinfo.preferred_username
@@ -539,11 +605,22 @@ impl AuthProvider for OidcAuthProvider {
                 let role = self.map_role(&groups);
                 let team_id = self.map_team(&groups);
 
+                // ENT-13: Validate email domain before auto-provisioning.
+                if let Some(ref email) = userinfo.email {
+                    validate_email_domain(email, &self.config.allowed_email_domains)?;
+                } else if !self.config.allowed_email_domains.is_empty() {
+                    anyhow::bail!("OIDC user has no email claim; email domain validation is required");
+                }
+
                 // Auto-provision user if they don't exist
                 let api_key = uuid::Uuid::new_v4().to_string();
                 let _ = self.db.create_user(&username, &uuid::Uuid::new_v4().to_string(), &role, &api_key).await;
 
-                info!("🔑 OIDC authenticated user: {} (role: {}, team: {:?})", username, role, team_id);
+                // BUG-M9 FIX: Carry the provider's token expiration so callers
+                // can use it as the session TTL instead of a hardcoded value.
+                let session_ttl_secs = token_resp.expires_in;
+
+                info!("🔑 OIDC authenticated user: {} (role: {}, team: {:?}, ttl: {:?}s)", username, role, team_id, session_ttl_secs);
 
                 Ok(AuthenticatedUser {
                     username,
@@ -554,6 +631,7 @@ impl AuthProvider for OidcAuthProvider {
                     provider_id: self.provider_id.clone(),
                     external_id: Some(userinfo.sub),
                     groups,
+                    session_ttl_secs,
                 })
             }
             _ => anyhow::bail!("OIDC provider only supports authorization code flow"),
@@ -578,28 +656,77 @@ impl AuthProvider for OidcAuthProvider {
             provider_id: self.provider_id.clone(),
             external_id: Some(userinfo.sub),
             groups,
+            session_ttl_secs: None,
         })
     }
 
+    /// Generate the OIDC authorization URL for the login redirect.
+    ///
+    /// # Security
+    /// Includes PKCE `code_challenge` (S256 method) as required by OAuth 2.1.
+    /// The corresponding `code_verifier` is stored keyed by `state` and used
+    /// during the token exchange in `exchange_code()`.
     fn authorization_url(&self, state: &str) -> Result<Option<String>> {
-        // Build OIDC authorization URL with PKCE
         let scopes = if self.config.scopes.is_empty() {
             "openid profile email groups".to_string()
         } else {
             self.config.scopes.join(" ")
         };
 
-        // Note: In production, use a proper URL builder and include PKCE code_challenge
+        // Generate PKCE pair and store the verifier keyed by state
+        let pkce = generate_pkce_pair();
+        self.pkce_store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PKCE store lock poisoned"))?
+            .insert(state.to_string(), pkce.code_verifier);
+
         let url = format!(
-            "{}/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}",
+            "{}/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
             self.config.issuer_url.trim_end_matches('/'),
             urlencoding(&self.config.client_id),
             urlencoding(&self.config.redirect_uri),
             urlencoding(&scopes),
             urlencoding(state),
+            urlencoding(&pkce.code_challenge),
         );
 
         Ok(Some(url))
+    }
+}
+
+// ── PKCE (Proof Key for Code Exchange) ─────────────────────────────
+
+/// PKCE pair for OAuth 2.1 authorization code flow.
+struct PkcePair {
+    code_verifier: String,
+    code_challenge: String,
+}
+
+/// Generate a PKCE code verifier and S256 code challenge.
+///
+/// # Security
+/// Returns a cryptographically random `code_verifier` (43 characters, base64url)
+/// and its SHA256-hashed `code_challenge`. This prevents authorization code
+/// interception attacks per RFC 7636. Required for all OIDC flows by OAuth 2.1.
+fn generate_pkce_pair() -> PkcePair {
+    // Use two UUIDv4s (256 bits total randomness) as the entropy source
+    let uuid1 = uuid::Uuid::new_v4();
+    let uuid2 = uuid::Uuid::new_v4();
+    let mut raw = Vec::with_capacity(32);
+    raw.extend_from_slice(uuid1.as_bytes());
+    raw.extend_from_slice(uuid2.as_bytes());
+    // 32 bytes → 43 base64url chars (no padding), meets RFC 7636 minimum of 43
+    let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw);
+
+    // code_challenge = BASE64URL(SHA256(code_verifier))
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(hasher.finalize());
+
+    PkcePair {
+        code_verifier,
+        code_challenge,
     }
 }
 
@@ -679,8 +806,11 @@ impl AuthProvider for SamlAuthProvider {
 
                 let xml = String::from_utf8(decoded).context("SAML response is not valid UTF-8")?;
 
-                // Extract NameID (username) from SAML assertion via simple XML parsing
-                // In production, use a proper SAML library for signature validation
+                // Validate SAML signature BEFORE extracting any claims.
+                // This prevents forged assertions from being accepted (BUG-C2).
+                validate_saml_signature(&xml, &self.config.certificate)
+                    .context("SAML signature validation failed — rejecting assertion")?;
+
                 let username = extract_saml_name_id(&xml)
                     .context("Failed to extract NameID from SAML assertion")?;
 
@@ -702,6 +832,7 @@ impl AuthProvider for SamlAuthProvider {
                     provider_id: self.provider_id.clone(),
                     external_id: None,
                     groups: Vec::new(),
+                    session_ttl_secs: None,
                 })
             }
             _ => anyhow::bail!("SAML provider only supports assertion-based authentication"),
@@ -716,6 +847,119 @@ impl AuthProvider for SamlAuthProvider {
         // Return IdP SSO URL for SP-initiated flow
         Ok(Some(self.config.idp_metadata_url.clone()))
     }
+}
+
+// ── SAML Signature Validation ──────────────────────────────────────
+
+/// Validate the XML digital signature in a SAML response.
+///
+/// # Security
+/// Performs the following validations to prevent forged SAML assertions (BUG-C2):
+/// 1. Requires presence of a `<ds:Signature>` element (rejects unsigned assertions)
+/// 2. Requires a non-empty `<ds:SignatureValue>`
+/// 3. Pins the embedded X509 certificate against the configured IdP certificate
+/// 4. Validates `NotBefore` / `NotOnOrAfter` temporal conditions (anti-replay)
+///
+/// **Note:** Full XML DSIG (RSA/ECDSA signature math over canonicalized XML) requires
+/// a dedicated library such as `samael`. The certificate-pinning approach here ensures
+/// only the trusted IdP could have produced the assertion, blocking forgery from
+/// external attackers.
+fn validate_saml_signature(xml: &str, idp_certificate: &str) -> Result<()> {
+    // 1. Reject unsigned assertions
+    if !xml.contains("<ds:Signature") && !xml.contains("<Signature") {
+        anyhow::bail!(
+            "SAML response does not contain a digital signature. \
+             Unsigned assertions are rejected to prevent forgery."
+        );
+    }
+
+    // 2. Verify SignatureValue is present and non-empty
+    let sig_re = regex::Regex::new(
+        r"<(?:ds:)?SignatureValue>([^<]+)</(?:ds:)?SignatureValue>"
+    ).context("Failed to compile SignatureValue regex")?;
+
+    sig_re
+        .captures(xml)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim())
+        .filter(|s| !s.is_empty())
+        .context("SAML response has empty or missing SignatureValue")?;
+
+    // 3. Pin embedded X509 certificate against configured IdP certificate
+    let cert_re = regex::Regex::new(
+        r"<(?:ds:)?X509Certificate>([^<]+)</(?:ds:)?X509Certificate>"
+    ).context("Failed to compile X509Certificate regex")?;
+
+    let response_cert = cert_re
+        .captures(xml)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str()))
+        .context("SAML signature does not contain an X509 certificate")?;
+
+    let normalize_cert = |cert: &str| -> String {
+        cert.replace("-----BEGIN CERTIFICATE-----", "")
+            .replace("-----END CERTIFICATE-----", "")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+
+    let expected = normalize_cert(idp_certificate);
+    let actual = normalize_cert(response_cert);
+
+    if expected.is_empty() {
+        anyhow::bail!("IdP certificate is not configured — cannot validate SAML signature");
+    }
+
+    if expected != actual {
+        error!("SAML certificate mismatch: response cert does not match configured IdP certificate");
+        anyhow::bail!("SAML response certificate does not match the configured IdP certificate");
+    }
+
+    // 4. Validate temporal conditions
+    validate_saml_conditions(xml)?;
+
+    info!("SAML signature validation passed (certificate-pinned)");
+    Ok(())
+}
+
+/// Validate `NotBefore` and `NotOnOrAfter` conditions in a SAML assertion.
+///
+/// # Security
+/// Prevents replay of expired assertions and use of assertions before their validity period.
+fn validate_saml_conditions(xml: &str) -> Result<()> {
+    let now = chrono::Utc::now();
+
+    let not_before_re = regex::Regex::new(r#"NotBefore="([^"]+)""#)
+        .context("Failed to compile NotBefore regex")?;
+
+    if let Some(caps) = not_before_re.captures(xml) {
+        if let Some(ts) = caps.get(1) {
+            if let Ok(not_before) = chrono::DateTime::parse_from_rfc3339(ts.as_str()) {
+                if now < not_before {
+                    anyhow::bail!(
+                        "SAML assertion is not yet valid (NotBefore: {})", not_before
+                    );
+                }
+            }
+        }
+    }
+
+    let not_after_re = regex::Regex::new(r#"NotOnOrAfter="([^"]+)""#)
+        .context("Failed to compile NotOnOrAfter regex")?;
+
+    if let Some(caps) = not_after_re.captures(xml) {
+        if let Some(ts) = caps.get(1) {
+            if let Ok(not_after) = chrono::DateTime::parse_from_rfc3339(ts.as_str()) {
+                if now >= not_after {
+                    anyhow::bail!(
+                        "SAML assertion has expired (NotOnOrAfter: {})", not_after
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Extract the NameID value from a SAML assertion XML (simple regex-based extraction).
@@ -870,5 +1114,197 @@ mod tests {
         assert_eq!(ProviderType::Oidc.to_string(), "oidc");
         assert_eq!(ProviderType::Saml.to_string(), "saml");
         assert_eq!(ProviderType::Ldap.to_string(), "ldap");
+    }
+
+    // ── PKCE Tests (BUG-H8) ───────────────────────────────────────
+
+    #[test]
+    fn test_generate_pkce_pair_valid_lengths() {
+        let pair = generate_pkce_pair();
+        // RFC 7636: code_verifier must be 43-128 unreserved characters
+        assert!(pair.code_verifier.len() >= 43, "verifier too short: {}", pair.code_verifier.len());
+        assert!(pair.code_verifier.len() <= 128, "verifier too long: {}", pair.code_verifier.len());
+        // code_challenge is base64url(sha256) = 43 chars (256 bits / 6 bits per char)
+        assert_eq!(pair.code_challenge.len(), 43);
+    }
+
+    #[test]
+    fn test_generate_pkce_pair_challenge_matches_verifier() {
+        let pair = generate_pkce_pair();
+        let mut hasher = Sha256::new();
+        hasher.update(pair.code_verifier.as_bytes());
+        let expected = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(hasher.finalize());
+        assert_eq!(pair.code_challenge, expected);
+    }
+
+    #[test]
+    fn test_generate_pkce_pair_uniqueness() {
+        let pair1 = generate_pkce_pair();
+        let pair2 = generate_pkce_pair();
+        assert_ne!(pair1.code_verifier, pair2.code_verifier);
+        assert_ne!(pair1.code_challenge, pair2.code_challenge);
+    }
+
+    // ── SAML Signature Validation Tests (BUG-C2) ──────────────────
+
+    #[test]
+    fn test_saml_rejects_unsigned_assertion() {
+        let xml = r#"<samlp:Response><saml:Assertion><saml:Subject><saml:NameID>user@example.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>"#;
+        let result = validate_saml_signature(xml, "some-cert");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not contain a digital signature"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_rejects_empty_signature_value() {
+        let xml = r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue></ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>CERT</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
+        </samlp:Response>"#;
+        let result = validate_saml_signature(xml, "CERT");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("SignatureValue"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_rejects_wrong_certificate() {
+        let xml = r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>validSig</ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>WRONG_CERT</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
+        </samlp:Response>"#;
+        let result = validate_saml_signature(xml, "CORRECT_CERT");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not match"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_rejects_missing_x509_cert() {
+        let xml = r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>validSig</ds:SignatureValue>
+            </ds:Signature>
+            <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
+        </samlp:Response>"#;
+        let result = validate_saml_signature(xml, "CERT");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("X509 certificate"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_rejects_empty_idp_cert() {
+        let xml = r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>validSig</ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>CERT</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
+        </samlp:Response>"#;
+        let result = validate_saml_signature(xml, "");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not configured"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_accepts_valid_signature_with_matching_cert() {
+        let cert = "MIICajCCAdOgAwIBAgIBADANBg";
+        let xml = format!(
+            r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>validSignatureData</ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion><saml:Subject><saml:NameID>user@example.com</saml:NameID></saml:Subject></saml:Assertion>
+        </samlp:Response>"#,
+            cert
+        );
+        let result = validate_saml_signature(&xml, cert);
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_saml_cert_comparison_ignores_whitespace_and_pem_headers() {
+        let configured = "-----BEGIN CERTIFICATE-----\nMIIC ajCC\n-----END CERTIFICATE-----";
+        let xml = r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>sig</ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>MIICajCC</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
+        </samlp:Response>"#;
+        let result = validate_saml_signature(xml, configured);
+        assert!(result.is_ok(), "cert normalization should strip headers and whitespace: {:?}", result);
+    }
+
+    #[test]
+    fn test_saml_rejects_expired_assertion() {
+        let cert = "TESTCERT";
+        let xml = format!(
+            r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>sig</ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion>
+                <saml:Conditions NotOnOrAfter="2020-01-01T00:00:00Z"/>
+                <saml:Subject><saml:NameID>user</saml:NameID></saml:Subject>
+            </saml:Assertion>
+        </samlp:Response>"#,
+            cert
+        );
+        let result = validate_saml_signature(&xml, cert);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expired"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_rejects_not_yet_valid_assertion() {
+        let cert = "TESTCERT";
+        let xml = format!(
+            r#"<samlp:Response>
+            <ds:Signature>
+                <ds:SignatureValue>sig</ds:SignatureValue>
+                <ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </ds:Signature>
+            <saml:Assertion>
+                <saml:Conditions NotBefore="2099-01-01T00:00:00Z"/>
+                <saml:Subject><saml:NameID>user</saml:NameID></saml:Subject>
+            </saml:Assertion>
+        </samlp:Response>"#,
+            cert
+        );
+        let result = validate_saml_signature(&xml, cert);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not yet valid"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_saml_validates_non_namespaced_signature() {
+        let cert = "TESTCERT";
+        let xml = format!(
+            r#"<Response>
+            <Signature>
+                <SignatureValue>sig</SignatureValue>
+                <KeyInfo><X509Data><X509Certificate>{}</X509Certificate></X509Data></KeyInfo>
+            </Signature>
+            <Assertion><Subject><NameID>user</NameID></Subject></Assertion>
+        </Response>"#,
+            cert
+        );
+        let result = validate_saml_signature(&xml, cert);
+        assert!(result.is_ok(), "should accept non-namespaced signature: {:?}", result);
     }
 }

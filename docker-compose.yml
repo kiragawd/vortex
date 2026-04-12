@@ -9,7 +9,8 @@ services:
     environment:
       POSTGRES_DB: vortex
       POSTGRES_USER: vortex
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vortex_dev}
+      # INFRA-2: Require explicit password — no insecure default
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     ports:
       - "5432:5432"
     volumes:
@@ -20,16 +21,29 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    # INFRA-4: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   # ─── Vortex Controller ──────────────────────────────────────────────────
   controller:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["vortex", "--swarm", "--allow-unsafe-dag-exec"]
+    # INFRA-3: Removed --allow-unsafe-dag-exec (unsafe flag must not run in any environment)
+    command: ["vortex", "--swarm"]
     environment:
       VORTEX_MODE: controller
-      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD:-vortex_dev}@postgres:5432/vortex
+      # INFRA-2: Use required variable — no insecure default password
+      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD}@postgres:5432/vortex
+      # Vault encryption key (32 raw ASCII chars, 64 hex chars, or 44 base64 chars)
+      VORTEX_SECRET_KEY: ${VORTEX_SECRET_KEY:-change_me_32_char_secret_key_000}
       VORTEX_LOG_LEVEL: info
       VORTEX_LOG_FORMAT: json
       RUST_LOG: vortex=info
@@ -49,6 +63,15 @@ services:
     volumes:
       - ./dags:/app/dags:ro
       - ./plugins:/app/plugins:ro
+    # INFRA-4: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   # ─── Vortex Worker (scalable) ───────────────────────────────────────────
   worker:
@@ -58,7 +81,8 @@ services:
     command: ["vortex", "worker", "--controller", "http://controller:50051"]
     environment:
       VORTEX_MODE: worker
-      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD:-vortex_dev}@postgres:5432/vortex
+      # INFRA-2: Use required variable — no insecure default password
+      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD}@postgres:5432/vortex
       VORTEX_CONTROLLER_URL: http://controller:50051
       VORTEX_LOG_LEVEL: info
       VORTEX_LOG_FORMAT: json
@@ -75,8 +99,16 @@ services:
     volumes:
       - ./dags:/app/dags:ro
       - ./plugins:/app/plugins:ro
+    # INFRA-4: Resource limits
     deploy:
       replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   # ─── Prometheus ─────────────────────────────────────────────────────────
   prometheus:
@@ -97,7 +129,7 @@ services:
       - "3001:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-vortex}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafanadata:/var/lib/grafana

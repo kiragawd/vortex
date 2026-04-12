@@ -38,6 +38,31 @@ use prometheus::{
 const NAMESPACE: &str = "vortex";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Gauge safety helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Decrement a Prometheus [`IntGauge`] only if its current value is positive.
+///
+/// Out-of-order events (e.g. a duplicated task-completion callback) can cause
+/// `gauge.dec()` to be called when the gauge is already at 0.  A negative
+/// gauge value is nonsensical for resource counts and confuses dashboards
+/// and alerts.  This helper prevents that.
+///
+/// **Why not just check `gauge.get() > 0` inline?**  
+/// An `IntGauge` is backed by an `AtomicI64`, so `get()` followed by `dec()`
+/// is technically a TOCTOU window — but Prometheus gauges are *advisory*
+/// telemetry, not correctness-critical locks.  The cost of briefly reading
+/// a stale value (missing one decrement under extreme contention) is far
+/// lower than the cost of publishing a negative count, which triggers false
+/// alerts.
+#[inline]
+pub fn safe_gauge_dec(gauge: &IntGauge) {
+    if gauge.get() > 0 {
+        gauge.dec();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // VortexMetrics
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -211,9 +236,7 @@ impl VortexMetrics {
     #[inline]
     pub fn record_task_start(&self) {
         self.tasks_running.inc();
-        // Prometheus gauges are atomic — directly dec and rely on dashboard queries
-        // to floor negative values. This avoids TOCTOU race between get() and dec().
-        self.tasks_queued.dec();
+        safe_gauge_dec(&self.tasks_queued);
     }
 
     /// Called when a task finishes successfully.
@@ -223,7 +246,7 @@ impl VortexMetrics {
     /// Bug 17 fix: `tasks_running` is clamped to 0 minimum.
     #[inline]
     pub fn record_task_success(&self, duration_secs: f64) {
-        self.tasks_running.dec();
+        safe_gauge_dec(&self.tasks_running);
         self.tasks_succeeded_total.inc();
         self.task_duration_seconds.observe(duration_secs);
     }
@@ -235,7 +258,7 @@ impl VortexMetrics {
     /// Bug 17 fix: `tasks_running` is clamped to 0 minimum.
     #[inline]
     pub fn record_task_failure(&self, duration_secs: f64) {
-        self.tasks_running.dec();
+        safe_gauge_dec(&self.tasks_running);
         self.tasks_failed_total.inc();
         self.task_duration_seconds.observe(duration_secs);
     }
@@ -458,5 +481,60 @@ mod tests {
         assert!(text.contains("vortex_task_duration_seconds"));
         assert!(text.contains("vortex_dag_runs_total"));
         assert!(text.contains("vortex_scheduler_heartbeat_timestamp"));
+    }
+
+    // ── BUG-H4: Gauge safety tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_safe_gauge_dec_prevents_negative() {
+        let gauge = IntGauge::new("test_gauge", "test").unwrap();
+        assert_eq!(gauge.get(), 0);
+
+        // dec on zero gauge should be a no-op
+        safe_gauge_dec(&gauge);
+        assert_eq!(gauge.get(), 0, "gauge must not go negative");
+    }
+
+    #[test]
+    fn test_safe_gauge_dec_normal_operation() {
+        let gauge = IntGauge::new("test_gauge2", "test").unwrap();
+        gauge.inc();
+        gauge.inc();
+        assert_eq!(gauge.get(), 2);
+
+        safe_gauge_dec(&gauge);
+        assert_eq!(gauge.get(), 1);
+
+        safe_gauge_dec(&gauge);
+        assert_eq!(gauge.get(), 0);
+
+        // third dec should be clamped
+        safe_gauge_dec(&gauge);
+        assert_eq!(gauge.get(), 0, "gauge must not go negative after exhaustion");
+    }
+
+    #[test]
+    fn test_duplicate_task_success_does_not_go_negative() {
+        let m = fresh_metrics();
+        m.record_task_queued();
+        m.record_task_start();
+        assert_eq!(m.tasks_running.get(), 1);
+
+        // First completion — normal
+        m.record_task_success(1.0);
+        assert_eq!(m.tasks_running.get(), 0);
+
+        // Duplicate completion — must stay at 0, not -1
+        m.record_task_success(1.0);
+        assert_eq!(m.tasks_running.get(), 0, "BUG-H4: tasks_running went negative");
+    }
+
+    #[test]
+    fn test_task_start_without_prior_queue_does_not_go_negative() {
+        let m = fresh_metrics();
+        // start without a prior queue event
+        m.record_task_start();
+        assert_eq!(m.tasks_queued.get(), 0, "BUG-H4: tasks_queued went negative");
+        assert_eq!(m.tasks_running.get(), 1);
     }
 }

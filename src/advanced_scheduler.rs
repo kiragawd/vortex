@@ -196,6 +196,42 @@ pub fn expand_mapped_task(
     }).collect()
 }
 
+/// ENT-9: Scheduler integration for dynamic task mapping.
+///
+/// NOTE: Full implementation requires DB-layer methods:
+///   - `db.get_mappable_tasks(dag_id)` → Vec of tasks with `expand_kwargs`
+///   - `db.create_mapped_task_instance(dag_id, task_id, run_id, map_index, config)`
+/// Once those are added to `DatabaseBackend`, replace the TODO body below.
+pub struct DynamicTaskScheduler {
+    db: Arc<dyn DatabaseBackend>,
+}
+
+impl DynamicTaskScheduler {
+    pub fn new(db: Arc<dyn DatabaseBackend>) -> Self {
+        Self { db }
+    }
+
+    /// Expand mapped tasks for a DAG run and persist the resulting instances.
+    /// Returns the number of mapped task instances created.
+    pub async fn schedule_dynamic_tasks(&self, dag_id: &str, _run_id: &str) -> anyhow::Result<usize> {
+        // TODO(ENT-9): implement when DatabaseBackend gains:
+        //   get_mappable_tasks(dag_id) and create_mapped_task_instance(...)
+        //
+        // Pseudocode:
+        //   let mapped_tasks = self.db.get_mappable_tasks(dag_id).await?;
+        //   for task in mapped_tasks {
+        //       if let Some(config) = &task.expand_kwargs {
+        //           let expanded = expand_mapped_task(&template, &values);
+        //           for (idx, cfg) in expanded.iter().enumerate() {
+        //               self.db.create_mapped_task_instance(dag_id, &task.task_id, run_id, idx, cfg).await?;
+        //           }
+        //       }
+        //   }
+        warn!(dag_id = %dag_id, "ENT-9: schedule_dynamic_tasks is a stub — DB methods not yet implemented");
+        Ok(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,17 +1,29 @@
 syntax = "proto3";
 package vortex.swarm;
 
+// SECURITY: All RPCs require a valid `authorization` metadata header containing
+// the bearer token configured via VORTEX_GRPC_AUTH_TOKEN (BUG-C7).
+// In production mode, the gRPC listener MUST use TLS to protect secrets in transit (SEC-10).
 service SwarmController {
+  // Register a new worker node with the controller.
   rpc RegisterWorker (WorkerInfo) returns (RegisterResponse);
+  // Periodic heartbeat from worker to controller.
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  // Worker polls for available tasks to execute.
   rpc PollTask (PollTaskRequest) returns (PollTaskResponse);
+  // Worker reports the result of a completed task.
   rpc ReportTaskResult (TaskResult) returns (TaskResultAck);
 }
 
+// TODO(INFRA-11): Add protoc-gen-validate constraints to enforce these rules at the proto layer.
 message WorkerInfo {
+  // worker_id: must be non-empty, max 64 chars, pattern [a-zA-Z0-9_-]+
   string worker_id = 1;
+  // hostname: must be non-empty, max 253 chars (RFC 1123)
   string hostname = 2;
+  // capacity: must be > 0 and <= 256
   int32 capacity = 3;
+  // labels: each label max 128 chars
   repeated string labels = 4;
 }
 
@@ -21,9 +33,13 @@ message RegisterResponse {
 }
 
 message HeartbeatRequest {
+  // worker_id: must be non-empty, max 64 chars, pattern [a-zA-Z0-9_-]+
   string worker_id = 1;
+  // active_tasks: must be >= 0
   int32 active_tasks = 2;
+  // cpu_usage: must be in range [0.0, 1.0]
   float cpu_usage = 3;
+  // memory_usage: must be in range [0.0, 1.0]
   float memory_usage = 4;
 }
 
@@ -33,7 +49,9 @@ message HeartbeatResponse {
 }
 
 message PollTaskRequest {
+  // worker_id: must be non-empty, max 64 chars, pattern [a-zA-Z0-9_-]+
   string worker_id = 1;
+  // available_slots: must be > 0 and <= 256
   int32 available_slots = 2;
 }
 
@@ -42,12 +60,20 @@ message PollTaskResponse {
 }
 
 message TaskAssignment {
+  // task_instance_id: must be non-empty UUID, max 64 chars
   string task_instance_id = 1;
+  // dag_id: must match [a-zA-Z0-9_-]+, max 128 chars
   string dag_id = 2;
+  // task_id: must match [a-zA-Z0-9_-]+, max 128 chars
   string task_id = 3;
+  // command: must be non-empty, max 4096 chars
   string command = 4;
+  // dag_run_id: must be non-empty, max 128 chars
   string dag_run_id = 5;
-  map<string, string> secrets = 6; // Decrypted secrets injected here
+  // SECURITY (SEC-10): Decrypted secrets are transmitted in this field.
+  // This channel MUST be protected by TLS in production to prevent plaintext exposure.
+  // Set VORTEX_GRPC_TLS_CERT and VORTEX_GRPC_TLS_KEY or use --tls-cert / --tls-key.
+  map<string, string> secrets = 6;
   string task_type = 7;           // "bash" or "python"
   string config_json = 8;        // Serialized task config
   int32 max_retries = 9;
@@ -56,16 +82,24 @@ message TaskAssignment {
 }
 
 message TaskResult {
+  // worker_id: must be non-empty, max 64 chars, pattern [a-zA-Z0-9_-]+
   string worker_id = 1;
+  // task_instance_id: must be non-empty UUID, max 64 chars
   string task_instance_id = 2;
+  // dag_id: must match [a-zA-Z0-9_-]+, max 128 chars
   string dag_id = 3;
+  // task_id: must match [a-zA-Z0-9_-]+, max 128 chars
   string task_id = 4;
   bool success = 5;
+  // stdout: max 1 MiB to prevent memory exhaustion
   string stdout = 6;
+  // stderr: max 1 MiB to prevent memory exhaustion
   string stderr = 7;
   int64 duration_ms = 8;
   int32 max_retries = 9;
   int32 retry_delay_secs = 10;
+  // dag_run_id: must be non-empty, max 128 chars
+  string dag_run_id = 11;  // BUG-H1: Include run_id for complete event logging
 }
 
 message TaskResultAck {

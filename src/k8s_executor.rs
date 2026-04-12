@@ -242,6 +242,65 @@ impl K8sExecutor {
         // In production: kube::Client delete pod
         Ok(())
     }
+
+    /// ENT-16: Validate inputs and attempt pod submission with environment checks.
+    /// Returns the sanitized pod name on success.
+    pub async fn submit_pod(
+        &self,
+        dag_id: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<String> {
+        if dag_id.is_empty() || task_id.is_empty() {
+            anyhow::bail!("K8s executor: dag_id and task_id are required for pod naming");
+        }
+
+        // Inline sanitization to avoid scope resolution ambiguity (same logic as sanitize_k8s_name)
+        let sanitize = |s: &str| -> String {
+            let r: String = s.chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+                .collect();
+            r.trim_matches('-').to_string()
+        };
+        let pod_name = format!(
+            "vortex-{}-{}-{}",
+            sanitize(dag_id),
+            sanitize(task_id),
+            &run_id[..8.min(run_id.len())]
+        );
+
+        // Check for Kubernetes configuration
+        let has_kubeconfig = std::env::var("KUBECONFIG").is_ok();
+        let has_in_cluster = std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
+        if !has_kubeconfig && !has_in_cluster {
+            anyhow::bail!(
+                "K8s executor: no Kubernetes configuration found. \
+                 Set KUBECONFIG for out-of-cluster access or run inside a Kubernetes pod \
+                 (KUBERNETES_SERVICE_HOST must be set)."
+            );
+        }
+
+        info!(pod = %pod_name, namespace = %self.config.namespace, "ENT-16: k8s_submit_pod");
+        // TODO(ENT-16): Replace with real kube::Client pod submission once
+        // the `kube` crate is added to Cargo.toml:
+        //   kube = { version = "0.88", features = ["runtime", "derive"] }
+        //   k8s-openapi = { version = "0.21", features = ["v1_28"] }
+        Ok(pod_name)
+    }
+
+    /// ENT-16: Lightweight connectivity check using the Kubernetes API server URL.
+    pub async fn health_check(&self) -> Result<()> {
+        let api_server = std::env::var("KUBERNETES_SERVICE_HOST")
+            .map(|h| {
+                let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".into());
+                format!("https://{}:{}", h, port)
+            })
+            .or_else(|_| std::env::var("KUBECONFIG").map(|_| "kubeconfig".to_string()))
+            .unwrap_or_else(|_| "not configured".to_string());
+        info!(api_server = %api_server, "ENT-16: k8s_health_check");
+        // TODO(ENT-16): perform actual /healthz request once kube crate is linked
+        Ok(())
+    }
 }
 
 // ──────────────────────── External Secrets Engine ─────────────────────────────
@@ -312,6 +371,16 @@ impl ExternalSecretsManager {
     pub fn list_backends(&self) -> Vec<String> {
         self.backends.keys().cloned().collect()
     }
+}
+
+/// ENT-16: Sanitize a string to a valid Kubernetes name component.
+/// Lowercases, replaces non-alphanumeric-or-hyphen chars with hyphens, strips leading/trailing hyphens.
+pub fn sanitize_k8s_name(input: &str) -> String {
+    let s: String = input
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    s.trim_matches('-').to_string()
 }
 
 #[cfg(test)]

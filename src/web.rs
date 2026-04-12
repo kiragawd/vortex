@@ -8,8 +8,9 @@ use axum::{
     routing::{get, post, patch, delete, put},
     Json, Router,
 };
-// Bug 13 fix: import CorsLayer to allow cross-origin browser clients.
-use tower_http::cors::{CorsLayer, Any};
+// BUG-H14 FIX: import CorsLayer with configurable origins instead of Any.
+use tower_http::cors::{CorsLayer, AllowOrigin};
+use tracing::warn;
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use crate::swarm::SwarmState;
@@ -147,6 +148,8 @@ impl WebServer {
             // Analysis
             .route("/api/analysis/gantt", get(gantt_handler))
             .route("/api/analysis/calendar", get(calendar_handler))
+            // Global runs (team-scoped)
+            .route("/api/runs", get(get_all_runs_handler))
             // Teams API
             // Teams API
             .route("/api/teams", get(get_teams_handler).post(create_team_handler))
@@ -169,6 +172,10 @@ impl WebServer {
             .route("/api/approval/requests", get(get_approval_requests_handler).post(create_approval_request_handler))
             .route("/api/approval/requests/:id/approve", post(approve_request_handler))
             .route("/api/approval/requests/:id/reject", post(reject_request_handler))
+            // ENT-10: Approval Workflow v1 API aliases
+            .route("/api/v1/approvals/pending", get(list_pending_approvals_handler))
+            .route("/api/v1/approvals/:id/vote", post(vote_on_approval_handler))
+            .route("/api/v1/approvals/:id/status", get(get_approval_request_status_handler))
             .route("/api/retention/policies", get(get_retention_policies_handler).post(create_retention_policy_handler))
             .route("/api/compliance/controls", get(get_compliance_controls_handler).post(upsert_compliance_control_handler))
             .route("/api/compliance/summary/:framework", get(get_compliance_summary_handler))
@@ -184,12 +191,40 @@ impl WebServer {
             .route("/api/network/ip-allowlist/:id", delete(delete_ip_allowlist_rule_handler))
             .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
-        // Bug 13 fix: apply CORS layer so browser clients from other origins can
-        // reach the API. Bearer-token auth makes a permissive policy safe here.
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any);
+        // BUG-H14 FIX: CORS origins are configurable via VORTEX_CORS_ORIGINS.
+        // If unset, no Access-Control-Allow-Origin header is emitted (same-origin only).
+        // If set to "*", allow any origin (development only — a warning is logged).
+        // Otherwise, parse as comma-separated list of allowed origins.
+        let cors = {
+            use tower_http::cors::Any;
+            let cors_base = CorsLayer::new()
+                .allow_methods(Any)
+                .allow_headers(Any);
+
+            match std::env::var("VORTEX_CORS_ORIGINS") {
+                Ok(val) if val.trim() == "*" => {
+                    warn!("⚠️  VORTEX_CORS_ORIGINS=* allows any origin — use only in development");
+                    cors_base.allow_origin(AllowOrigin::any())
+                }
+                Ok(val) if !val.trim().is_empty() => {
+                    let origins: Vec<axum::http::HeaderValue> = val
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect();
+                    if origins.is_empty() {
+                        warn!("VORTEX_CORS_ORIGINS contains no valid origins, defaulting to same-origin");
+                        cors_base
+                    } else {
+                        info!("CORS allowed origins: {:?}", val);
+                        cors_base.allow_origin(origins)
+                    }
+                }
+                _ => {
+                    // No CORS header emitted — browser enforces same-origin policy.
+                    cors_base
+                }
+            }
+        };
 
         let app = Router::new()
             .merge(api_routes)
@@ -205,8 +240,6 @@ impl WebServer {
             // Improvement 38: health check endpoint (also exposed under /api/ for UI clients)
             .route("/health", get(health_handler))
             .route("/api/health", get(health_handler))
-            // Global runs endpoint for the UI runs page
-            .route("/api/runs", get(get_all_runs_handler))
             .fallback(static_handler)
             .layer(middleware::from_fn(request_id_middleware))
             // Improvement 40: reject request bodies larger than 10 MB
@@ -447,12 +480,27 @@ struct LoginRequest {
     password: String,
 }
 
-async fn login(State(state): State<Arc<AppState>>, Json(body): Json<LoginRequest>) -> Response {
-    // Bug 31 fix: simple in-memory rate-limit — max 10 attempts per username per 60 seconds.
+async fn login(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<LoginRequest>) -> Response {
+    // BUG-H13 FIX: Rate limit key is (client_ip, username) to prevent
+    // username enumeration via per-user rate limit differences.
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let rate_key = format!("{}:{}", client_ip, body.username);
+    // Max 10 attempts per (IP, username) per 60 seconds.
     {
         let mut attempts = state.login_attempts.lock().await;
         let now = std::time::Instant::now();
-        let entry = attempts.entry(body.username.clone()).or_insert((0, now));
+        let entry = attempts.entry(rate_key.clone()).or_insert((0, now));
         // Reset window if it's been more than 60 seconds
         if now.duration_since(entry.1).as_secs() >= 60 {
             *entry = (0, now);
@@ -465,18 +513,39 @@ async fn login(State(state): State<Arc<AppState>>, Json(body): Json<LoginRequest
         }
     }
 
+    // SEC-11 FIX: Always compute a bcrypt verify to prevent timing-based
+    // username enumeration. Without this, requests for non-existent users
+    // return faster (no hash computation), leaking valid usernames.
+    let dummy_hash = "$2b$12$LJ3m4ys3Lg/8Bf3qmaL04eFJCKYKLBRtR0O9/dF0FNcjMdWKrwQqC";
     match state.db.validate_user(&body.username, &body.password).await {
-        Ok(Some((api_key, role))) => {
+        Ok(Some((api_key, role, password_change_required))) => {
             // Successful login — reset the counter
-            state.login_attempts.lock().await.remove(&body.username);
+            state.login_attempts.lock().await.remove(&rate_key);
             info!("🔑 User logged in: {} (Role: {})", body.username, role);
             let _ = state.db.log_audit_event(
                 &body.username, "auth.login", "user", &body.username, "{}",
             ).await;
+            // SEC-8: If password change is required, signal the client
+            // instead of granting normal access with default credentials.
+            if password_change_required {
+                return Json(json!({
+                    "password_change_required": true,
+                    "username": body.username,
+                    "message": "Password change required before proceeding"
+                })).into_response();
+            }
             Json(json!({ "api_key": api_key, "role": role, "username": body.username })).into_response()
         }
-        Ok(None) => (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+        Ok(None) => {
+            // SEC-11: compute bcrypt verify against dummy hash so response
+            // time is indistinguishable from a valid-user-wrong-password case.
+            let _ = bcrypt::verify(&body.password, dummy_hash);
+            (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response()
+        }
+        Err(_e) => {
+            let _ = bcrypt::verify(&body.password, dummy_hash);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Authentication service error" }))).into_response()
+        }
     }
 }
 
@@ -511,8 +580,14 @@ async fn delete_user(Path(username): Path<String>, State(state): State<Arc<AppSt
 
 // Secrets Management Handlers
 
-async fn get_secrets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.db.get_all_secrets().await {
+/// GET /api/secrets — list all secret keys visible to the caller's team.
+/// Admins (team_id = None) see all secrets; team-scoped users see only their team's secrets.
+async fn get_secrets(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+) -> impl IntoResponse {
+    let team_filter = if auth_user.role == "Admin" { None } else { auth_user.team_id.as_deref() };
+    match state.db.get_all_secrets(team_filter).await {
         Ok(keys) => Json(json!({ "secrets": keys })),
         Err(_) => Json(json!({ "secrets": [] })),
     }
@@ -532,7 +607,7 @@ async fn store_secret(State(state): State<Arc<AppState>>, axum::extract::Extensi
 
     match vault.encrypt(&body.value) {
         Ok(encrypted) => {
-            if let Err(e) = state.db.store_secret(&body.key, &encrypted).await {
+            if let Err(e) = state.db.store_secret(&body.key, &encrypted, auth_user.team_id.as_deref(), Some(&auth_user.username)).await {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB Error: {}", e) }))).into_response();
             }
             info!("🔐 Secret stored: {}", body.key);
@@ -546,7 +621,7 @@ async fn store_secret(State(state): State<Arc<AppState>>, axum::extract::Extensi
 }
 
 async fn delete_secret(Path(key): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> Response {
-    match state.db.delete_secret(&key).await {
+    match state.db.delete_secret(&key, Some(&auth_user.username)).await {
         Ok(_) => {
             let _ = state.db.log_audit_event(
                 &auth_user.username, "secret.delete", "secret", &key, "{}",
@@ -593,15 +668,51 @@ async fn get_dags(
     }
 }
 
-/// GET /api/runs — all recent runs across every DAG (for the UI Runs page)
+/// GET /api/runs — all recent runs across every DAG, scoped to the caller's team.
+/// Admins see all runs. Team-scoped users see only runs for DAGs owned by their team.
 async fn get_all_runs_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationQuery>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
 ) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(100).min(500);
     let offset = params.offset.unwrap_or(0);
     match state.db.get_all_runs(limit, offset).await {
-        Ok((runs, total)) => Json(PaginatedResponse { data: runs, total, limit, offset }).into_response(),
+        Ok((runs, total)) => {
+            if auth_user.role == "Admin" {
+                Json(PaginatedResponse { data: runs, total, limit, offset }).into_response()
+            } else if let Some(ref user_team_id) = auth_user.team_id {
+                // Build a set of DAG IDs belonging to the user's team
+                let team_dag_ids: std::collections::HashSet<String> = match state.db.get_all_dags(i64::MAX, 0).await {
+                    Ok((dags, _)) => dags.iter()
+                        .filter(|d| d.get("team_id").and_then(|v| v.as_str()) == Some(user_team_id.as_str()))
+                        .filter_map(|d| d.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect(),
+                    Err(_) => std::collections::HashSet::new(),
+                };
+                let filtered: Vec<_> = runs.into_iter()
+                    .filter(|r| r.get("dag_id").and_then(|v| v.as_str())
+                        .map(|id| team_dag_ids.contains(id)).unwrap_or(false))
+                    .collect();
+                let filtered_total = filtered.len() as i64;
+                Json(PaginatedResponse { data: filtered, total: filtered_total, limit, offset }).into_response()
+            } else {
+                // Non-admin with no team: show runs for teamless DAGs only
+                let teamless_dag_ids: std::collections::HashSet<String> = match state.db.get_all_dags(i64::MAX, 0).await {
+                    Ok((dags, _)) => dags.iter()
+                        .filter(|d| d.get("team_id").and_then(|v| v.as_str()).is_none())
+                        .filter_map(|d| d.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect(),
+                    Err(_) => std::collections::HashSet::new(),
+                };
+                let filtered: Vec<_> = runs.into_iter()
+                    .filter(|r| r.get("dag_id").and_then(|v| v.as_str())
+                        .map(|id| teamless_dag_ids.contains(id)).unwrap_or(false))
+                    .collect();
+                let filtered_total = filtered.len() as i64;
+                Json(PaginatedResponse { data: filtered, total: filtered_total, limit, offset }).into_response()
+            }
+        },
         Err(_) => Json(PaginatedResponse::<serde_json::Value> { data: vec![], total: 0, limit, offset }).into_response(),
     }
 }
@@ -1287,6 +1398,30 @@ async fn static_handler(req: Request<axum::body::Body>) -> impl IntoResponse {
 
 // ─── XCom Handlers ─────────────────────────────────────────────────
 
+/// Verify the caller's team owns the DAG. Returns `Ok(())` for admins or matching teams,
+/// `Err(Response)` with 403/404 otherwise.
+async fn verify_dag_team_access(
+    db: &dyn DatabaseBackend,
+    dag_id: &str,
+    auth_user: &AuthUser,
+) -> Result<(), Response> {
+    if auth_user.role == "Admin" {
+        return Ok(());
+    }
+    match db.get_dag_by_id(dag_id).await {
+        Ok(Some(dag)) => {
+            let dag_team = dag.get("team_id").and_then(|v| v.as_str());
+            match (&auth_user.team_id, dag_team) {
+                (Some(user_tid), Some(dag_tid)) if user_tid == dag_tid => Ok(()),
+                (None, None) => Ok(()), // both teamless
+                _ => Err((StatusCode::FORBIDDEN, Json(json!({"error": "DAG belongs to another team"}))).into_response()),
+            }
+        }
+        Ok(None) => Err((StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response()),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()),
+    }
+}
+
 #[derive(Deserialize)]
 struct XComPushRequest {
     dag_id: String,
@@ -1296,7 +1431,15 @@ struct XComPushRequest {
     value: String,
 }
 
-async fn xcom_push_handler(State(state): State<Arc<AppState>>, Json(body): Json<XComPushRequest>) -> Response {
+/// POST /api/xcom/push — push an XCom value. Verifies the caller's team owns the DAG.
+async fn xcom_push_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+    Json(body): Json<XComPushRequest>,
+) -> Response {
+    if let Err(resp) = verify_dag_team_access(state.db.as_ref(), &body.dag_id, &auth_user).await {
+        return resp;
+    }
     match state.xcom.xcom_push(&body.dag_id, &body.task_id, &body.run_id, &body.key, body.value).await {
         Ok(_) => Json(json!({"status": "ok"})).into_response(),
         Err(e) => {
@@ -1314,7 +1457,15 @@ struct XComPullQuery {
     key: String,
 }
 
-async fn xcom_pull_handler(State(state): State<Arc<AppState>>, Query(params): Query<XComPullQuery>) -> Response {
+/// GET /api/xcom/pull — pull an XCom value. Verifies the caller's team owns the DAG.
+async fn xcom_pull_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+    Query(params): Query<XComPullQuery>,
+) -> Response {
+    if let Err(resp) = verify_dag_team_access(state.db.as_ref(), &params.dag_id, &auth_user).await {
+        return resp;
+    }
     match state.xcom.xcom_pull(&params.dag_id, &params.task_id, &params.run_id, &params.key).await {
         Ok(Some(value)) => Json(json!({"value": value})).into_response(),
         Ok(None) => {
@@ -1328,11 +1479,17 @@ async fn xcom_pull_handler(State(state): State<Arc<AppState>>, Query(params): Qu
     }
 }
 
+/// GET /api/dags/:id/runs/:run_id/xcom — list all XCom entries for a DAG run.
+/// Verifies the caller's team owns the DAG.
 async fn xcom_list_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path((dag_id, run_id)): Path<(String, String)>,
     Query(params): Query<PaginationQuery>,
 ) -> Response {
+    if let Err(resp) = verify_dag_team_access(state.db.as_ref(), &dag_id, &auth_user).await {
+        return resp;
+    }
     let limit = params.limit.unwrap_or(50).min(500);
     let offset = params.offset.unwrap_or(0);
 
@@ -1486,13 +1643,17 @@ async fn get_audit_logs_handler(
 #[derive(Deserialize)]
 struct GanttQuery {
     dag_id: String,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 async fn gantt_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<GanttQuery>,
 ) -> Response {
-    match state.db.get_gantt_data(&params.dag_id).await {
+    let limit = params.limit.unwrap_or(500).min(5000);
+    let offset = params.offset.unwrap_or(0).max(0);
+    match state.db.get_gantt_data(&params.dag_id, limit, offset).await {
         Ok(tasks) => Json(json!({ "dag_id": params.dag_id, "tasks": tasks })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
@@ -1719,7 +1880,27 @@ async fn get_auth_providers_handler(
         return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can manage auth providers"}))).into_response();
     }
     match state.db.get_auth_providers().await {
-        Ok(providers) => Json(json!({"providers": providers})).into_response(),
+        Ok(providers) => {
+            // SEC-3: Decrypt auth provider configs before returning to admin
+            let decrypted: Vec<serde_json::Value> = providers.into_iter().map(|mut p| {
+                if let Some(vault) = &state.vault {
+                    if let Some(config_val) = p.get("config") {
+                        let config_str = match config_val {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        if let Ok(decrypted_str) = vault.decrypt(&config_str) {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&decrypted_str) {
+                                p.as_object_mut().map(|obj| obj.insert("config".to_string(), parsed));
+                            }
+                        }
+                        // If decryption fails, config may be plaintext (pre-migration data) — leave as-is
+                    }
+                }
+                p
+            }).collect();
+            Json(json!({"providers": decrypted})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
@@ -1747,7 +1928,16 @@ async fn create_auth_provider_handler(
         return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid provider type. Must be one of: {:?}", valid_types)}))).into_response();
     }
     let config_str = serde_json::to_string(&body.config).unwrap_or_else(|_| "{}".to_string());
-    match state.db.upsert_auth_provider(&body.id, &body.provider_type, &body.name, &config_str, body.enabled.unwrap_or(true), body.priority.unwrap_or(0)).await {
+    // SEC-3: Encrypt auth provider config before storing (contains client_secret, etc.)
+    let config_to_store = if let Some(vault) = &state.vault {
+        match vault.encrypt(&config_str) {
+            Ok(encrypted) => encrypted,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Config encryption failed: {}", e)}))).into_response(),
+        }
+    } else {
+        config_str
+    };
+    match state.db.upsert_auth_provider(&body.id, &body.provider_type, &body.name, &config_to_store, body.enabled.unwrap_or(true), body.priority.unwrap_or(0)).await {
         Ok(()) => {
             let _ = state.db.log_audit_event(&auth_user.username, "auth_provider.create", "auth_provider", &body.id, "{}").await;
             (StatusCode::CREATED, Json(json!({"status": "created", "id": body.id}))).into_response()
@@ -2119,6 +2309,61 @@ async fn reject_request_handler(
 ) -> Response {
     match state.db.reject_approval_request(&id, &user.username, body.comment.as_deref()).await {
         Ok(()) => Json(json!({"status": "rejected", "request_id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// ENT-10: Approval Workflow v1 API handlers
+
+async fn list_pending_approvals_handler(
+    State(state): State<Arc<AppState>>,
+    _user: axum::Extension<AuthUser>,
+) -> Response {
+    match state.db.get_approval_requests(Some("pending"), 100).await {
+        Ok(approvals) => Json(json!({ "approvals": approvals })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct VoteBody {
+    approved: bool,
+    comment: Option<String>,
+}
+
+async fn vote_on_approval_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Path(id): Path<String>,
+    Json(body): Json<VoteBody>,
+) -> Response {
+    if body.approved {
+        match state.db.add_approval_vote(&id, &user.username, body.comment.as_deref()).await {
+            Ok(new_status) => Json(json!({"status": new_status, "request_id": id})).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        }
+    } else {
+        match state.db.reject_approval_request(&id, &user.username, body.comment.as_deref()).await {
+            Ok(()) => Json(json!({"status": "rejected", "request_id": id})).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        }
+    }
+}
+
+async fn get_approval_request_status_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    // Retrieve all requests and find the one matching `id`.
+    match state.db.get_approval_requests(None, 1000).await {
+        Ok(requests) => {
+            match requests.into_iter().find(|r| {
+                r.get("id").and_then(|v| v.as_str()) == Some(id.as_str())
+            }) {
+                Some(req) => Json(json!({ "status": req })).into_response(),
+                None => (StatusCode::NOT_FOUND, Json(json!({"error": "approval request not found"}))).into_response(),
+            }
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }

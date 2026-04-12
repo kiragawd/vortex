@@ -1,10 +1,11 @@
-#![allow(dead_code)]
 use tracing::{info, warn};
 use tonic::{Request, Response, Status};
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::RwLock;
 use chrono::Utc;
+use subtle::ConstantTimeEq;
 use crate::db_trait::DatabaseBackend;
 use crate::vault::Vault;
 
@@ -14,6 +15,21 @@ use proto::swarm_controller_server::{SwarmController, SwarmControllerServer};
 use proto::*;
 use std::fs;
 use std::path::Path;
+
+/// SECURITY (BUG-H11): Sanitize a path component to prevent directory traversal.
+/// Replaces any character not in `[a-zA-Z0-9_-]` with `_`. Rejects empty input.
+pub fn sanitize_path_component(input: &str) -> Result<String, &'static str> {
+    if input.is_empty() {
+        return Err("path component must not be empty");
+    }
+    Ok(input.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            c
+        } else {
+            '_'
+        }
+    }).collect())
+}
 
 #[derive(Debug, Clone)]
 pub struct WorkerState {
@@ -43,45 +59,66 @@ pub struct PendingTask {
 
 pub struct SwarmState {
     pub workers: RwLock<HashMap<String, WorkerState>>,
-    pub task_queue: RwLock<Vec<PendingTask>>,
+    /// PERF-8: VecDeque for O(1) front removal when dispatching tasks.
+    pub task_queue: RwLock<VecDeque<PendingTask>>,
     pub db: Arc<dyn DatabaseBackend>,
     pub vault: Option<Arc<Vault>>,
     pub metrics: Option<Arc<crate::metrics::VortexMetrics>>,
     pub enabled: bool,
+    /// Token used to authenticate gRPC requests from workers (BUG-C7).
+    /// Loaded from `VORTEX_GRPC_AUTH_TOKEN`. When `None`, auth is disabled (dev mode only).
+    pub grpc_auth_token: Option<String>,
+    /// PERF-6: Atomic counter of total registered workers for O(1) count.
+    /// Counts all registered entries; stale workers are purged by health_check_cycle.
+    pub worker_count: AtomicI64,
 }
 
 impl SwarmState {
-    pub fn new(db: Arc<dyn DatabaseBackend>, enabled: bool, vault: Option<Arc<Vault>>, metrics: Option<Arc<crate::metrics::VortexMetrics>>) -> Self {
+    pub fn new(
+        db: Arc<dyn DatabaseBackend>,
+        enabled: bool,
+        vault: Option<Arc<Vault>>,
+        metrics: Option<Arc<crate::metrics::VortexMetrics>>,
+        grpc_auth_token: Option<String>,
+    ) -> Self {
         Self {
             workers: RwLock::new(HashMap::new()),
-            task_queue: RwLock::new(Vec::new()),
+            task_queue: RwLock::new(VecDeque::new()),
             db,
             vault,
             metrics,
             enabled,
+            grpc_auth_token,
+            worker_count: AtomicI64::new(0),
         }
     }
 
     pub async fn enqueue_task(&self, task: PendingTask) {
         let mut queue = self.task_queue.write().await;
         info!("🐝 Swarm: Task queued for remote execution: {}/{}", task.dag_id, task.task_id);
-        queue.push(task);
+        queue.push_back(task); // PERF-8: push_back for VecDeque
     }
 
     pub async fn active_worker_count(&self) -> usize {
-        let workers = self.workers.read().await;
-        let cutoff = Utc::now() - chrono::Duration::seconds(60);
-        workers.values().filter(|w| w.last_heartbeat > cutoff && !w.draining).count()
+        // PERF-6: O(1) atomic read instead of iterating the workers HashMap.
+        // Counts all registered workers; stale entries are removed by health_check_cycle.
+        self.worker_count.load(Ordering::Relaxed).max(0) as usize
     }
 
     pub async fn get_workers_info(&self) -> Vec<serde_json::Value> {
         let workers = self.workers.read().await;
         let cutoff = Utc::now() - chrono::Duration::seconds(60);
-        workers.values().map(|w| {
+        let total = workers.len();
+        // PERF-7: Limit to 100 workers per call to bound response size.
+        if total > 100 {
+            tracing::debug!("get_workers_info: returning 100 of {} total workers", total);
+        }
+        workers.values().take(100).map(|w| {
             let status = if w.draining { "draining" } else if w.last_heartbeat > cutoff { "active" } else { "stale" };
             serde_json::json!({
                 "worker_id": w.worker_id, "hostname": w.hostname, "capacity": w.capacity,
-                "active_tasks": w.active_tasks, "labels": w.labels, "last_heartbeat": w.last_heartbeat, "status": status
+                "active_tasks": w.active_tasks, "labels": w.labels, "last_heartbeat": w.last_heartbeat,
+                "status": status, "total_workers": total
             })
         }).collect()
     }
@@ -92,18 +129,34 @@ impl SwarmState {
     }
 
     pub async fn remove_worker(&self, worker_id: &str) -> bool {
-        self.workers.write().await.remove(worker_id).is_some()
+        let removed = self.workers.write().await.remove(worker_id).is_some();
+        if removed {
+            // PERF-6: Keep atomic worker count in sync on removal.
+            self.worker_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        removed
     }
 
     pub async fn queue_depth(&self) -> usize {
         self.task_queue.read().await.len()
     }
 
+    /// BUG-M4 FIX: Use a semaphore to prevent overlapping health check cycles.
+    /// If a previous cycle is still running when the next tick fires, skip it.
     pub async fn health_check_loop(self: Arc<Self>) {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
             interval.tick().await;
-            self.health_check_cycle().await;
+            match semaphore.clone().try_acquire_owned() {
+                Ok(permit) => {
+                    self.health_check_cycle().await;
+                    drop(permit);
+                }
+                Err(_) => {
+                    warn!("⚠️ Swarm: Health check cycle still running, skipping this tick");
+                }
+            }
         }
     }
 
@@ -132,8 +185,8 @@ impl SwarmState {
                         if let Ok(tasks) = self.db.get_interrupted_tasks_by_worker(&worker_id).await {
                             let mut queue = self.task_queue.write().await;
                             for t in tasks {
-                                // t is (task_instance_id, dag_id, task_id, command, run_id, task_type, config_json, max_retries, retry_delay_secs)
-                                queue.push(PendingTask {
+                                // t is (task_instance_id, dag_id, task_id, command, run_id, task_type, config_json, max_retries, retry_delay_secs, execution_timeout_secs)
+                                queue.push_back(PendingTask { // PERF-8: push_back for VecDeque
                                     task_instance_id: t.0,
                                     dag_id: t.1,
                                     task_id: t.2,
@@ -144,9 +197,8 @@ impl SwarmState {
                                     max_retries: t.7,
                                     retry_delay_secs: t.8,
                                     required_secrets: vec![], // Resolved at poll time
-                                    execution_timeout_secs: 0,  // BUG-16: not available in re-queue path, worker uses default
+                                    execution_timeout_secs: t.9,  // BUG-H3 FIX: propagate from DB
                                 });
-                                warn!("Task re-queued without original execution_timeout_secs — using default");
                             }
                         }
                         let _ = self.db.clear_worker_id_from_queued_tasks(&worker_id).await;
@@ -179,6 +231,8 @@ impl SwarmController for SwarmService {
             worker_id: info.worker_id, hostname: info.hostname, capacity: info.capacity,
             active_tasks: 0, labels: info.labels, last_heartbeat: Utc::now(), draining: false,
         });
+        // PERF-6: Increment atomic worker counter alongside HashMap insert.
+        self.state.worker_count.fetch_add(1, Ordering::Relaxed);
         Ok(Response::new(RegisterResponse { accepted: true, message: "Welcome to the VORTEX Swarm".to_string() }))
     }
 
@@ -199,42 +253,74 @@ impl SwarmController for SwarmService {
 
     async fn poll_task(&self, request: Request<PollTaskRequest>) -> Result<Response<PollTaskResponse>, Status> {
         let poll = request.into_inner();
-        let mut queue = self.state.task_queue.write().await;
-        let count = std::cmp::min(poll.available_slots as usize, queue.len());
-        
+        // PERF-8: Collect tasks under lock then release early to avoid holding the lock
+        // during DB/vault calls and to fix the latent deadlock in the secret-error requeue path.
+        let polled: Vec<PendingTask> = {
+            let mut queue = self.state.task_queue.write().await;
+            let count = std::cmp::min(poll.available_slots as usize, queue.len());
+            (0..count).filter_map(|_| queue.pop_front()).collect()
+        };
+
         let mut tasks = Vec::new();
-        for t in queue.drain(..count) {
+        for t in polled {
             info!("🐝 Swarm: Dispatching {}/{} to worker {}", t.dag_id, t.task_id, poll.worker_id);
             // Assign task to worker in DB
             let _ = self.state.db.assign_task_to_worker(&t.task_instance_id, &poll.worker_id).await;
-            let _ = self.state.db.log_task_event(&t.task_instance_id, &t.dag_id, &t.task_id, &t.dag_run_id, "started", None, Some(&poll.worker_id)).await;
+            // BUG-M3 FIX: Atomically update in-memory worker active_tasks count alongside DB assignment.
+            {
+                let mut workers = self.state.workers.write().await;
+                if let Some(worker) = workers.get_mut(&poll.worker_id) {
+                    worker.active_tasks += 1;
+                }
+            }
+            // ARCH-1: Log errors on critical task state transitions instead of silently discarding.
+            if let Err(e) = self.state.db.log_task_event(&t.task_instance_id, &t.dag_id, &t.task_id, &t.dag_run_id, "started", None, Some(&poll.worker_id)).await {
+                tracing::error!(task = %t.task_id, dag = %t.dag_id, "Failed to log task start event: {}", e);
+            }
 
             if let Some(m) = &self.state.metrics { m.record_task_start(); }
 
-            // Resolve and Decrypt Secrets
+            // PERF-9: Resolve and Decrypt Secrets in a single batch DB query.
             let mut resolved_secrets = HashMap::new();
             let mut secret_errors: Vec<String> = Vec::new();
             if let Some(vault) = &self.state.vault {
-                for secret_key in &t.required_secrets {
-                    match self.state.db.get_secret(secret_key).await {
-                        Ok(Some(encrypted)) => {
-                            match vault.decrypt(&encrypted) {
-                                Ok(decrypted) => { resolved_secrets.insert(secret_key.clone(), decrypted); }
-                                Err(e) => { secret_errors.push(format!("{}: decryption failed: {}", secret_key, e)); }
+                if !t.required_secrets.is_empty() {
+                    match self.state.db.get_secrets_batch(&t.required_secrets).await {
+                        Ok(batch) => {
+                            for (secret_key, val) in batch {
+                                match val {
+                                    Some(encrypted) => {
+                                        match vault.decrypt(&encrypted) {
+                                            Ok(decrypted) => { resolved_secrets.insert(secret_key, decrypted); }
+                                            Err(e) => { secret_errors.push(format!("{}: decryption failed: {}", secret_key, e)); }
+                                        }
+                                    }
+                                    None => { secret_errors.push(format!("{}: not found in vault", secret_key)); }
+                                }
                             }
                         }
-                        Ok(None) => { secret_errors.push(format!("{}: not found in vault", secret_key)); }
-                        Err(e) => { secret_errors.push(format!("{}: lookup failed: {}", secret_key, e)); }
+                        Err(e) => { secret_errors.push(format!("batch secret lookup failed: {}", e)); }
                     }
                 }
             }
             if !secret_errors.is_empty() {
-                warn!(task = %t.task_id, dag = %t.dag_id, "Failed to resolve required secrets: {:?}", secret_errors);
-                let _ = self.state.db.log_task_event(
+                // SECURITY (BUG-M2): Log detailed secret errors only to tracing (stderr),
+                // never to task events (stored in DB) to avoid leaking vault structure.
+                tracing::error!(task = %t.task_id, dag = %t.dag_id, "Failed to resolve required secrets: {:?}", secret_errors);
+                if let Err(e) = self.state.db.log_task_event(
                     &t.task_instance_id, &t.dag_id, &t.task_id, &t.dag_run_id,
-                    "failed", Some(&format!("Secret resolution failed: {}", secret_errors.join(", "))), None
-                ).await;
-                continue; // Skip this task — don't dispatch without its secrets
+                    "secret_error", Some("Failed to resolve required secrets — task re-queued"), None
+                ).await {
+                    tracing::error!(task = %t.task_id, "Failed to log secret_error event: {}", e);
+                }
+                // BUG-H2 FIX: Re-queue the task instead of dropping it silently.
+                // Update state back to Queued so scheduler can retry.
+                // ARCH-1: Log error if state update fails so the issue is visible.
+                if let Err(e) = self.state.db.update_task_state(&t.task_instance_id, "Queued").await {
+                    tracing::error!(task = %t.task_id, "Failed to reset task state to Queued after secret error: {}", e);
+                }
+                self.state.enqueue_task(t).await;
+                continue;
             }
 
             tasks.push(TaskAssignment {
@@ -257,6 +343,14 @@ impl SwarmController for SwarmService {
     async fn report_task_result(&self, request: Request<TaskResult>) -> Result<Response<TaskResultAck>, Status> {
         let result = request.into_inner();
         
+        // BUG-M3 FIX: Atomically decrement in-memory worker active_tasks on result.
+        {
+            let mut workers = self.state.workers.write().await;
+            if let Some(worker) = workers.get_mut(&result.worker_id) {
+                worker.active_tasks = (worker.active_tasks - 1).max(0);
+            }
+        }
+        
         // Convert proto::TaskResult to executor::ExecutionResult for DB storage
         let exec_result = crate::executor::ExecutionResult {
             task_id: result.task_id.clone(),
@@ -269,13 +363,21 @@ impl SwarmController for SwarmService {
         let _ = self.state.db.store_task_result(&result.task_instance_id, &exec_result).await;
 
         if result.success {
-            let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "success", None, Some(&result.worker_id)).await;
+            // BUG-H1 FIX: Pass actual dag_run_id instead of empty string
+            // ARCH-1: Log error on critical success event failure.
+            if let Err(e) = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, &result.dag_run_id, "success", None, Some(&result.worker_id)).await {
+                tracing::error!(task = %result.task_id, "Failed to log task success event: {}", e);
+            }
             if let Some(m) = &self.state.metrics { m.record_task_success(result.duration_ms as f64 / 1000.0); }
         }
 
         // Retry Logic
         if !result.success {
-            let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "failed", Some("Task failed on worker"), Some(&result.worker_id)).await;
+            // BUG-H1 FIX: Pass actual dag_run_id instead of empty string
+            // ARCH-1: Log error on critical failure event.
+            if let Err(e) = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, &result.dag_run_id, "failed", Some("Task failed on worker"), Some(&result.worker_id)).await {
+                tracing::error!(task = %result.task_id, "Failed to log task failed event: {}", e);
+            }
             if let Some(m) = &self.state.metrics { m.record_task_failure(result.duration_ms as f64 / 1000.0); }
             if let Ok((retry_count, _)) = self.state.db.get_task_instance_retry_info(&result.task_instance_id).await {
                 if retry_count < result.max_retries {
@@ -283,7 +385,8 @@ impl SwarmController for SwarmService {
                     let _ = self.state.db.increment_task_retry_count(&result.task_instance_id).await;
                     let _ = self.state.db.update_task_state(&result.task_instance_id, "Queued").await;
                     let msg = format!("Retrying task: attempt {}/{}", retry_count + 1, result.max_retries);
-                    let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, "", "retry", Some(&msg), Some(&result.worker_id)).await;
+                    // BUG-H1 FIX: Pass actual dag_run_id instead of empty string
+                    let _ = self.state.db.log_task_event(&result.task_instance_id, &result.dag_id, &result.task_id, &result.dag_run_id, "retry", Some(&msg), Some(&result.worker_id)).await;
                     
                     // Re-enqueue after delay
                     let state_clone = Arc::clone(&self.state);
@@ -293,7 +396,7 @@ impl SwarmController for SwarmService {
                         tokio::time::sleep(std::time::Duration::from_secs(retry_delay as u64)).await;
                         
                         if let Ok(Some(details)) = state_clone.db.get_task_instance_details_full(&ti_id).await {
-                            let (dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs) = details;
+                            let (dag_id, task_id, command, dag_run_id, task_type, config_json, max_retries, retry_delay_secs, execution_timeout_secs) = details;
                             let required_secrets: Vec<String> = vec![];
                             state_clone.enqueue_task(PendingTask {
                                 task_instance_id: ti_id,
@@ -306,9 +409,8 @@ impl SwarmController for SwarmService {
                                 max_retries,
                                 retry_delay_secs,
                                 required_secrets,
-                                execution_timeout_secs: 0,  // BUG-16: not available in retry path, worker uses default
+                                execution_timeout_secs,  // BUG-H3 FIX: propagated from DB
                             }).await;
-                            warn!("Task re-queued without original execution_timeout_secs — using default");
                         }
                     });
                 }
@@ -316,7 +418,11 @@ impl SwarmController for SwarmService {
         }
         
         let state_str = if result.success { "Success" } else { "Failed" };
-        let log_dir = format!("logs/{}/{}", result.dag_id, result.task_id);
+        // SECURITY (BUG-H11): Sanitize dag_id and task_id to prevent directory traversal
+        // (e.g., dag_id="../../etc" writing outside the logs directory).
+        let safe_dag_id = sanitize_path_component(&result.dag_id).unwrap_or_else(|_| "_unknown_dag".to_string());
+        let safe_task_id = sanitize_path_component(&result.task_id).unwrap_or_else(|_| "_unknown_task".to_string());
+        let log_dir = format!("logs/{}/{}", safe_dag_id, safe_task_id);
         if let Err(e) = fs::create_dir_all(&log_dir) {
             warn!("⚠️ Swarm: Failed to create log directory {}: {}", log_dir, e);
         } else {
@@ -341,6 +447,44 @@ impl SwarmController for SwarmService {
     }
 }
 
-pub fn create_grpc_server(state: Arc<SwarmState>) -> SwarmControllerServer<SwarmService> {
-    SwarmControllerServer::new(SwarmService { state })
+/// gRPC authentication interceptor that validates bearer tokens on every request (BUG-C7).
+/// Uses constant-time comparison via `subtle::ConstantTimeEq` to prevent timing attacks (SEC-11).
+#[derive(Clone)]
+pub struct GrpcAuthInterceptor {
+    auth_token: Option<String>,
+}
+
+impl tonic::service::Interceptor for GrpcAuthInterceptor {
+    fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
+        let Some(expected) = &self.auth_token else {
+            // No auth token configured (dev mode) — allow all requests
+            return Ok(req);
+        };
+
+        let provided = req
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| Status::unauthenticated("Invalid or missing auth token"))?;
+
+        let provided = provided.strip_prefix("Bearer ").unwrap_or(provided);
+
+        // Constant-time comparison to prevent timing attacks (SEC-11)
+        if expected.as_bytes().ct_eq(provided.as_bytes()).into() {
+            Ok(req)
+        } else {
+            Err(Status::unauthenticated("Invalid or missing auth token"))
+        }
+    }
+}
+
+/// Build the gRPC SwarmController server with authentication interceptor.
+/// The auth token is read from `SwarmState::grpc_auth_token`.
+pub fn create_grpc_server(
+    state: Arc<SwarmState>,
+) -> tonic::service::interceptor::InterceptedService<SwarmControllerServer<SwarmService>, GrpcAuthInterceptor> {
+    let interceptor = GrpcAuthInterceptor {
+        auth_token: state.grpc_auth_token.clone(),
+    };
+    SwarmControllerServer::with_interceptor(SwarmService { state }, interceptor)
 }

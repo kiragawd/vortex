@@ -5,7 +5,8 @@ The `vortex-cli` binary allows you to manage VORTEX components from the command 
 ## Global Configuration
 
 Use environment variables to configure the CLI:
-- `VORTEX_SERVER_URL` — Base URL of the VORTEX server (default: `http://localhost:3000`)
+- `VORTEX_BASE_URL` — Base URL of the VORTEX server (default: `http://localhost:3000`)
+- `VORTEX_SERVER_URL` — Alias for `VORTEX_BASE_URL` (deprecated)
 - `VORTEX_API_KEY` — API key for authentication (sent as `Bearer <API_KEY>` in the Authorization header)
 
 ## Commands

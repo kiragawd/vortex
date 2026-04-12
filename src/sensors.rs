@@ -6,6 +6,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::db_trait::DatabaseBackend;
 
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser as SqlParser;
+use sqlparser::ast::Statement;
+
 // ─── Config & Result Types ────────────────────────────────────────────────────
 
 /// Configuration for a sensor task, serialized from the task's `config` JSON field.
@@ -275,12 +279,14 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
     };
     drop(cache); // Release lock before awaiting query
 
-    // SECURITY: Reject queries with multiple statements or dangerous patterns
-    let trimmed = query.trim().trim_end_matches(';');
-    if trimmed.contains(';') {
-        warn!("🗄️  SqlSensor: query rejected — multiple statements not allowed");
+    // BUG-C6 FIX: Validate SQL using sqlparser — reject anything except a single SELECT.
+    // This prevents UNION injection, DDL (CREATE/DROP/ALTER), DML (INSERT/UPDATE/DELETE),
+    // multiple statements, and malformed SQL.
+    if !validate_sensor_sql(query) {
         return false;
     }
+
+    let trimmed = query.trim().trim_end_matches(';');
     let count_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_sensor_q", trimmed);
     match sqlx::query_scalar::<_, i64>(&count_query)
         .fetch_one(&pool)
@@ -292,6 +298,56 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
         }
         Err(e) => {
             warn!("🗄️  SqlSensor: query error: {}", e);
+            false
+        }
+    }
+}
+
+/// Validate that a SQL query is safe for sensor execution.
+///
+/// Uses `sqlparser` to parse and verify:
+/// - The query parses successfully (rejects malformed SQL)
+/// - Exactly one statement is present (rejects multi-statement injection)
+/// - The statement is a SELECT (rejects INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, etc.)
+/// - No UNION clauses are present (rejects UNION-based injection)
+///
+/// Returns `true` if the query is a valid, single SELECT without UNION.
+fn validate_sensor_sql(query: &str) -> bool {
+    let dialect = GenericDialect {};
+    let statements = match SqlParser::parse_sql(&dialect, query) {
+        Ok(stmts) => stmts,
+        Err(e) => {
+            warn!("🗄️  SqlSensor: query rejected — parse error: {}", e);
+            return false;
+        }
+    };
+
+    if statements.len() != 1 {
+        warn!(
+            "🗄️  SqlSensor: query rejected — expected 1 statement, found {}",
+            statements.len()
+        );
+        return false;
+    }
+
+    match &statements[0] {
+        Statement::Query(q) => {
+            // Reject UNION / UNION ALL / INTERSECT / EXCEPT in the top-level query body
+            let has_set_op = matches!(
+                q.body.as_ref(),
+                sqlparser::ast::SetExpr::SetOperation { .. }
+            );
+            if has_set_op {
+                warn!("🗄️  SqlSensor: query rejected — UNION / INTERSECT / EXCEPT not allowed");
+                return false;
+            }
+            true
+        }
+        other => {
+            warn!(
+                "🗄️  SqlSensor: query rejected — only SELECT allowed, got {:?}",
+                other
+            );
             false
         }
     }

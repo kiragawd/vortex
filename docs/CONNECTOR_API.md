@@ -251,3 +251,113 @@ Connectors use `anyhow::Result` with structured error taxonomy:
 - Pass tokens via connector auth context.
 - Redact sensitive values in command output and logs for shell-based connectors.
 - Store all connector passwords/tokens in the Vortex Secrets Vault, referenced by key.
+
+---
+
+## Usage Examples
+
+### Python SDK Connector Examples
+
+```python
+# BigQuery connector example
+from vortex.connectors import BigQueryConnector
+
+conn = BigQueryConnector(
+    project_id="my-gcp-project",
+    dataset="analytics",
+    # OAuth token sourced from GOOGLE_APPLICATION_CREDENTIALS env var or service account
+)
+result = conn.query("SELECT event_type, COUNT(*) AS cnt FROM events GROUP BY event_type LIMIT 100")
+for row in result.rows:
+    print(row)
+
+# Snowflake connector example
+from vortex.connectors import SnowflakeConnector
+
+conn = SnowflakeConnector(
+    account="myorg.east-us-2",
+    username="svc_vortex",
+    # Password stored in Vault — retrieved at runtime via password_secret_ref
+    password_secret_ref="SNOWFLAKE_PASSWORD",
+    warehouse="COMPUTE_WH",
+    database="ANALYTICS",
+    schema="PUBLIC",
+)
+result = conn.query("SELECT * FROM dim_customers LIMIT 10")
+
+# S3 connector example
+# Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables,
+# or use an IAM instance role. The S3 connector is currently scaffolded —
+# full implementation is in progress.
+from vortex.connectors import S3Connector
+
+conn = S3Connector(
+    bucket="my-data-lake",
+    prefix="output/",
+    region="us-east-1",
+    # Credentials via env vars: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+)
+
+# PostgreSQL connector example
+from vortex.connectors import PostgresConnector
+
+conn = PostgresConnector(
+    host="pg.internal",
+    port=5432,
+    database="warehouse",
+    user="vortex_reader",
+    password_secret_ref="PG_WAREHOUSE_PASSWORD",
+    ssl_mode="require",
+)
+result = conn.query("SELECT id, name FROM products WHERE active = TRUE LIMIT 500")
+```
+
+### YAML DAG Connector Configuration
+
+Connectors can be declared in YAML DAG definitions. The connector registry resolves them by name at runtime:
+
+```yaml
+# rust_etl_pipeline.yaml
+dag_id: etl_pipeline
+schedule_interval: "0 2 * * *"
+description: "Nightly ETL from Snowflake to BigQuery"
+
+tasks:
+  - id: extract_snowflake
+    type: connector
+    connector: snowflake_prod        # Name registered in ConnectorRegistry
+    sql: "SELECT * FROM raw_events WHERE dt = CURRENT_DATE - 1"
+    output_xcom_key: raw_rows
+
+  - id: load_bigquery
+    type: connector
+    connector: bigquery_analytics    # Name registered in ConnectorRegistry
+    sql: "INSERT INTO processed_events SELECT * FROM UNNEST(@rows)"
+    input_xcom_key: raw_rows
+    depends_on: [extract_snowflake]
+
+  - id: run_dbt_models
+    type: connector
+    connector: dbt_warehouse
+    action: run                      # dbt run
+    depends_on: [load_bigquery]
+
+connectors:
+  snowflake_prod:
+    kind: Snowflake
+    account: myorg.east-us-2
+    username: svc_vortex
+    password_secret_ref: SNOWFLAKE_PASSWORD
+    warehouse: COMPUTE_WH
+    database: RAW
+
+  bigquery_analytics:
+    kind: BigQuery
+    project_id: my-gcp-project
+    dataset: processed
+
+  dbt_warehouse:
+    kind: Dbt
+    project_path: /opt/vortex/dbt_project
+    profiles_path: /opt/vortex/dbt_profiles
+```

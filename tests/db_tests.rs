@@ -85,10 +85,10 @@ mod db_tests {
         };
         use vortex::db_trait::DatabaseBackend;
         let key = format!("test-secret-{}", uuid::Uuid::new_v4());
-        db.store_secret(&key, "encrypted_val").await?;
+        db.store_secret(&key, "encrypted_val", None, None).await?;
         let val = db.get_secret(&key).await?;
         assert_eq!(val.as_deref(), Some("encrypted_val"));
-        db.delete_secret(&key).await?;
+        db.delete_secret(&key, None).await?;
         let gone = db.get_secret(&key).await?;
         assert!(gone.is_none());
         Ok(())

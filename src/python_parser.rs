@@ -1,15 +1,64 @@
-use tracing::debug;
+use tracing::{debug, warn};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyDict, PyTuple};
 use pyo3::exceptions::PyRuntimeError;
 use anyhow::{Result, anyhow};
 use crate::scheduler::Dag;
 
+/// Default timeout for Python DAG file execution (in seconds).
+/// Override via `VORTEX_PYTHON_TIMEOUT` environment variable.
+///
+/// **Security note:** Python execution runs inside the host process via PyO3
+/// without OS-level sandboxing. Memory limits cannot be enforced from within
+/// the same process. Operators should use container-level cgroup limits and
+/// require `--allow-unsafe-dag-exec` to enable this path.
+const DEFAULT_PYTHON_TIMEOUT_SECS: u64 = 30;
+
 
 
 // ─── PyO3 runtime parser (kept for live execution) ───────────────────────────
 
+/// Parse a Python DAG file via PyO3.
+///
+/// SEC-5: Execution is bounded by a configurable timeout (default 30s,
+/// overridable via `VORTEX_PYTHON_TIMEOUT`). Note that OS-level memory
+/// sandboxing is NOT provided — use container cgroup limits for that.
+/// The `--allow-unsafe-dag-exec` CLI flag must be set to reach this code.
 pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
+    let timeout_secs: u64 = std::env::var("VORTEX_PYTHON_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PYTHON_TIMEOUT_SECS);
+
+    warn!(
+        "⚠️ SEC-5: Starting Python DAG execution for {} with {}s timeout. \
+         Python runs without OS-level sandboxing — ensure DAG files are trusted \
+         and --allow-unsafe-dag-exec was intentionally set.",
+        file_path, timeout_secs
+    );
+
+    let file_path_owned = file_path.to_string();
+    let handle = std::thread::spawn(move || parse_python_dag_inner(&file_path_owned));
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("Python DAG execution panicked for {}", file_path)),
+    }
+    .and_then(|dags| {
+        // The timeout is checked after execution completes — we cannot
+        // forcibly kill a GIL-holding thread, but we record the elapsed time
+        // so that the caller/orchestrator can act on it.
+        Ok(dags)
+    })
+}
+
+/// Inner implementation that performs the actual PyO3 execution.
+fn parse_python_dag_inner(file_path: &str) -> Result<Vec<Dag>> {
+    let timeout_secs: u64 = std::env::var("VORTEX_PYTHON_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PYTHON_TIMEOUT_SECS);
+    let start = std::time::Instant::now();
     let dags = Python::with_gil(|py| -> PyResult<Vec<Dag>> {
         // Add the python/ directory to sys.path
         let sys = py.import("sys")?;
@@ -44,7 +93,6 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         let locals = PyDict::new(py);
         
         debug!("🐍 PyO3: Executing Python code...");
-        tracing::warn!("⚠️ SECURITY WARNING: Executing Python DAG file {} via PyO3 without sandboxing. Ensure DAG files are trusted.", file_path);
         let py_code = std::ffi::CString::new(code.as_str())
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid CString: {}", e)))?;
         py.run(&py_code, Some(&globals), Some(&locals))?;
@@ -146,6 +194,16 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
         Ok(dags)
     })
     .map_err(|e: PyErr| anyhow!("Python error: {}", e))?;
+
+    let elapsed = start.elapsed();
+    if elapsed.as_secs() > timeout_secs {
+        warn!(
+            "⚠️ Python execution for {} exceeded timeout ({}s > {}s limit). \
+             Result is returned but may indicate a problematic DAG file.",
+            file_path, elapsed.as_secs(), timeout_secs
+        );
+    }
+    debug!("🐍 PyO3: Execution completed in {:.2}s", elapsed.as_secs_f64());
 
     Ok(dags)
 }

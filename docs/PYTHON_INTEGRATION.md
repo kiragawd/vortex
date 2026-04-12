@@ -253,3 +253,109 @@ The integration suite (`tests/integration_full.py`) covers:
 - [Secrets Vault](./SECRETS_VAULT.md) — Encrypted secret management
 - [Architecture Overview](./ARCHITECTURE.md) — System design and data flow
 - [Deployment Guide](./DEPLOYMENT.md) — Setup and configuration
+
+---
+
+## Python SDK API Reference
+
+The `vortex` Python package provides the following modules for DAG authoring and runtime integration:
+
+### `vortex.dag`
+
+DAG definition classes.
+
+```python
+from vortex import DAG
+
+# Create a DAG context manager
+with DAG(
+    dag_id="my_pipeline",
+    schedule_interval="@daily",
+    owner="data_team",
+    description="My pipeline description",
+    tags=["production", "etl"],
+    catchup=False,
+    max_active_runs=1,
+) as dag:
+    pass
+```
+
+| Class/Function | Description |
+|---------------|-------------|
+| `DAG(dag_id, schedule_interval, ...)` | Root workflow definition. Supports context manager syntax. |
+| `TaskGroup(group_id)` | Logical grouping of tasks for visual nesting. |
+
+### `vortex.task`
+
+Task operator classes for defining units of work.
+
+```python
+from vortex.operators.bash import BashOperator
+from vortex.operators.python import PythonOperator
+from vortex.operators.dummy import DummyOperator, EmptyOperator
+
+task = BashOperator(task_id="hello", bash_command="echo hello", max_retries=3, retry_delay_secs=30)
+```
+
+| Class | Description |
+|-------|-------------|
+| `BashOperator(task_id, bash_command)` | Executes a shell command via `sh -c`. |
+| `PythonOperator(task_id, python_callable)` | Executes a Python callable. |
+| `DummyOperator(task_id)` | No-op placeholder task for DAG structure. |
+| `EmptyOperator(task_id)` | Alias for `DummyOperator`. |
+
+### `vortex.xcom`
+
+Cross-task communication — push and pull values between tasks in the same DAG run.
+
+```python
+from vortex.xcom import xcom_push, xcom_pull
+
+# In a task: push a value
+xcom_push(dag_id="my_pipeline", task_id="extract", run_id=run_id, key="row_count", value="42")
+
+# In a downstream task: pull the value
+row_count = xcom_pull(dag_id="my_pipeline", task_id="extract", run_id=run_id, key="row_count")
+```
+
+| Function | Description |
+|----------|-------------|
+| `xcom_push(dag_id, task_id, run_id, key, value)` | Store a string value in the XCom store. |
+| `xcom_pull(dag_id, task_id, run_id, key)` | Retrieve a stored XCom value. Returns `None` if not found. |
+
+The Vortex server base URL can be overridden with the `VORTEX_BASE_URL` environment variable (default: `http://localhost:3000`). A task-scoped API key is available via `VORTEX_API_KEY` if `VORTEX_TASK_API_KEY` is configured on the server.
+
+### `vortex.secrets`
+
+Secret retrieval from the Vortex vault. Secrets are injected as environment variables at task start — direct vault access from Python is generally not needed.
+
+```python
+import os
+
+# Secrets are pre-injected as environment variables before task execution
+db_password = os.environ["MY_DB_PASSWORD"]    # set from Secrets Vault key "MY_DB_PASSWORD"
+api_key     = os.environ["THIRD_PARTY_TOKEN"] # set from Secrets Vault key "THIRD_PARTY_TOKEN"
+```
+
+| Mechanism | Description |
+|-----------|-------------|
+| Environment variable injection | The recommended approach. All vault secrets assigned to the DAG are automatically decrypted and injected as env vars before task execution. Tasks do not need direct vault API access. |
+| `VORTEX_API_KEY` | Task-scoped API key (available if `VORTEX_TASK_API_KEY` is set on the server). |
+
+### `vortex.notifications`
+
+Alert and notification hooks for sending messages on task events.
+
+```python
+from vortex.notifications import notify_failure
+
+# Call in a PythonOperator on exception:
+def my_task():
+    try:
+        run_pipeline()
+    except Exception as e:
+        notify_failure(dag_id="my_pipeline", task_id="my_task", error=str(e))
+        raise
+```
+
+Notification channels are configured per-DAG via the `POST /api/dags/:id/callbacks` endpoint (Webhook, Slack, Email). See the [API Reference](./API_REFERENCE.md) for configuration details.

@@ -310,6 +310,21 @@ impl OtlpExporter {
     }
 }
 
+/// ENT-8: Initialize OTLP exporter from the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable.
+///
+/// Returns `Some(Arc<OtlpExporter>)` when the env var is set so the caller can share
+/// the exporter across components.  Returns `None` (no-op) when it is not set.
+pub fn init_otlp_tracer() -> Option<std::sync::Arc<OtlpExporter>> {
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
+    tracing::info!("ENT-8: OTLP exporter enabled, endpoint={}", endpoint);
+    let config = OtlpExporterConfig {
+        endpoint,
+        protocol: OtlpProtocol::HttpJson,
+        ..OtlpExporterConfig::default()
+    };
+    Some(std::sync::Arc::new(OtlpExporter::new(config)))
+}
+
 // ─── Convenience Span Builders ───────────────────────────────
 
 /// Create a span for a DAG execution

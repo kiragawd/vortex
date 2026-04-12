@@ -1,5 +1,15 @@
 # API Reference — VORTEX REST API
 
+## Port Reference
+
+| Port | Purpose |
+|------|---------|
+| **3000** | Vortex REST API, web dashboard, and Prometheus `/metrics` endpoint (default; override with `--port`) |
+| **9090** | Prometheus server (scrapes Vortex `/metrics` on port 3000) |
+| **50051** | gRPC swarm endpoint for worker–controller communication (override with `--swarm-port`) |
+
+> The web UI, REST API, and `/metrics` endpoint all share the same HTTP port (default **3000**). There is no separate port 8080 — docs referencing 8080 should be updated to 3000.
+
 ## Base URL
 
 ```
@@ -825,3 +835,301 @@ All error responses follow:
 | `404` | Resource not found |
 | `500` | Internal server error |
 | `503` | Service unavailable (e.g., vault not initialized) |
+
+---
+
+## Approval Workflows
+
+### List Pending Approvals
+
+**`GET /api/v1/approvals/pending`** — Requires `approval_workflows` feature flag enabled
+
+Returns all approval requests awaiting a vote.
+
+```json
+// Response (200)
+[
+  {
+    "id": "uuid",
+    "dag_id": "my_pipeline",
+    "requested_by": "operator1",
+    "action": "trigger",
+    "created_at": "2026-04-01T10:00:00Z",
+    "status": "pending"
+  }
+]
+```
+
+### Vote on Approval Request
+
+**`POST /api/v1/approvals/:id/vote`** — Admin only
+
+```json
+// Request
+{ "approved": true, "comment": "Looks good" }
+
+// Response (200)
+{ "message": "Vote recorded" }
+
+// Error (404)
+{ "error": "Approval request not found" }
+```
+
+### Get Approval Status
+
+**`GET /api/v1/approvals/:id/status`**
+
+```json
+// Response (200)
+{
+  "id": "uuid",
+  "dag_id": "my_pipeline",
+  "status": "approved",
+  "votes": [
+    { "voter": "admin", "approved": true, "comment": "Looks good", "voted_at": "2026-04-01T10:05:00Z" }
+  ]
+}
+```
+
+---
+
+## API Token Management
+
+### List API Tokens
+
+**`GET /api/tokens`** — Admin only
+
+```json
+// Response (200)
+[
+  {
+    "id": "uuid",
+    "name": "ci-pipeline-token",
+    "prefix": "vx_a1b2c3",
+    "scopes": ["dag:read", "dag:trigger"],
+    "expires_at": "2027-01-01T00:00:00Z",
+    "created_at": "2026-01-01T00:00:00Z"
+  }
+]
+```
+
+### Create API Token
+
+**`POST /api/tokens`** — Admin only
+
+```json
+// Request
+{
+  "name": "ci-pipeline-token",
+  "scopes": ["dag:read", "dag:trigger"],
+  "expires_at": "2027-01-01T00:00:00Z"
+}
+
+// Response (200) — Token value only shown once at creation time
+{
+  "id": "uuid",
+  "token": "vx_a1b2c3d4e5f6...",
+  "name": "ci-pipeline-token",
+  "scopes": ["dag:read", "dag:trigger"]
+}
+```
+
+### Revoke API Token
+
+**`POST /api/tokens/:id/revoke`** — Admin only
+
+```json
+// Response (200)
+{ "message": "Token revoked" }
+
+// Error (404)
+{ "error": "Token not found" }
+```
+
+---
+
+## Data Lineage
+
+### Query Lineage Events
+
+**`GET /api/lineage/events/:dag_id`**
+
+Returns OpenLineage-compliant lineage events for a specific DAG.
+
+```json
+// Response (200)
+[
+  {
+    "event_type": "COMPLETE",
+    "dag_id": "my_pipeline",
+    "task_id": "extract",
+    "run_id": "uuid",
+    "inputs": [{ "namespace": "postgres://host/db", "name": "raw_events" }],
+    "outputs": [{ "namespace": "postgres://host/db", "name": "processed_events" }],
+    "emitted_at": "2026-04-01T10:00:00Z"
+  }
+]
+```
+
+### List Lineage Datasets
+
+**`GET /api/lineage/datasets`**
+
+Returns all dataset namespaces and names discovered via lineage tracking.
+
+```json
+// Response (200)
+[
+  { "namespace": "postgres://host/db", "name": "raw_events" },
+  { "namespace": "s3://bucket", "name": "output/data.parquet" }
+]
+```
+
+---
+
+## Incident Management
+
+### List Incident Configs
+
+**`GET /api/incidents/configs`** — Admin only
+
+Returns configured incident management integrations (PagerDuty, OpsGenie, Datadog).
+
+```json
+// Response (200)
+[
+  { "id": "uuid", "provider": "pagerduty", "routing_key": "****masked****", "created_at": "..." }
+]
+```
+
+### Create Incident Config
+
+**`POST /api/incidents/configs`** — Admin only
+
+```json
+// Request
+{ "provider": "pagerduty", "routing_key": "your-routing-key" }
+
+// Response (200)
+{ "id": "uuid", "message": "Incident config created" }
+```
+
+### Delete Incident Config
+
+**`DELETE /api/incidents/configs/:id`** — Admin only
+
+```json
+{ "message": "Deleted" }
+```
+
+---
+
+## RBAC — Role-Based Access Control
+
+### List RBAC Roles
+
+**`GET /api/rbac/roles`** — Admin only
+
+Returns all defined RBAC roles with their permissions.
+
+```json
+// Response (200)
+[
+  {
+    "id": "admin",
+    "name": "Admin",
+    "permissions": ["dag:*", "secrets:*", "users:*", "audit:read"]
+  },
+  {
+    "id": "operator",
+    "name": "Operator",
+    "permissions": ["dag:read", "dag:trigger", "dag:edit"]
+  }
+]
+```
+
+### Get Role Permissions
+
+**`GET /api/rbac/roles/:role_id/permissions`**
+
+```json
+// Response (200)
+{ "role_id": "operator", "permissions": ["dag:read", "dag:trigger", "dag:edit"] }
+```
+
+### Get User Roles
+
+**`GET /api/rbac/users/:user_id/roles`**
+
+```json
+// Response (200)
+{ "user_id": "operator1", "roles": ["operator"] }
+```
+
+### Assign Role to User
+
+**`POST /api/rbac/users/:user_id/roles`** — Admin only
+
+```json
+// Request
+{ "role_id": "operator" }
+
+// Response (200)
+{ "message": "Role assigned" }
+```
+
+### Revoke Role from User
+
+**`DELETE /api/rbac/users/:user_id/roles/:role_id`** — Admin only
+
+```json
+{ "message": "Role revoked" }
+```
+
+### Get User Effective Permissions
+
+**`GET /api/rbac/users/:user_id/permissions`**
+
+Returns the union of all permissions from all roles assigned to the user.
+
+```json
+// Response (200)
+{ "user_id": "operator1", "permissions": ["dag:read", "dag:trigger", "dag:edit"] }
+```
+
+---
+
+## Network Security — IP Allowlist
+
+### List IP Allowlist Rules
+
+**`GET /api/network/ip-allowlist`** — Admin only
+
+```json
+// Response (200)
+[
+  { "id": "uuid", "cidr": "10.0.0.0/8", "description": "Internal network", "enabled": true }
+]
+```
+
+### Add IP Allowlist Rule
+
+**`POST /api/network/ip-allowlist`** — Admin only
+
+> **Note:** When the allowlist is empty, all IPs are permitted (open-by-default). Adding any rule enables enforcement.
+
+```json
+// Request
+{ "cidr": "192.168.1.0/24", "description": "Office network", "enabled": true }
+
+// Response (200)
+{ "id": "uuid", "message": "Rule created" }
+```
+
+### Delete IP Allowlist Rule
+
+**`DELETE /api/network/ip-allowlist/:id`** — Admin only
+
+```json
+{ "message": "Rule deleted" }
+```

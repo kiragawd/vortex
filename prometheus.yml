@@ -1,7 +1,19 @@
 global:
-  scrape_interval: 5s
+  # INFRA-5: Conservative scrape interval to reduce cardinality/load
+  scrape_interval: 15s
+  evaluation_interval: 30s
 
 scrape_configs:
   - job_name: "vortex"
     static_configs:
       - targets: ["controller:3000"]
+
+  # INFRA-6: Scrape worker metrics
+  - job_name: 'vortex-workers'
+    static_configs:
+      - targets: ['vortex-worker:9091']
+
+  # INFRA-6: Scrape postgres via postgres_exporter
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']

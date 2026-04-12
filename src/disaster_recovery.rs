@@ -308,6 +308,14 @@ impl FailoverManager {
         // Store events (separate lock scope to avoid holding both locks simultaneously)
         if !events.is_empty() {
             let mut ev = self.events.write().await;
+            // PERF-10: Cap failover event history to prevent unbounded memory growth.
+            const MAX_FAILOVER_EVENTS: usize = 1000;
+            let current_len = ev.len();
+            let new_total = current_len + events.len();
+            if new_total > MAX_FAILOVER_EVENTS {
+                let excess = new_total - MAX_FAILOVER_EVENTS;
+                ev.drain(..excess.min(current_len));
+            }
             ev.extend(events.clone());
         }
 
@@ -416,6 +424,12 @@ impl ChaosEngine {
         };
 
         let mut runs = self.runs.write().await;
+        // PERF-10: Cap chaos experiment run history to prevent unbounded growth.
+        const MAX_CHAOS_RUNS: usize = 1000;
+        if runs.len() >= MAX_CHAOS_RUNS {
+            let drain_count = runs.len().saturating_sub(MAX_CHAOS_RUNS - 1);
+            runs.drain(..drain_count);
+        }
         runs.push(run.clone());
         Ok(run)
     }

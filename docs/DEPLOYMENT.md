@@ -32,18 +32,21 @@ cargo build --release
 ### Controller (Server)
 
 ```bash
-# Production mode with PostgreSQL (required) (and Python DAG support enabled)
-./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex" --allow-unsafe-dag-exec
+# Production mode with PostgreSQL (required)
+./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex"
 
 # Custom web port (default: 3000)
-./target/release/vortex server --database-url "postgres://..." --port 8080 --allow-unsafe-dag-exec
+./target/release/vortex server --database-url "postgres://..." --port 3000
 
 # Custom gRPC port and bind address (default port: 50051, default bind: 0.0.0.0)
 # Use --grpc-bind 127.0.0.1 to restrict gRPC to localhost in single-host deployments
-./target/release/vortex server --swarm --database-url "postgres://..." --swarm-port 50052 --grpc-bind 127.0.0.1 --allow-unsafe-dag-exec
+./target/release/vortex server --swarm --database-url "postgres://..." --swarm-port 50052 --grpc-bind 127.0.0.1
 
 # Enable the built-in synthetic benchmark DAG (for scale testing)
-./target/release/vortex server --swarm --database-url "postgres://..." --benchmark --allow-unsafe-dag-exec
+./target/release/vortex server --swarm --database-url "postgres://..." --benchmark
+
+# Enable Python DAG execution (SECURITY RISK — only in trusted environments)
+./target/release/vortex server --swarm --database-url "postgres://..." --allow-unsafe-dag-exec
 ```
 
 The REST API and dashboard are served on **http://localhost:3000** (or the port specified by `--port`).
@@ -52,8 +55,10 @@ The REST API and dashboard are served on **http://localhost:3000** (or the port 
 
 ### Worker
 
+> **gRPC URL format:** The `--controller` URL must use `http://` for plaintext gRPC (Tonic HTTP/2) or `https://` for TLS-enabled connections. The `grpc://` scheme is not used.
+
 ```bash
-# Connect to controller
+# Connect to controller (plaintext gRPC)
 ./target/release/vortex worker --controller http://localhost:50051 --capacity 4
 
 # With custom ID and labels
@@ -71,7 +76,7 @@ VORTEX includes a separate binary (`vortex-cli`) for administrative automation:
 ```bash
 # Set environment variables
 export VORTEX_API_KEY="your_api_key_here"
-export VORTEX_SERVER_URL="http://localhost:3000"
+export VORTEX_BASE_URL="http://localhost:3000"
 
 # Use the CLI
 vortex-cli dags list
@@ -187,17 +192,22 @@ Open **http://localhost:3000** for the built-in dashboard featuring:
 - Monthly schedule Calendar
 - Side-by-side version diffing and rollbacks
 - Audit logging (Accountability trail)
-- Prometheus metrics endpoint (`/metrics` on the HTTP port, e.g., `http://localhost:8080/metrics`)
+- Prometheus metrics endpoint (`/metrics` on the HTTP port, e.g., `http://localhost:3000/metrics`)
 
 ### Prometheus Configuration
 
 Ensure your `prometheus.yml` scrape target points to the Vortex controller's HTTP port:
 
+> **Port Reference:**
+> - **Port 3000** — Vortex REST API, web dashboard, and Prometheus `/metrics` endpoint (default; override with `--port`)
+> - **Port 9090** — Prometheus server (scrapes Vortex on port 3000)
+> - **Port 50051** — gRPC swarm endpoint for worker-controller communication (override with `--swarm-port`)
+
 ```yaml
 scrape_configs:
   - job_name: "vortex"
     static_configs:
-      - targets: ["controller:8080"]  # Use hostname:port in Docker, localhost:8080 for local dev
+      - targets: ["controller:3000"]  # Use hostname:port in Docker, localhost:3000 for local dev
 ```
 
 ### Server Logs
@@ -257,6 +267,76 @@ For automated backups, consider `pg_dump` cron jobs or PostgreSQL continuous arc
 | **Database connection errors** | Verify PostgreSQL is running and `--database-url` is correct. |
 | **Agentic migration fails** | Verify `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is set. Check provider endpoint reachability. |
 | **Migration placeholders remaining** | Use `--agentic` to auto-resolve, or manually convert placeholder tasks. |
+
+### DAG Parsing Errors
+
+```bash
+# Check Python syntax before uploading
+python3 -c "import ast; ast.parse(open('dag.py').read()); print('Syntax OK')"
+
+# Verify dag_id matches the expected format (alphanumeric, underscores, hyphens)
+# dag_id must match: [a-zA-Z0-9_-]+
+
+# Check for import errors — ensure all dependencies are installed
+python3 -c "from vortex import DAG; print('Import OK')"
+
+# View server-side parse errors in the controller log
+tail -f logs/vortex.log | grep -i "parse\|dag\|error"
+```
+
+### Task Timeouts
+
+```bash
+# Check the Python execution timeout (default: 30s)
+echo $VORTEX_PYTHON_TIMEOUT
+
+# Override globally:
+export VORTEX_PYTHON_TIMEOUT=120
+
+# For long-running tasks, set per-task timeout in the DAG definition:
+task = BashOperator(
+    task_id="long_running",
+    bash_command="./process_large_file.sh",
+    execution_timeout_secs=3600,   # 1 hour
+)
+
+# View worker logs for timeout events:
+docker logs vortex-worker 2>&1 | grep -i "timeout\|killed"
+```
+
+### Worker Crash Loops
+
+```bash
+# Check VORTEX_GRPC_AUTH_TOKEN matches between controller and worker
+# Controller must be started with --swarm and the same token
+
+# Verify gRPC address format (must use http:// for plaintext, https:// for TLS)
+./vortex worker --controller http://controller:50051 --capacity 4
+
+# Check mTLS configuration — if VORTEX_GRPC_TLS_CA is set, the CA cert must be valid
+openssl verify -CAfile ca.pem cert.pem
+
+# Verify controller is reachable on port 50051
+nc -zv controller 50051
+
+# View worker crash reason:
+docker logs vortex-worker --tail 50
+journalctl -u vortex-worker -n 50
+```
+
+### Prometheus Not Scraping
+
+```bash
+# Verify Vortex is exposing metrics on port 3000 (NOT 8080)
+curl http://localhost:3000/metrics | head -20
+
+# Check prometheus.yml scrape target — should point to port 3000
+grep targets prometheus.yml
+# Expected: targets: ["controller:3000"]
+
+# Test Prometheus connectivity to Vortex
+curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool | grep -A5 vortex
+```
 
 ---
 
@@ -373,7 +453,8 @@ spec:
 Pod-per-task executor for Kubernetes-native task isolation:
 
 - **Pod spec generation** — `K8sExecutorConfig` defines resource requests/limits, tolerations, node selectors, and service accounts
-- **Status:** Pod spec generation is implemented. Full `kube-rs` client integration for pod submission and status polling is pending. Use the gRPC Swarm for horizontal scaling in the meantime.
+- **Namespace validation** — Pod names are sanitized to comply with Kubernetes naming rules
+- **Status:** Pod spec generation and namespace validation are implemented. Pod API submission requires the `kube` crate feature (TODO: ENT-16). Use the gRPC Swarm for horizontal scaling in the meantime.
 
 ---
 

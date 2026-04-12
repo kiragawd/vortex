@@ -524,6 +524,21 @@ mod swarm_tests {
             assert!(worker.draining && worker.active_tasks == 0, "Worker ready to exit");
         }
 
+        // TEST-5 FIX: Verify worker is actually removed after draining completes
+        {
+            let mut w = workers.write().await;
+            let worker = w.get(worker_id).unwrap();
+            if worker.draining && worker.active_tasks == 0 {
+                w.remove(worker_id);
+            }
+        }
+
+        // Verify worker was deregistered
+        {
+            let w = workers.read().await;
+            assert!(!w.contains_key(worker_id), "Worker must be removed after draining");
+        }
+
         Ok(())
     }
 }

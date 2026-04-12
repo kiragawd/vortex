@@ -114,6 +114,10 @@ struct Cli {
     /// Allow executing Python DAG files via PyO3 (SECURITY RISK — runs arbitrary code)
     #[arg(long)]
     allow_unsafe_dag_exec: bool,
+
+    /// Enable production mode (enforces gRPC TLS and auth token)
+    #[arg(long)]
+    production: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -474,7 +478,7 @@ async fn main() -> Result<()> {
                         let vault = Vault::new().map_err(|e| anyhow::anyhow!("Vault init failed: {}", e))?;
                         match action {
                             SecretAction::List => {
-                                let secrets = db.get_all_secrets().await?;
+                                let secrets = db.get_all_secrets(None).await?;
                                 println!("{:<30} {:<10}", "KEY", "MASKED VALUE");
                                 println!("{}", "-".repeat(42));
                                 for key in &secrets {
@@ -493,11 +497,11 @@ async fn main() -> Result<()> {
                             }
                             SecretAction::Set { key, value } => {
                                 let encrypted = vault.encrypt(value)?;
-                                db.store_secret(key, &encrypted).await?;
+                                db.store_secret(key, &encrypted, None, Some("cli")).await?;
                                 println!("Secret '{}' stored (encrypted)", key);
                             }
                             SecretAction::Delete { key } => {
-                                db.delete_secret(key).await?;
+                                db.delete_secret(key, Some("cli")).await?;
                                 println!("Secret '{}' deleted", key);
                             }
                         }
@@ -951,9 +955,16 @@ async fn main() -> Result<()> {
     let db_idle_timeout = std::time::Duration::from_secs(cli.db_idle_timeout);
 
     info!("🗄️ Initializing PostgreSQL backend...");
-    let db: Arc<dyn db_trait::DatabaseBackend> = Arc::new(
-        db_postgres::PostgresDb::new(&db_url_owned, cli.db_max_connections, cli.db_min_connections, db_idle_timeout).await?
-    );
+    let pg_db = db_postgres::PostgresDb::new(&db_url_owned, cli.db_max_connections, cli.db_min_connections, db_idle_timeout).await?;
+    // ENT-18 FIX: Validate DB connectivity before serving traffic
+    match sqlx::query("SELECT 1").execute(pg_db.pool()).await {
+        Ok(_) => info!("✅ Database connection validated"),
+        Err(e) => {
+            error!("❌ Database connectivity check failed: {}", e);
+            return Err(anyhow::anyhow!("Database not reachable: {}", e));
+        }
+    }
+    let db: Arc<dyn db_trait::DatabaseBackend> = Arc::new(pg_db);
     info!("✅ Database initialized.");
 
     // Initialize Prometheus Metrics
@@ -987,6 +998,33 @@ async fn main() -> Result<()> {
                         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                         if ext == "so" || ext == "dylib" || ext == "dll" {
                             let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+
+                            // SEC-6: SHA256 checksum verification for plugin binaries.
+                            // Look for a .sha256 sidecar file alongside the plugin.
+                            let checksum_path = path.with_extension(format!("{}.sha256", ext));
+                            if checksum_path.exists() {
+                                match verify_plugin_checksum(&path, &checksum_path) {
+                                    Ok(true) => {
+                                        info!("✅ Plugin {:?} passed SHA256 verification", path);
+                                    }
+                                    Ok(false) => {
+                                        error!("❌ Plugin {:?} FAILED SHA256 verification — skipping", path);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        error!("❌ Error verifying plugin {:?}: {} — skipping", path, e);
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                // No checksum file — only allow with explicit flag
+                                warn!(
+                                    "⚠️ No .sha256 checksum file found for plugin {:?}. \
+                                     Loading unverified plugin because --allow-unsafe-plugins is set.",
+                                    path
+                                );
+                            }
+
                             unsafe {
                                 match plugin_registry.load_plugin(path.to_str().unwrap(), file_stem) {
                                     Ok(_) => info!("🔌 Loaded plugin '{}' from {:?}", file_stem, path),
@@ -1124,13 +1162,31 @@ async fn main() -> Result<()> {
     // or a specific interface instead of always exposing on all interfaces.
     let grpc_bind = cli.grpc_bind;
     let swarm_port = cli.swarm_port;
-    let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone(), Some(Arc::clone(&vortex_metrics))));
+    let grpc_auth_token = std::env::var("VORTEX_GRPC_AUTH_TOKEN").ok();
+    let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone(), Some(Arc::clone(&vortex_metrics)), grpc_auth_token.clone()));
 
     if swarm_enabled {
-        let grpc_state = Arc::clone(&swarm_state);
         let health_state = Arc::clone(&swarm_state);
-        let tls_cert_grpc = cli.tls_cert.clone();
-        let tls_key_grpc = cli.tls_key.clone();
+
+        // BUG-C7: Refuse to start gRPC without auth token in production mode
+        if cli.production && grpc_auth_token.is_none() {
+            error!("❌ Production mode requires VORTEX_GRPC_AUTH_TOKEN to be set. Refusing to start gRPC server.");
+        } else {
+        let grpc_state = Arc::clone(&swarm_state);
+        // SEC-10: Check CLI args first, then fall back to env vars for TLS cert/key
+        let tls_cert_grpc = cli.tls_cert.clone()
+            .or_else(|| std::env::var("VORTEX_GRPC_TLS_CERT").ok());
+        let tls_key_grpc = cli.tls_key.clone()
+            .or_else(|| std::env::var("VORTEX_GRPC_TLS_KEY").ok());
+        let is_production = cli.production;
+
+        // SEC-10: Production mode without TLS — restrict to localhost only
+        let effective_grpc_bind = if is_production && tls_cert_grpc.is_none() {
+            warn!("⚠️ Production mode: No TLS certs configured for gRPC. Binding to 127.0.0.1 only.");
+            "127.0.0.1".to_string()
+        } else {
+            grpc_bind.clone()
+        };
 
         // Spawn gRPC server
         tokio::spawn(async move {
@@ -1138,21 +1194,32 @@ async fn main() -> Result<()> {
                 let cert = std::fs::read(cert_path).expect("Failed to read TLS cert");
                 let key = std::fs::read(key_path).expect("Failed to read TLS key");
                 let identity = tonic::transport::Identity::from_pem(cert, key);
-                let tls_config = tonic::transport::ServerTlsConfig::new().identity(identity);
-                let addr = format!("{}:{}", grpc_bind, swarm_port).parse().unwrap();
+                // ENT-1: Load CA cert for mTLS (mutual TLS client verification)
+                let tls_config = if let Ok(ca_path) = std::env::var("VORTEX_GRPC_TLS_CA") {
+                    let ca = std::fs::read(&ca_path).expect("Failed to read TLS CA cert");
+                    info!("🔒 gRPC mTLS enabled — client certificates required");
+                    tonic::transport::ServerTlsConfig::new()
+                        .identity(identity)
+                        .client_ca_root(tonic::transport::Certificate::from_pem(ca))
+                } else {
+                    tonic::transport::ServerTlsConfig::new().identity(identity)
+                };
+                let addr = format!("{}:{}", effective_grpc_bind, swarm_port).parse().unwrap();
                 let server = swarm::create_grpc_server(grpc_state);
-                info!("🐝 Swarm Controller listening on {} (TLS)", addr);
+                info!("🐝 Swarm Controller listening on {} (TLS + Auth)", addr);
                 let _ = tonic::transport::Server::builder()
                     .tls_config(tls_config).unwrap()
                     .add_service(server)
                     .serve(addr).await;
             } else {
-                let addr = format!("{}:{}", grpc_bind, swarm_port).parse().unwrap();
+                let addr = format!("{}:{}", effective_grpc_bind, swarm_port).parse().unwrap();
                 let server = swarm::create_grpc_server(grpc_state);
-                info!("🐝 Swarm Controller listening on {}", addr);
+                info!("🐝 Swarm Controller listening on {} (plaintext — dev only)", addr);
                 let _ = tonic::transport::Server::builder().add_service(server).serve(addr).await;
             }
         });
+
+        } // end production auth-token check
 
         // Spawn Health Check Loop
         let mut leader_rx_health = leader_rx.clone();
@@ -1590,6 +1657,24 @@ async fn main() -> Result<()> {
         }
     });
 
+    // BUG-M8 FIX: Periodic session cleanup — delete expired sessions every 15
+    // minutes so they don't accumulate in the DB indefinitely.
+    let db_session_cleanup = Arc::clone(&db);
+    tokio::spawn(async move {
+        info!("🧹 Session cleanup loop started (every 15 min)");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            match db_session_cleanup.cleanup_expired_sessions().await {
+                Ok(count) => {
+                    if count > 0 {
+                        info!("🧹 Cleaned up {} expired sessions", count);
+                    }
+                }
+                Err(e) => warn!("⚠️ Session cleanup error: {}", e),
+            }
+        }
+    });
+
     // Improvement 37: Graceful shutdown — on Ctrl+C (SIGINT) or SIGTERM, mark
     // all Running task instances as Failed so they don't get stuck permanently,
     // release the HA leader lock if held, then exit cleanly.
@@ -1643,7 +1728,32 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// SEC-6: Verify a plugin binary's SHA256 checksum against its sidecar `.sha256` file.
+///
+/// The `.sha256` file should contain the hex-encoded SHA256 hash as the first
+/// whitespace-delimited token (compatible with `sha256sum` output format).
+fn verify_plugin_checksum(
+    plugin_path: &std::path::Path,
+    checksum_path: &std::path::Path,
+) -> anyhow::Result<bool> {
+    use sha2::{Sha256, Digest};
 
+    let expected_hex = std::fs::read_to_string(checksum_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read checksum file {:?}: {}", checksum_path, e))?;
+    let expected_hex = expected_hex
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Checksum file {:?} is empty", checksum_path))?
+        .to_lowercase();
+
+    let plugin_bytes = std::fs::read(plugin_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read plugin file {:?}: {}", plugin_path, e))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&plugin_bytes);
+    let actual_hex = format!("{:x}", hasher.finalize());
+
+    Ok(actual_hex == expected_hex)
+}
 
 fn create_benchmark_dag() -> Dag {
     let mut dag = Dag::new("parallel_benchmark");

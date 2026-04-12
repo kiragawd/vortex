@@ -21,6 +21,25 @@ spec:
       serviceAccountName: {{ include "vortex.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # INFRA-10: Run database migrations before controller starts
+      initContainers:
+        - name: run-migrations
+          image: "{{ .Values.image.repository }}:{{ include "vortex.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/vortex", "migrate"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.postgresql.enabled }}
+                  name: {{ include "vortex.fullname" . }}-postgresql
+                  key: password
+                  {{- else }}
+                  name: {{ .Values.externalDatabase.existingSecret }}
+                  key: {{ .Values.externalDatabase.secretKey }}
+                  {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
       containers:
         - name: controller
           image: "{{ .Values.image.repository }}:{{ include "vortex.imageTag" . }}"

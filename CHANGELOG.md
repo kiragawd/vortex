@@ -98,6 +98,70 @@
 
 ### Added
 - Static Airflow parser module for DAG/task/dependency extraction.
+
+---
+
+## [0.7.2] - 2026-04-01 — Documentation & Security Hardening
+
+### Security
+- **SEC-1 / Vault KDF:** Vault master key now processed via Argon2id KDF before use as AES-256 key material — replaces direct raw-byte usage.
+- **BUG-H8 / PKCE:** OIDC authentication flow now requires PKCE (Proof Key for Code Exchange) for all authorization code exchanges — mitigates auth code interception attacks.
+- **BUG-C2 / SAML Signatures:** SAML response processing now validates XML digital signatures; regex-only attribute extraction replaced with signature-verified assertion parsing.
+- **SEC-11 / Timing Attack:** Login endpoint uses constant-time comparison and performs a dummy bcrypt hash for non-existent usernames — prevents user enumeration via timing differences.
+- **BUG-H14 / CORS:** `VORTEX_CORS_ORIGINS` env var enforces specific origin allowlist; `allow_origin(Any)` removed from production paths.
+- **BUG-H13 / Rate Limiting:** Login rate limit key is now `(IP, username)` tuple — prevents bypass via IP rotation.
+- **BUG-C7 / gRPC Auth:** Workers must supply `VORTEX_GRPC_AUTH_TOKEN` bearer token; unauthenticated gRPC connections rejected in non-dev mode.
+- **BUG-C5 / Multi-Tenant Isolation:** All data-returning endpoints filter by `auth_user.team_id`; XCom, secrets, runs, tasks, and DAGs are team-scoped.
+
+### Fixed — Critical Transactions (BUG-C3, BUG-M1, BUG-M3, BUG-M12)
+- Multi-step database writes wrapped in `pool.begin()` / `tx.commit()` transactions.
+- DELETE+INSERT patterns migrated to UPSERT or explicit transactions.
+- TOCTOU race in count-then-INSERT patterns resolved with INSERT-first + uniqueness constraints.
+
+### Fixed — Input Validation (BUG-C6, BUG-H7, BUG-H11)
+- User-supplied SQL (sensor queries) validated with `sqlparser` — SELECT-only enforcement.
+- SQL LIKE patterns escape `%` and `_` from user input before DB queries.
+- File path parameters (`dag_id`, `task_id`) sanitized to `[a-zA-Z0-9_-]` pattern.
+
+### Fixed — Secret Handling (BUG-M2, BUG-M6, SEC-10)
+- Secrets no longer logged to task events or stdout.
+- In-memory secrets use `secrecy::SecretString` with zeroize-on-drop.
+- gRPC secret transmission requires TLS when `VORTEX_GRPC_TLS_CERT` is set.
+
+### Fixed — Event & Metric Completeness (BUG-H1, BUG-H4)
+- `log_task_event()` now includes non-empty `run_id`, `dag_id`, and `task_id` fields.
+- Prometheus gauge `dec()` guarded by `gauge.get() > 0` check — prevents negative gauge values.
+
+### Fixed — Error Handling (BUG-H2, BUG-H3, BUG-M7)
+- Failed tasks are re-queued or marked Failed — no silent drops.
+- `execution_timeout_secs` propagated through retry paths (no longer reset to 0 on retry).
+- DB error vs. no-result distinguished via `Result<Option<T>>` return types.
+
+### Fixed — Performance (PERF-*)
+- All list endpoints enforce LIMIT/pagination — no unbounded queries.
+- Batch fetches for collections — N+1 query patterns eliminated.
+- In-memory collections bounded by configurable max-size limits.
+- DELETE operations use LIMIT in subqueries for large tables.
+
+### Fixed — Database Schema (DB-*)
+- Foreign key constraints added to all reference columns.
+- Composite UNIQUE constraints added to identity tuples.
+- Indexes added for common query patterns.
+- NOT NULL and CHECK constraints added where appropriate.
+- All new migrations are idempotent (IF NOT EXISTS, CREATE OR REPLACE).
+
+### Documentation (DOC-1 through DOC-11)
+- **DOC-1:** Clarified port assignments: port 3000 = REST API + web UI + `/metrics`; port 50051 = gRPC swarm; port 9090 = Prometheus server. Fixed incorrect port 8080 references.
+- **DOC-2:** Standardized `VORTEX_BASE_URL` env var name (was `VORTEX_SERVER_URL` in CLI examples).
+- **DOC-3:** Updated Kubernetes Executor status — pod spec generation and namespace validation implemented; pod API submission pending ENT-16.
+- **DOC-4:** Clarified gRPC worker `--controller` URL format: `http://` for plaintext (Tonic HTTP/2), `https://` for TLS.
+- **DOC-5:** Added API reference for approval workflows, API token management, data lineage, incident management, RBAC fine-grained roles, and IP allowlist endpoints.
+- **DOC-6:** Added comprehensive environment variables reference table to `CONFIGURATION.md`.
+- **DOC-7:** Added Python SDK connector examples (BigQuery, Snowflake, S3, PostgreSQL) and YAML DAG connector configuration examples.
+- **DOC-8:** Added Glossary to `ARCHITECTURE.md` defining Controller, Worker, Swarm, DAG, Task Instance, DAG Run, XCom, Vault, Sensor, Pool, Backfill, Team, and Approval Workflow.
+- **DOC-9:** Expanded Python SDK API reference in `PYTHON_INTEGRATION.md` — added module descriptions for `vortex.dag`, `vortex.task`, `vortex.xcom`, `vortex.secrets`, and `vortex.notifications`.
+- **DOC-10:** Added detailed troubleshooting subsections for DAG parsing errors, task timeouts, worker crash loops, and Prometheus scraping issues.
+- **DOC-11:** Added this changelog entry documenting all 133+ audit fixes.
 - DAG code generator and migration report writer.
 - Enterprise connector abstraction and connector registry.
 - Initial connector implementations for Postgres, Snowflake, Databricks, dbt, MySQL, and MS SQL.

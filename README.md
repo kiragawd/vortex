@@ -167,7 +167,7 @@ See the [High Availability Guide](./docs/high-availability.md) for full setup in
 
 While VORTEX provides a comprehensive orchestration platform, some features are scaffolded for future completion:
 
-- **Kubernetes Executor:** Pod spec generation is implemented, but full `kube-rs` client integration for pod submission and status polling is pending. VORTEX scales horizontally via its built-in gRPC Swarm in the meantime.
+- **Kubernetes Executor:** Kubernetes Executor: pod spec generation and namespace validation implemented. Pod API submission requires the `kube` crate feature (TODO: ENT-16). VORTEX scales horizontally via its built-in gRPC Swarm in the meantime.
 - **SSO (SAML/LDAP):** Local and OIDC authentication are functional. SAML and LDAP providers have configuration types defined but lack full provider implementations.
 - **Disaster Recovery:** Backup metadata tracking and failover types exist, but end-to-end backup I/O and automated restore are not yet operational.
 - **OpenTelemetry Export:** W3C TraceContext propagation and span types are complete but the OTLP exporter (HTTP/gRPC sender) is not yet wired.
@@ -200,6 +200,11 @@ cargo build --release
 
 ### Run Controller + Swarm
 
+> **Port Reference:**
+> - **Port 3000** — REST API, web dashboard, and Prometheus `/metrics` (default; override with `--port`)
+> - **Port 50051** — gRPC swarm endpoint for worker–controller communication (override with `--swarm-port`)
+> - **Port 9090** — Prometheus server (configure it to scrape Vortex on port 3000)
+
 ```bash
 # Terminal 1: Start server with PostgreSQL (and Python DAG support enabled)
 ./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex" --allow-unsafe-dag-exec
@@ -210,7 +215,7 @@ cargo build --release
 # Optional: register the built-in benchmark DAG
 ./target/release/vortex server --swarm --database-url "postgres://..." --benchmark
 
-# Terminal 2: Start a worker
+# Terminal 2: Start a worker (use http:// for plaintext gRPC, https:// for TLS)
 ./target/release/vortex worker --controller http://localhost:50051 --capacity 4
 ```
 

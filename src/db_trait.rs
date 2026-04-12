@@ -7,6 +7,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 /// Unified async database interface for VORTEX.
 ///
@@ -140,11 +141,11 @@ pub trait DatabaseBackend: Send + Sync {
     /// Return full task execution details needed to re-run a task instance.
     ///
     /// Tuple: (dag_id, task_id, command, run_id, task_type, config,
-    ///         max_retries, retry_delay_secs)
+    ///         max_retries, retry_delay_secs, execution_timeout_secs)
     async fn get_task_instance_details(
         &self,
         ti_id: &str,
-    ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>>;
+    ) -> Result<Option<(String, String, String, String, String, String, i32, i32, i32)>>;
 
     // ── Task Events ──────────────────────────────────────────────────────────
 
@@ -209,29 +210,40 @@ pub trait DatabaseBackend: Send + Sync {
     /// Return all users (username, role, api_key) as JSON objects.
     async fn get_all_users(&self) -> Result<Vec<serde_json::Value>>;
 
-    /// Verify credentials; return (api_key, role) on success.
+    /// Verify credentials; return (api_key, role, password_change_required) on success.
+    ///
+    /// # Security
+    /// The `password_change_required` flag (SEC-8) indicates whether the user
+    /// must change their password before being granted normal access.
     async fn validate_user(
         &self,
         username: &str,
         password: &str,
-    ) -> Result<Option<(String, String)>>;
+    ) -> Result<Option<(String, String, bool)>>;
 
     /// Look up a user by API key; return (username, role, team_id) on match.
     async fn get_user_by_api_key(&self, api_key: &str) -> Result<Option<(String, String, Option<String>)>>;
 
     // ── Secret management ─────────────────────────────────────────────────────
 
-    /// Store (upsert) an encrypted secret value.
-    async fn store_secret(&self, key: &str, encrypted_value: &str) -> Result<()>;
+    /// Store (upsert) an encrypted secret value, scoped to `team_id` when provided.
+    /// `actor` records who created/updated the secret for audit trail (SEC-2).
+    async fn store_secret(&self, key: &str, encrypted_value: &str, team_id: Option<&str>, actor: Option<&str>) -> Result<()>;
 
     /// Retrieve an encrypted secret value by key.
     async fn get_secret(&self, key: &str) -> Result<Option<String>>;
 
-    /// Return all secret keys (not their values).
-    async fn get_all_secrets(&self) -> Result<Vec<String>>;
+    /// Retrieve multiple encrypted secret values by key in a single query.
+    /// Returns a map from each key to `Some(encrypted_value)` if found, or `None` if absent.
+    /// PERF-9: Replaces N individual `get_secret` calls with one batch query.
+    async fn get_secrets_batch(&self, keys: &[String]) -> Result<HashMap<String, Option<String>>>;
 
-    /// Delete a secret by key.
-    async fn delete_secret(&self, key: &str) -> Result<()>;
+    /// Return all secret keys (not their values), filtered by `team_id` when provided.
+    /// When `team_id` is `None`, returns all secrets (admin view).
+    async fn get_all_secrets(&self, team_id: Option<&str>) -> Result<Vec<String>>;
+
+    /// Soft-delete a secret by key, recording who performed the deletion (SEC-2).
+    async fn delete_secret(&self, key: &str, actor: Option<&str>) -> Result<()>;
 
     // ── Worker management ─────────────────────────────────────────────────────
 
@@ -257,11 +269,11 @@ pub trait DatabaseBackend: Send + Sync {
 
     /// Return Queued task instances still attributed to a dead worker.
     ///
-    /// Tuple: (ti_id, dag_id, task_id, command, run_id, task_type, config, max_retries, retry_delay_secs)
+    /// Tuple: (ti_id, dag_id, task_id, command, run_id, task_type, config, max_retries, retry_delay_secs, execution_timeout_secs)
     async fn get_interrupted_tasks_by_worker(
         &self,
         worker_id: &str,
-    ) -> Result<Vec<(String, String, String, String, String, String, String, i32, i32)>>;
+    ) -> Result<Vec<(String, String, String, String, String, String, String, i32, i32, i32)>>;
 
     /// Clear the worker_id field from Queued tasks previously owned by a worker.
     async fn clear_worker_id_from_queued_tasks(&self, worker_id: &str) -> Result<()>;
@@ -269,11 +281,11 @@ pub trait DatabaseBackend: Send + Sync {
     /// Return full task execution details needed to re-run a task instance, including extra swarm fields.
     ///
     /// Tuple: (dag_id, task_id, command, run_id, task_type, config,
-    ///         max_retries, retry_delay_secs)
+    ///         max_retries, retry_delay_secs, execution_timeout_secs)
     async fn get_task_instance_details_full(
         &self,
         ti_id: &str,
-    ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>>;
+    ) -> Result<Option<(String, String, String, String, String, String, i32, i32, i32)>>;
 
     // ── DAG versioning ────────────────────────────────────────────────────────
 
@@ -331,7 +343,7 @@ pub trait DatabaseBackend: Send + Sync {
     // ── Analysis / Gantt ──────────────────────────────────────────────────────
 
     /// Return task instance timeline data for a DAG, grouped by task_id.
-    async fn get_gantt_data(&self, dag_id: &str) -> Result<Vec<serde_json::Value>>;
+    async fn get_gantt_data(&self, dag_id: &str, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>>;
 
     // ── Multi-Tenancy (Teams) ─────────────────────────────────────────────────
 

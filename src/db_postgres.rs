@@ -13,6 +13,51 @@ use sqlx::PgPool;
 
 use crate::db_trait::DatabaseBackend;
 
+/// Validate password strength (SEC-12).
+///
+/// # Security
+/// Enforces enterprise password policy: minimum 8 characters with at least
+/// one uppercase letter, one lowercase letter, one digit, and one special
+/// character. Returns a descriptive error listing all unmet requirements.
+pub fn validate_password_strength(password: &str) -> Result<()> {
+    let mut errors: Vec<&str> = Vec::new();
+
+    if password.len() < 8 {
+        errors.push("at least 8 characters");
+    }
+    if !password.chars().any(|c| c.is_uppercase()) {
+        errors.push("at least one uppercase letter");
+    }
+    if !password.chars().any(|c| c.is_lowercase()) {
+        errors.push("at least one lowercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        errors.push("at least one digit");
+    }
+    if !password.chars().any(|c| "!@#$%^&*()_+-=[]{}|;':\",./<>?`~".contains(c)) {
+        errors.push("at least one special character (!@#$%^&*...)");
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Password does not meet strength requirements: must contain {}",
+            errors.join(", ")
+        ))
+    }
+}
+
+/// SECURITY (BUG-H7): Escape SQL LIKE metacharacters (`%`, `_`, `\`) in user
+/// input before using it as a LIKE operand.  The backslash is escaped first to
+/// avoid double-escaping the replacement backslashes.
+pub fn escape_like_pattern(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 // ─── Connection pool ─────────────────────────────────────────────────────────
 
 pub struct PostgresDb {
@@ -92,6 +137,8 @@ impl PostgresDb {
         .context("Failed to seed default pool")?;
 
         // Seed admin user (idempotent)
+        // SEC-8: Default admin is created with password_change_required = true
+        // so users cannot operate with default credentials.
         let admin_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM users WHERE username = 'admin')",
         )
@@ -102,8 +149,8 @@ impl PostgresDb {
         if !admin_exists {
             let hashed = hash("admin", DEFAULT_COST).context("bcrypt hash failed")?;
             sqlx::query(
-                "INSERT INTO users (username, password_hash, role, api_key)
-                 VALUES ('admin', $1, 'Admin', 'vortex_admin_key')
+                "INSERT INTO users (username, password_hash, role, api_key, password_change_required)
+                 VALUES ('admin', $1, 'Admin', 'vortex_admin_key', TRUE)
                  ON CONFLICT (username) DO NOTHING",
             )
             .bind(&hashed)
@@ -138,7 +185,13 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
+    /// BUG-C3 fix: All DAG registration operations (upsert, stale task deletion,
+    /// and task upserts) are wrapped in a single transaction. If any step fails,
+    /// the entire operation rolls back, preventing corrupted state (e.g., a DAG
+    /// left with zero tasks after a partial insertion failure).
     async fn register_dag(&self, dag: &crate::scheduler::Dag) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("register_dag: begin tx")?;
+
         sqlx::query(
             "INSERT INTO dags (id, created_at, schedule_interval, timezone, max_active_runs, catchup, is_dynamic, team_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -158,7 +211,7 @@ impl DatabaseBackend for PostgresDb {
         .bind(dag.catchup)
         .bind(dag.is_dynamic)
         .bind(None::<String>)  // Dag struct has no team_id field; NULL by default
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("register_dag: upsert dag")?;
 
@@ -167,7 +220,7 @@ impl DatabaseBackend for PostgresDb {
         if task_ids.is_empty() {
             sqlx::query("DELETE FROM tasks WHERE dag_id = $1")
                 .bind(&dag.id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .context("register_dag: delete stale tasks")?;
         } else {
@@ -184,27 +237,46 @@ impl DatabaseBackend for PostgresDb {
             for tid in &task_ids {
                 q = q.bind(tid);
             }
-            q.execute(&self.pool)
+            q.execute(&mut *tx)
                 .await
                 .context("register_dag: delete stale tasks")?;
         }
 
+        // Upsert each task within the same transaction (inlined from save_task
+        // to use the transaction executor instead of the connection pool)
         for task in dag.tasks.values() {
-            self.save_task(
-                &dag.id,
-                &task.id,
-                &task.name,
-                &task.command,
-                &task.task_type,
-                &task.config.to_string(),
-                task.max_retries,
-                task.retry_delay_secs,
-                &task.pool,
-                task.task_group.as_deref(),
-                task.execution_timeout,
+            sqlx::query(
+                "INSERT INTO tasks (id, dag_id, name, command, task_type, config,
+                                    max_retries, retry_delay_secs, pool, task_group, execution_timeout)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 ON CONFLICT (id, dag_id) DO UPDATE
+                    SET name             = EXCLUDED.name,
+                        command          = EXCLUDED.command,
+                        task_type        = EXCLUDED.task_type,
+                        config           = EXCLUDED.config,
+                        max_retries      = EXCLUDED.max_retries,
+                        retry_delay_secs = EXCLUDED.retry_delay_secs,
+                        pool             = EXCLUDED.pool,
+                        task_group       = EXCLUDED.task_group,
+                        execution_timeout= EXCLUDED.execution_timeout",
             )
-            .await?;
+            .bind(&task.id)
+            .bind(&dag.id)
+            .bind(&task.name)
+            .bind(&task.command)
+            .bind(&task.task_type)
+            .bind(&task.config.to_string())
+            .bind(task.max_retries)
+            .bind(task.retry_delay_secs)
+            .bind(&task.pool)
+            .bind(task.task_group.as_deref())
+            .bind(task.execution_timeout)
+            .execute(&mut *tx)
+            .await
+            .context("register_dag: upsert task")?;
         }
+
+        tx.commit().await.context("register_dag: commit")?;
         Ok(())
     }
 
@@ -469,6 +541,7 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn get_dag_tasks(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
+        // PERF-2: fetch_all issues a single query and returns all rows in bulk — no N+1.
         let rows = sqlx::query(
             "SELECT id, name, command, task_type, config, max_retries, retry_delay_secs, pool, task_group, execution_timeout
              FROM tasks WHERE dag_id = $1",
@@ -777,7 +850,7 @@ impl DatabaseBackend for PostgresDb {
     async fn get_task_instance_details(
         &self,
         ti_id: &str,
-    ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>> {
+    ) -> Result<Option<(String, String, String, String, String, String, i32, i32, i32)>> {
         let row = sqlx::query(
             "SELECT ti.dag_id,
                     ti.task_id,
@@ -786,7 +859,8 @@ impl DatabaseBackend for PostgresDb {
                     t.task_type,
                     t.config,
                     t.max_retries,
-                    t.retry_delay_secs
+                    t.retry_delay_secs,
+                    COALESCE(t.execution_timeout, 0) AS execution_timeout_secs
              FROM task_instances ti
              JOIN tasks    t  ON ti.task_id = t.id AND ti.dag_id = t.dag_id
              -- Bug 34 fix: JOIN on run_id (unique per run), not (dag_id, execution_date).
@@ -810,6 +884,7 @@ impl DatabaseBackend for PostgresDb {
                 r.get::<String, _>("config"),
                 r.get::<i32, _>("max_retries"),
                 r.get::<i32, _>("retry_delay_secs"),
+                r.get::<i32, _>("execution_timeout_secs"),
             )
         }))
     }
@@ -998,16 +1073,7 @@ impl DatabaseBackend for PostgresDb {
         role: &str,
         api_key: &str,
     ) -> Result<()> {
-        if password.len() < 8 {
-            return Err(anyhow::anyhow!("Password must be at least 8 characters"));
-        }
-        if password.chars().all(|c| c.is_lowercase())
-            || password.chars().all(|c| c.is_uppercase())
-        {
-            return Err(anyhow::anyhow!(
-                "Password must contain mixed case or numbers"
-            ));
-        }
+        validate_password_strength(password)?;
         let hashed = hash(password, DEFAULT_COST).context("bcrypt hash failed")?;
         sqlx::query(
             "INSERT INTO users (username, password_hash, role, api_key)
@@ -1055,9 +1121,9 @@ impl DatabaseBackend for PostgresDb {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<Option<(String, String)>> {
+    ) -> Result<Option<(String, String, bool)>> {
         let row = sqlx::query(
-            "SELECT password_hash, api_key, role FROM users WHERE username = $1",
+            "SELECT password_hash, api_key, role, COALESCE(password_change_required, FALSE) AS password_change_required FROM users WHERE username = $1",
         )
         .bind(username)
         .fetch_optional(&self.pool)
@@ -1069,8 +1135,9 @@ impl DatabaseBackend for PostgresDb {
             let stored_hash: String = r.get("password_hash");
             let api_key: String = r.get("api_key");
             let role: String = r.get("role");
+            let password_change_required: bool = r.get("password_change_required");
             if verify(password, &stored_hash).unwrap_or(false) {
-                return Ok(Some((api_key, role)));
+                return Ok(Some((api_key, role, password_change_required)));
             }
         }
         Ok(None)
@@ -1097,16 +1164,21 @@ impl DatabaseBackend for PostgresDb {
 
     // ── Secret management ─────────────────────────────────────────────────────
 
-    async fn store_secret(&self, key: &str, encrypted_value: &str) -> Result<()> {
+    async fn store_secret(&self, key: &str, encrypted_value: &str, team_id: Option<&str>, actor: Option<&str>) -> Result<()> {
         sqlx::query(
-            "INSERT INTO secrets (key, value, updated_at) VALUES ($1, $2, $3)
+            "INSERT INTO secrets (key, value, updated_at, team_id, created_by, updated_by, version, created_at)
+             VALUES ($1, $2, $3, $4, $5, $5, 1, $3)
              ON CONFLICT (key) DO UPDATE
                 SET value      = EXCLUDED.value,
-                    updated_at = EXCLUDED.updated_at",
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by = $5,
+                    version    = secrets.version + 1",
         )
         .bind(key)
         .bind(encrypted_value)
         .bind(Utc::now())
+        .bind(team_id)
+        .bind(actor)
         .execute(&self.pool)
         .await
         .context("store_secret")?;
@@ -1115,7 +1187,7 @@ impl DatabaseBackend for PostgresDb {
 
     async fn get_secret(&self, key: &str) -> Result<Option<String>> {
         let row =
-            sqlx::query_scalar("SELECT value FROM secrets WHERE key = $1")
+            sqlx::query_scalar("SELECT value FROM secrets WHERE key = $1 AND deleted_at IS NULL")
                 .bind(key)
                 .fetch_optional(&self.pool)
                 .await
@@ -1123,17 +1195,53 @@ impl DatabaseBackend for PostgresDb {
         Ok(row)
     }
 
-    async fn get_all_secrets(&self) -> Result<Vec<String>> {
-        let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM secrets")
-            .fetch_all(&self.pool)
-            .await
-            .context("get_all_secrets")?;
+    async fn get_secrets_batch(&self, keys: &[String]) -> Result<std::collections::HashMap<String, Option<String>>> {
+        if keys.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        // PERF-9: Single query for all required secrets instead of N individual lookups.
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, value FROM secrets WHERE key = ANY($1) AND deleted_at IS NULL"
+        )
+        .bind(keys)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_secrets_batch")?;
+
+        let mut result: std::collections::HashMap<String, Option<String>> =
+            keys.iter().map(|k| (k.clone(), None)).collect();
+        for (name, value) in rows {
+            result.insert(name, Some(value));
+        }
+        Ok(result)
+    }
+
+    async fn get_all_secrets(&self, team_id: Option<&str>) -> Result<Vec<String>> {
+        let keys: Vec<String> = match team_id {
+            Some(tid) => {
+                sqlx::query_scalar("SELECT key FROM secrets WHERE team_id = $1 AND deleted_at IS NULL")
+                    .bind(tid)
+                    .fetch_all(&self.pool)
+                    .await
+                    .context("get_all_secrets")?
+            }
+            None => {
+                sqlx::query_scalar("SELECT key FROM secrets WHERE deleted_at IS NULL")
+                    .fetch_all(&self.pool)
+                    .await
+                    .context("get_all_secrets")?
+            }
+        };
         Ok(keys)
     }
 
-    async fn delete_secret(&self, key: &str) -> Result<()> {
-        sqlx::query("DELETE FROM secrets WHERE key = $1")
+    async fn delete_secret(&self, key: &str, actor: Option<&str>) -> Result<()> {
+        sqlx::query(
+            "UPDATE secrets SET deleted_at = NOW(), updated_by = $2, version = version + 1
+             WHERE key = $1 AND deleted_at IS NULL"
+        )
             .bind(key)
+            .bind(actor)
             .execute(&self.pool)
             .await
             .context("delete_secret")?;
@@ -1227,7 +1335,7 @@ impl DatabaseBackend for PostgresDb {
     async fn get_interrupted_tasks_by_worker(
         &self,
         worker_id: &str,
-    ) -> Result<Vec<(String, String, String, String, String, String, String, i32, i32)>> {
+    ) -> Result<Vec<(String, String, String, String, String, String, String, i32, i32, i32)>> {
         let rows = sqlx::query(
             "SELECT ti.id,
                     ti.dag_id,
@@ -1237,7 +1345,8 @@ impl DatabaseBackend for PostgresDb {
                     t.task_type,
                     t.config,
                     t.max_retries,
-                    t.retry_delay_secs
+                    t.retry_delay_secs,
+                    COALESCE(t.execution_timeout, 0) AS execution_timeout_secs
              FROM task_instances ti
              JOIN tasks    t  ON ti.task_id = t.id AND ti.dag_id = t.dag_id
              -- Bug 32 fix: JOIN on run_id (unique per run), not (dag_id, execution_date).
@@ -1264,6 +1373,7 @@ impl DatabaseBackend for PostgresDb {
                     r.get::<String, _>("config"),
                     r.get::<i32, _>("max_retries"),
                     r.get::<i32, _>("retry_delay_secs"),
+                    r.get::<i32, _>("execution_timeout_secs"),
                 )
             })
             .collect())
@@ -1566,15 +1676,19 @@ impl DatabaseBackend for PostgresDb {
         })).collect())
     }
 
-    async fn get_gantt_data(&self, dag_id: &str) -> Result<Vec<serde_json::Value>> {
+    async fn get_gantt_data(&self, dag_id: &str, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>> {
         use sqlx::Row;
+        // PERF-4: bounded with LIMIT/OFFSET to prevent full table scans.
         let rows = sqlx::query(
             "SELECT task_id, run_id, state, start_time, end_time, duration_ms
              FROM task_instances
              WHERE dag_id = $1 AND start_time IS NOT NULL
-             ORDER BY task_id, start_time",
+             ORDER BY task_id, start_time
+             LIMIT $2 OFFSET $3",
         )
         .bind(dag_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .context("get_gantt_data")?;
@@ -1762,12 +1876,37 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
+    /// BUG-H5 fix: Uses INSERT-first approach to eliminate the TOCTOU race in
+    /// pool slot acquisition. The slot claim is inserted first, then a serialized
+    /// capacity check (via FOR UPDATE on the pool row) verifies the pool is not
+    /// over capacity. If over capacity, the claim is removed within the same
+    /// transaction before committing.
     async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool> {
-        // Use a transaction with row-level locking to prevent TOCTOU race conditions.
-        // Lock the pool row first, then check the count and insert atomically.
         let mut tx = self.pool.begin().await.context("acquire_pool_slot: begin tx")?;
 
-        // Lock the pool row to serialize concurrent slot acquisitions
+        // Step 1: INSERT the slot claim first (INSERT-first eliminates TOCTOU).
+        // ON CONFLICT handles the case where this task already holds a slot.
+        let insert_result = sqlx::query(
+            "INSERT INTO pool_slots (id, pool_name, task_instance_id, acquired_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(pool_name)
+        .bind(task_instance_id)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await
+        .context("acquire_pool_slot: insert slot claim")?;
+
+        if insert_result.rows_affected() == 0 {
+            // Task already holds a slot in this pool — idempotent success
+            tx.commit().await.context("acquire_pool_slot: commit (already held)")?;
+            return Ok(true);
+        }
+
+        // Step 2: Lock the pool row to serialize the capacity check across
+        // concurrent transactions, then verify we haven't exceeded the limit.
         let pool_row = sqlx::query(
             "SELECT slots FROM pools WHERE name = $1 FOR UPDATE"
         )
@@ -1787,7 +1926,6 @@ impl DatabaseBackend for PostgresDb {
             }
         };
 
-        // Count current occupied slots (inside the transaction, after locking the pool row)
         let occupied: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pool_slots WHERE pool_name = $1"
         )
@@ -1796,24 +1934,20 @@ impl DatabaseBackend for PostgresDb {
         .await
         .context("acquire_pool_slot: count slots")?;
 
-        if occupied >= max_slots as i64 {
-            tx.rollback().await.ok();
+        if occupied > max_slots as i64 {
+            // Over capacity — remove our claim and report failure
+            sqlx::query(
+                "DELETE FROM pool_slots WHERE pool_name = $1 AND task_instance_id = $2"
+            )
+            .bind(pool_name)
+            .bind(task_instance_id)
+            .execute(&mut *tx)
+            .await
+            .context("acquire_pool_slot: remove over-capacity claim")?;
+
+            tx.commit().await.context("acquire_pool_slot: commit (over capacity)")?;
             return Ok(false);
         }
-
-        // Insert the slot claim
-        sqlx::query(
-            "INSERT INTO pool_slots (id, pool_name, task_instance_id, acquired_at)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (pool_name, task_instance_id) DO NOTHING"
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(pool_name)
-        .bind(task_instance_id)
-        .bind(Utc::now())
-        .execute(&mut *tx)
-        .await
-        .context("acquire_pool_slot: insert slot")?;
 
         tx.commit().await.context("acquire_pool_slot: commit")?;
         Ok(true)
@@ -1834,7 +1968,7 @@ impl DatabaseBackend for PostgresDb {
     async fn get_task_instance_details_full(
         &self,
         ti_id: &str,
-    ) -> Result<Option<(String, String, String, String, String, String, i32, i32)>> {
+    ) -> Result<Option<(String, String, String, String, String, String, i32, i32, i32)>> {
         self.get_task_instance_details(ti_id).await
     }
 
@@ -2213,6 +2347,9 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn find_matching_approval_gate(&self, resource_type: &str, resource_id: &str) -> Result<Option<serde_json::Value>> {
+        // SECURITY (BUG-H7): Escape SQL LIKE metacharacters in user-supplied resource_id
+        // to prevent pattern injection (e.g., "%" matching everything).
+        let safe_resource_id = escape_like_pattern(resource_id);
         let row = sqlx::query_as::<_, (serde_json::Value,)>(
             "SELECT row_to_json(t) FROM (
                 SELECT * FROM approval_gates
@@ -2221,7 +2358,7 @@ impl DatabaseBackend for PostgresDb {
             ) t"
         )
         .bind(resource_type)
-        .bind(resource_id)
+        .bind(&safe_resource_id)
         .fetch_optional(&self.pool)
         .await
         .context("find_matching_approval_gate")?;
@@ -2310,7 +2447,11 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn add_approval_vote(&self, request_id: &str, approver: &str, comment: Option<&str>) -> Result<String> {
-        // Add the approval vote to the JSONB array
+        // BUG-M12 FIX: Wrap vote insertion and status update in a single
+        // transaction so a vote can never be recorded without the subsequent
+        // status check/update succeeding atomically.
+        let mut tx = self.pool.begin().await.context("add_approval_vote: begin tx")?;
+
         let vote = serde_json::json!({
             "approver": approver,
             "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -2321,7 +2462,7 @@ impl DatabaseBackend for PostgresDb {
         )
         .bind(request_id)
         .bind(&vote)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("add_approval_vote")?;
 
@@ -2332,19 +2473,24 @@ impl DatabaseBackend for PostgresDb {
              WHERE ar.id = $1"
         )
         .bind(request_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .context("check_approval_count")?;
 
         let (status, approval_count, required) = row;
-        if status == "pending" && approval_count >= required as i64 {
+        let result = if status == "pending" && approval_count >= required as i64 {
             sqlx::query("UPDATE approval_requests SET status = 'approved', resolved_at = NOW() WHERE id = $1")
                 .bind(request_id)
-                .execute(&self.pool)
-                .await?;
-            return Ok("approved".to_string());
-        }
-        Ok("pending".to_string())
+                .execute(&mut *tx)
+                .await
+                .context("add_approval_vote: approve")?;
+            "approved".to_string()
+        } else {
+            "pending".to_string()
+        };
+
+        tx.commit().await.context("add_approval_vote: commit")?;
+        Ok(result)
     }
 
     async fn reject_approval_request(&self, request_id: &str, rejector: &str, reason: Option<&str>) -> Result<()> {
@@ -2407,15 +2553,25 @@ impl DatabaseBackend for PostgresDb {
         if !allowed.contains(&table) {
             anyhow::bail!("Retention delete not allowed on table: {}", table);
         }
+        // PERF-3: use stable `id` column (not `ctid` which changes after VACUUM).
+        // Loop until no rows remain to delete, processing in batches to bound memory usage.
         let query = format!(
-            "DELETE FROM {} WHERE ctid IN (SELECT ctid FROM {} WHERE created_at < NOW() - INTERVAL '{} days' LIMIT {})",
+            "DELETE FROM {} WHERE id IN (SELECT id FROM {} WHERE created_at < NOW() - INTERVAL '{} days' LIMIT {})",
             table, table, retention_days, batch_size
         );
-        let result = sqlx::query(&query)
-            .execute(&self.pool)
-            .await
-            .context("execute_retention_delete")?;
-        Ok(result.rows_affected() as i64)
+        let mut total_deleted: i64 = 0;
+        loop {
+            let result = sqlx::query(&query)
+                .execute(&self.pool)
+                .await
+                .context("execute_retention_delete")?;
+            let deleted = result.rows_affected() as i64;
+            total_deleted += deleted;
+            if deleted == 0 {
+                break;
+            }
+        }
+        Ok(total_deleted)
     }
 
     async fn update_retention_last_run(&self, id: &str) -> Result<()> {

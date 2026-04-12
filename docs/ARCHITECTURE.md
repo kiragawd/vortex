@@ -282,3 +282,25 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 - [High Availability](./high-availability.md) — HA deployment with leader election
 - [Migration Guide](./MIGRATION_GUIDE.md) — Airflow-to-Vortex DAG migration
 - [Connector API](./CONNECTOR_API.md) — Enterprise connector trait and implementations
+
+---
+
+## Glossary
+
+| Term | Definition |
+|------|-----------|
+| **Controller** | The central Vortex server process that accepts API calls, manages the task queue, and coordinates workers via gRPC. Also called "server". Runs as `vortex server`. |
+| **Worker** | A process that connects to the controller via gRPC, polls for tasks, executes them, and reports results. Part of the swarm. Runs as `vortex worker`. |
+| **Swarm** | The collection of worker processes managed by the controller via gRPC on port 50051. Enabled with `--swarm` on the controller. |
+| **DAG** | Directed Acyclic Graph — a workflow definition composed of tasks and their dependency edges. DAGs are defined in Python or YAML and registered with the controller. |
+| **Task** | A unit of work within a DAG (e.g., a bash command or Python callable). Each task has a unique `task_id` within its DAG. |
+| **Task Instance** | A single execution of a task within a specific DAG run. Tracks state (`Queued`, `Running`, `Success`, `Failed`), stdout/stderr, duration, and retry count. Also called "task execution". |
+| **DAG Run** | One complete execution of an entire DAG from trigger to final state. Each run has a unique `run_id` and is associated with an `execution_date`. |
+| **XCom** | Cross-communication — a key/value store that allows tasks in the same DAG run to pass data to each other. Stored in the `task_xcom` table. |
+| **Vault** | The encrypted secret storage subsystem. Secrets are encrypted with AES-256-GCM using `VORTEX_SECRET_KEY` before storage and decrypted only at task execution time. |
+| **Sensor** | A task that polls an external system (filesystem, HTTP endpoint, SQL query, or upstream DAG) until a condition is met, then completes successfully. |
+| **Pool** | A named concurrency limiter. Tasks assigned to a pool consume slots; when the pool is full, additional tasks wait in the queue. |
+| **Backfill** | Triggering runs for a date range in the past, allowing historical data reprocessing. |
+| **Controller Address** | The gRPC endpoint workers connect to, format: `http://host:50051` (plaintext) or `https://host:50051` (TLS). Used with `--controller` flag. |
+| **Team** | A multi-tenancy unit. Users and DAGs can be assigned to a team; non-admin users only see their own team's resources. |
+| **Approval Workflow** | A gate requiring admin approval before a DAG change (trigger, edit, etc.) is applied. Enabled via the `approval_workflows` feature flag. |

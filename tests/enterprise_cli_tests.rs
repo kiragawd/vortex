@@ -25,7 +25,7 @@ fn test_cli_help() {
 fn test_cli_version() {
     let output = vortex_binary().arg("--version").output().expect("Failed to run vortex --version");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.6.0"), "Should show version 0.6.0");
+    assert!(stdout.contains("0.7.0"), "Should show version 0.7.0");
 }
 
 #[test]

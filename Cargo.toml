@@ -1,7 +1,7 @@
 [package]
 name = "vortex"
 version = "0.7.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 prometheus = { version = "0.13", features = ["process"] }
@@ -27,6 +27,7 @@ prost = "0.13"
 prost-types = "0.13"
 hostname = "0.4"
 aes-gcm = "0.10"
+argon2 = "0.5"
 base64 = "0.22"
 tempfile = "3.8"
 "async-recursion" = "1.1"
@@ -50,6 +51,8 @@ syn = { version = "2.0", features = ["full"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+sqlparser = "0.41"
+subtle = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"
