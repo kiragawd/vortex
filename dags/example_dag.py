@@ -1,6 +1,6 @@
-from vortex import DAG
-from vortex.operators.bash import BashOperator
-from vortex.operators.python import PythonOperator
+from ryuo import DAG
+from ryuo.operators.bash import BashOperator
+from ryuo.operators.python import PythonOperator
 
 def my_python_func():
     print("Executing Python function!")

@@ -1,7 +1,7 @@
 // Snowflake connector unit tests (no real Snowflake connection needed)
 
-use vortex::connectors::SnowflakeConnector;
-use vortex::enterprise_connector::{ConnectorCapability, EnterpriseConnector};
+use ryuo::connectors::SnowflakeConnector;
+use ryuo::enterprise_connector::{ConnectorCapability, EnterpriseConnector};
 
 #[test]
 fn test_snowflake_connector_creation() {

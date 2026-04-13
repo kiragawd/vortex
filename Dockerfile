@@ -22,7 +22,7 @@ COPY proto/ proto/
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
     echo "" > src/lib.rs && \
-    echo "fn main() {}" > src/bin/vortex-cli.rs
+    echo "fn main() {}" > src/bin/ryuo-cli.rs
 
 ENV PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 
@@ -38,10 +38,10 @@ COPY python/ python/
 COPY dags/ dags/
 
 # Touch main files to invalidate cache for source changes only
-RUN touch src/main.rs src/lib.rs src/bin/vortex-cli.rs
+RUN touch src/main.rs src/lib.rs src/bin/ryuo-cli.rs
 
 # Full release build
-RUN cargo build --release --bin vortex --bin vortex-cli
+RUN cargo build --release --bin ryuo --bin ryuo-cli
 
 # ─── Stage 2: Runtime ──────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -57,13 +57,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN groupadd -r vortex && useradd -r -g vortex -d /app -s /bin/bash vortex
+RUN groupadd -r ryuo && useradd -r -g ryuo -d /app -s /bin/bash ryuo
 
 WORKDIR /app
 
 # Copy binaries from builder
-COPY --from=builder /app/target/release/vortex /usr/local/bin/vortex
-COPY --from=builder /app/target/release/vortex-cli /usr/local/bin/vortex-cli
+COPY --from=builder /app/target/release/ryuo /usr/local/bin/ryuo
+COPY --from=builder /app/target/release/ryuo-cli /usr/local/bin/ryuo-cli
 
 # Copy runtime assets
 COPY migrations/ /app/migrations/
@@ -74,7 +74,7 @@ COPY prometheus.yml /app/prometheus.yml
 
 # Create directories for data, logs, plugins
 RUN mkdir -p /app/data /app/logs /app/plugins /app/secrets && \
-    chown -R vortex:vortex /app
+    chown -R ryuo:ryuo /app
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
@@ -83,9 +83,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # Expose ports: HTTP API/Web UI, gRPC swarm, Prometheus metrics
 EXPOSE 3000 50051 9090
 
-USER vortex
+USER ryuo
 
 # INFRA-7: Explicit STOPSIGNAL for graceful shutdown
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["tini", "--"]
-CMD ["vortex"]
+CMD ["ryuo"]

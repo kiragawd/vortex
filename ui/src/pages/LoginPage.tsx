@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Zap, AlertCircle } from 'lucide-react';
+import { Loader2, AlertCircle } from 'lucide-react';
 import { authApi } from '../api/client';
 import { useAppStore } from '../store';
 
@@ -18,7 +18,7 @@ export function LoginPage() {
     setLoading(true);
     try {
       const res = await authApi.login(username, password);
-      localStorage.setItem('vortex_token', res.api_key);
+      localStorage.setItem('ryuo_token', res.api_key);
       setUser({ id: res.username, username: res.username, roles: [res.role] });
       navigate('/', { replace: true });
     } catch (err: unknown) {
@@ -33,17 +33,15 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 dark:bg-gray-950">
       {/* Background decoration */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-40 h-96 w-96 rounded-full bg-vortex-500/10 blur-3xl dark:bg-vortex-500/5" />
+        <div className="absolute -top-40 -right-40 h-96 w-96 rounded-full bg-ryuo-500/10 blur-3xl dark:bg-ryuo-500/5" />
         <div className="absolute -bottom-40 -left-40 h-96 w-96 rounded-full bg-indigo-500/10 blur-3xl dark:bg-indigo-500/5" />
       </div>
 
       <div className="relative w-full max-w-md">
         {/* Logo */}
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-vortex-500 to-indigo-600 shadow-lg shadow-vortex-500/30">
-            <Zap className="h-8 w-8 text-white" />
-          </div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Vortex</h1>
+          <img src="/ryuo.svg" alt="Ryuo" className="mx-auto mb-4 h-24 w-24" />
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Ryuo</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Enterprise Orchestration Platform
           </p>
@@ -68,7 +66,7 @@ export function LoginPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 transition-colors focus:border-vortex-500 focus:outline-none focus:ring-2 focus:ring-vortex-500/20 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:placeholder-gray-500 dark:focus:border-vortex-400"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 transition-colors focus:border-ryuo-500 focus:outline-none focus:ring-2 focus:ring-ryuo-500/20 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:placeholder-gray-500 dark:focus:border-ryuo-400"
               />
             </div>
 
@@ -87,7 +85,7 @@ export function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 transition-colors focus:border-vortex-500 focus:outline-none focus:ring-2 focus:ring-vortex-500/20 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:placeholder-gray-500 dark:focus:border-vortex-400"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 transition-colors focus:border-ryuo-500 focus:outline-none focus:ring-2 focus:ring-ryuo-500/20 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:placeholder-gray-500 dark:focus:border-ryuo-400"
               />
             </div>
 
@@ -101,7 +99,7 @@ export function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-vortex-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-vortex-700 active:bg-vortex-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-ryuo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-ryuo-700 active:bg-ryuo-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? (
                 <>

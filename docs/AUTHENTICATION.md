@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex provides a layered security model covering authentication, authorization, secrets management, network controls, and execution sandboxing.
+Ryuo provides a layered security model covering authentication, authorization, secrets management, network controls, and execution sandboxing.
 
 **Modules:** `src/auth.rs`, `src/rbac.rs`, `src/vault.rs`
 
@@ -36,7 +36,7 @@ OpenID Connect flow supporting Okta, Azure AD, and PingIdentity:
 **CLI configuration:**
 
 ```bash
-vortex-cli auth-provider create \
+ryuo-cli auth-provider create \
   --name "okta-prod" \
   --type oidc \
   --client-id "your-client-id" \
@@ -50,10 +50,10 @@ Configuration types and session management are defined. Provider implementations
 
 ```bash
 # List configured auth providers
-vortex-cli auth-provider list
+ryuo-cli auth-provider list
 
 # Test provider connectivity
-vortex-cli auth-provider test --name "okta-prod"
+ryuo-cli auth-provider test --name "okta-prod"
 ```
 
 ---
@@ -86,15 +86,15 @@ Permissions use a `resource.action` format with wildcard scope matching:
 
 ```bash
 # List roles and permissions
-vortex-cli rbac list-roles
-vortex-cli rbac list-permissions
+ryuo-cli rbac list-roles
+ryuo-cli rbac list-permissions
 
 # Assign/revoke roles
-vortex-cli rbac assign --user "alice" --role "Operator"
-vortex-cli rbac revoke --user "alice" --role "Operator"
+ryuo-cli rbac assign --user "alice" --role "Operator"
+ryuo-cli rbac revoke --user "alice" --role "Operator"
 
 # View user roles
-vortex-cli rbac user-roles --user "alice"
+ryuo-cli rbac user-roles --user "alice"
 ```
 
 ### Team Isolation
@@ -107,9 +107,9 @@ Multi-tenant support with per-team resource partitioning:
 
 ```bash
 # Team management
-vortex-cli team create --name "data-engineering" --quota-max-dags 100
-vortex-cli team list
-vortex-cli team delete --name "data-engineering"
+ryuo-cli team create --name "data-engineering" --quota-max-dags 100
+ryuo-cli team list
+ryuo-cli team delete --name "data-engineering"
 ```
 
 ---
@@ -125,8 +125,8 @@ Tokens provide programmatic access with fine-grained restrictions:
 
 ```bash
 # Create scoped tokens
-vortex-cli token create --name "ci-deploy" --scopes "dag.trigger,dag.read"
-vortex-cli token list
+ryuo-cli token create --name "ci-deploy" --scopes "dag.trigger,dag.read"
+ryuo-cli token list
 ```
 
 ---
@@ -148,14 +148,14 @@ AES-256-GCM encrypted secrets management:
 - **Unique nonces** per secret — no nonce reuse
 - **At-rest encryption** — secrets encrypted in PostgreSQL
 - **Environment variable injection** — decrypted secrets passed to task processes
-- Requires `VORTEX_SECRET_KEY` environment variable (32-character key)
+- Requires `RYUO_SECRET_KEY` environment variable (32-character key)
 
 ```bash
 # Secret management
-vortex-cli secrets set DB_PASSWORD "s3cr3t"
-vortex-cli secrets get DB_PASSWORD
-vortex-cli secrets list
-vortex-cli secrets delete DB_PASSWORD
+ryuo-cli secrets set DB_PASSWORD "s3cr3t"
+ryuo-cli secrets get DB_PASSWORD
+ryuo-cli secrets list
+ryuo-cli secrets delete DB_PASSWORD
 ```
 
 See [Secrets Vault](./SECRETS_VAULT.md) for detailed encryption internals.
@@ -183,7 +183,7 @@ Additional protections:
 
 ## Execution Sandboxing
 
-By default, Vortex runs in a secure sandbox mode:
+By default, Ryuo runs in a secure sandbox mode:
 
 | Feature | Flag | Default |
 |---------|------|---------|

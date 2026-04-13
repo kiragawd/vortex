@@ -1,11 +1,11 @@
-# Airflow to Vortex Migration Guide
+# Airflow to Ryuo Migration Guide
 
 ## Overview
-This guide describes how to migrate Airflow DAGs into native Vortex Rust DAG modules using the Vortex CLI transpiler, including AI-assisted agentic conversion for complex Python and dbt logic.
+This guide describes how to migrate Airflow DAGs into native Ryuo Rust DAG modules using the Ryuo CLI transpiler, including AI-assisted agentic conversion for complex Python and dbt logic.
 
 ## Prerequisites
 - Rust toolchain installed.
-- Vortex repository checked out.
+- Ryuo repository checked out.
 - Python DAG files available locally.
 - For agentic mode: an API key for OpenAI or Anthropic.
 
@@ -13,25 +13,25 @@ This guide describes how to migrate Airflow DAGs into native Vortex Rust DAG mod
 Use the CLI migrate command:
 
 ```bash
-vortex-cli migrate ./dags --output-dir ./generated_dags
+ryuo-cli migrate ./dags --output-dir ./generated_dags
 ```
 
 Strict mode fails when unresolved placeholders are produced:
 
 ```bash
-vortex-cli migrate ./dags --output-dir ./generated_dags --strict
+ryuo-cli migrate ./dags --output-dir ./generated_dags --strict
 ```
 
 Shim fallback mode preserves original Python callable payloads for runtime fallback:
 
 ```bash
-vortex-cli migrate ./dags --output-dir ./generated_dags --use-shim-fallback
+ryuo-cli migrate ./dags --output-dir ./generated_dags --use-shim-fallback
 ```
 
 Custom report format (JSON or Markdown):
 
 ```bash
-vortex-cli migrate ./dags --output-dir ./generated_dags --report-format md
+ryuo-cli migrate ./dags --output-dir ./generated_dags --report-format md
 ```
 
 ### Agentic Conversion Mode
@@ -40,10 +40,10 @@ Agentic mode uses LLM providers to automatically translate unresolved `PythonOpe
 
 ```bash
 # OpenAI provider
-vortex-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+ryuo-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
 
 # Anthropic provider
-vortex-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider anthropic --model claude-3-5-sonnet-latest
+ryuo-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider anthropic --model claude-3-5-sonnet-latest
 ```
 
 Required environment variables by provider:
@@ -78,7 +78,7 @@ For dbt projects, agentic mode can convert an entire dbt project into a native R
 6. **Validate** — Runs `cargo check` and snapshot tests against expected SQL shapes.
 
 ```bash
-vortex-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+ryuo-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
 ```
 
 ## Output Artifacts

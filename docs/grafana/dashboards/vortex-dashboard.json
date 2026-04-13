@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "VORTEX Orchestration Engine \u2014 Prometheus Metrics Dashboard",
+  "description": "RYUO Orchestration Engine \u2014 Prometheus Metrics Dashboard",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -37,7 +37,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -92,9 +92,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "time() - vortex_scheduler_heartbeat_timestamp",
+          "expr": "time() - ryuo_scheduler_heartbeat_timestamp",
           "instant": true,
           "legendFormat": "Heartbeat Age",
           "refId": "A"
@@ -107,7 +107,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -162,9 +162,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_workers_active",
+          "expr": "ryuo_workers_active",
           "instant": true,
           "legendFormat": "Active Workers",
           "refId": "A"
@@ -176,7 +176,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -231,9 +231,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_queue_depth",
+          "expr": "ryuo_queue_depth",
           "instant": true,
           "legendFormat": "Queue Depth",
           "refId": "A"
@@ -245,7 +245,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -292,9 +292,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_dags_total",
+          "expr": "ryuo_dags_total",
           "instant": true,
           "legendFormat": "Registered DAGs",
           "refId": "A"
@@ -318,7 +318,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -421,18 +421,18 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "rate(vortex_tasks_succeeded_total[1m]) * 60",
+          "expr": "rate(ryuo_tasks_succeeded_total[1m]) * 60",
           "legendFormat": "Succeeded / min",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "rate(vortex_tasks_failed_total[1m]) * 60",
+          "expr": "rate(ryuo_tasks_failed_total[1m]) * 60",
           "legendFormat": "Failed / min",
           "refId": "B"
         }
@@ -443,7 +443,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -500,9 +500,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "rate(vortex_tasks_failed_total[5m]) / clamp_min(rate(vortex_tasks_succeeded_total[5m]) + rate(vortex_tasks_failed_total[5m]), 1)",
+          "expr": "rate(ryuo_tasks_failed_total[5m]) / clamp_min(rate(ryuo_tasks_succeeded_total[5m]) + rate(ryuo_tasks_failed_total[5m]), 1)",
           "instant": true,
           "legendFormat": "Error Rate (5m)",
           "refId": "A"
@@ -526,7 +526,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -574,36 +574,36 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "histogram_quantile(0.50, rate(vortex_task_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(ryuo_task_duration_seconds_bucket[5m]))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "histogram_quantile(0.90, rate(vortex_task_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.90, rate(ryuo_task_duration_seconds_bucket[5m]))",
           "legendFormat": "p90",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "histogram_quantile(0.95, rate(vortex_task_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(ryuo_task_duration_seconds_bucket[5m]))",
           "legendFormat": "p95",
           "refId": "C"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "histogram_quantile(0.99, rate(vortex_task_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(ryuo_task_duration_seconds_bucket[5m]))",
           "legendFormat": "p99",
           "refId": "D"
         }
@@ -614,7 +614,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -684,9 +684,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "sum(rate(vortex_task_duration_seconds_bucket[5m])) by (le)",
+          "expr": "sum(rate(ryuo_task_duration_seconds_bucket[5m])) by (le)",
           "format": "heatmap",
           "legendFormat": "{{le}}",
           "refId": "A"
@@ -710,7 +710,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -791,18 +791,18 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "rate(vortex_dag_runs_total{state=\"success\"}[1m]) * 60",
+          "expr": "rate(ryuo_dag_runs_total{state=\"success\"}[1m]) * 60",
           "legendFormat": "Success / min",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "rate(vortex_dag_runs_total{state=\"failed\"}[1m]) * 60",
+          "expr": "rate(ryuo_dag_runs_total{state=\"failed\"}[1m]) * 60",
           "legendFormat": "Failed / min",
           "refId": "B"
         }
@@ -813,7 +813,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -895,9 +895,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_dag_runs_total",
+          "expr": "ryuo_dag_runs_total",
           "instant": true,
           "legendFormat": "{{state}}",
           "refId": "A"
@@ -921,7 +921,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -1020,27 +1020,27 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_workers_active",
+          "expr": "ryuo_workers_active",
           "legendFormat": "Active Workers",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_queue_depth",
+          "expr": "ryuo_queue_depth",
           "legendFormat": "Queue Depth",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "vortex_tasks_running",
+          "expr": "ryuo_tasks_running",
           "legendFormat": "Running Tasks",
           "refId": "C"
         }
@@ -1063,7 +1063,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -1132,21 +1132,21 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "time() - vortex_scheduler_heartbeat_timestamp",
+          "expr": "time() - ryuo_scheduler_heartbeat_timestamp",
           "legendFormat": "Heartbeat Age (s)",
           "refId": "A"
         }
       ],
       "title": "Scheduler Heartbeat Staleness",
-      "description": "\ud83d\udfe1 Warning > 30s  |  \ud83d\udd34 Critical > 60s\n\nPrometheus alert rule (copy to rules file):\n  - alert: VortexSchedulerDead\n    expr: time() - vortex_scheduler_heartbeat_timestamp > 60\n    for: 1m\n    labels:\n      severity: critical\n    annotations:\n      summary: VORTEX scheduler has not ticked for >60s",
+      "description": "\ud83d\udfe1 Warning > 30s  |  \ud83d\udd34 Critical > 60s\n\nPrometheus alert rule (copy to rules file):\n  - alert: RyuoSchedulerDead\n    expr: time() - ryuo_scheduler_heartbeat_timestamp > 60\n    for: 1m\n    labels:\n      severity: critical\n    annotations:\n      summary: RYUO scheduler has not ticked for >60s",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "vortex-prometheus"
+        "uid": "ryuo-prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -1235,9 +1235,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "vortex-prometheus"
+            "uid": "ryuo-prometheus"
           },
-          "expr": "time() - vortex_scheduler_heartbeat_timestamp",
+          "expr": "time() - ryuo_scheduler_heartbeat_timestamp",
           "instant": true,
           "legendFormat": "Scheduler Status",
           "refId": "A"
@@ -1250,7 +1250,7 @@
   "refresh": "10s",
   "schemaVersion": 38,
   "tags": [
-    "vortex",
+    "ryuo",
     "orchestration",
     "prometheus"
   ],
@@ -1276,8 +1276,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "VORTEX \u2014 Orchestration Engine",
-  "uid": "vortex-main-dashboard",
+  "title": "RYUO \u2014 Orchestration Engine",
+  "uid": "ryuo-main-dashboard",
   "version": 1,
   "weekStart": ""
 }

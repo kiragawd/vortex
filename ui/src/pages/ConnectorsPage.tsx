@@ -29,7 +29,7 @@ const CONNECTORS: Connector[] = [
     status: 'available',
     docs: {
       overview: 'The BigQuery connector provides full read/write access to Google BigQuery datasets. It supports partitioned tables, clustered tables, and BigQuery job-level monitoring with automatic cost estimation.',
-      authentication: 'Requires a GCP service account JSON key stored in the Vortex vault under the key `gcp_service_account`. Alternatively, set `GOOGLE_APPLICATION_CREDENTIALS` environment variable.',
+      authentication: 'Requires a GCP service account JSON key stored in the Ryuo vault under the key `gcp_service_account`. Alternatively, set `GOOGLE_APPLICATION_CREDENTIALS` environment variable.',
       capabilities: ['BatchRead', 'BatchWrite', 'AsyncJobs', 'PushdownPredicates', 'Partitioned Tables', 'Cost Estimation'],
       configExample: `connector:
   type: bigquery
@@ -55,7 +55,7 @@ const CONNECTORS: Connector[] = [
     status: 'available',
     docs: {
       overview: 'The Amazon Redshift connector supports SQL query execution, COPY/UNLOAD operations for bulk data movement, and cluster management. It integrates with AWS IAM roles for secure cross-account access.',
-      authentication: 'Requires Redshift credentials stored in the Vortex vault: `redshift_host`, `redshift_user`, `redshift_password`, `redshift_database`. Supports IAM-based authentication via `redshift_iam_role`.',
+      authentication: 'Requires Redshift credentials stored in the Ryuo vault: `redshift_host`, `redshift_user`, `redshift_password`, `redshift_database`. Supports IAM-based authentication via `redshift_iam_role`.',
       capabilities: ['BatchRead', 'BatchWrite', 'Transactions', 'COPY/UNLOAD', 'IAM Auth', 'Cluster Management'],
       configExample: `connector:
   type: redshift
@@ -81,7 +81,7 @@ const CONNECTORS: Connector[] = [
     status: 'available',
     docs: {
       overview: 'The Apache Kafka connector enables producing to and consuming from Kafka topics. It supports Avro/JSON/Protobuf serialization, consumer group management, and offset tracking for exactly-once processing semantics.',
-      authentication: 'Supports SASL/PLAIN, SASL/SCRAM, and mTLS authentication. Store credentials in the Vortex vault under `kafka_username`, `kafka_password`, or provide TLS certificate paths.',
+      authentication: 'Supports SASL/PLAIN, SASL/SCRAM, and mTLS authentication. Store credentials in the Ryuo vault under `kafka_username`, `kafka_password`, or provide TLS certificate paths.',
       capabilities: ['Produce', 'Consume', 'Consumer Groups', 'Avro/JSON/Protobuf', 'Exactly-Once', 'Offset Tracking'],
       configExample: `connector:
   type: kafka
@@ -108,7 +108,7 @@ const CONNECTORS: Connector[] = [
     status: 'available',
     docs: {
       overview: 'The Amazon S3 connector provides file transfer, object listing, cross-bucket copy, and S3 event-triggered task execution. It supports multipart uploads, server-side encryption, and lifecycle management.',
-      authentication: 'Uses AWS credentials from the Vortex vault (`aws_access_key_id`, `aws_secret_access_key`) or IAM instance roles. Supports cross-account access via `sts:AssumeRole`.',
+      authentication: 'Uses AWS credentials from the Ryuo vault (`aws_access_key_id`, `aws_secret_access_key`) or IAM instance roles. Supports cross-account access via `sts:AssumeRole`.',
       capabilities: ['Upload', 'Download', 'List', 'Copy', 'Multipart Upload', 'Server-Side Encryption', 'Event Triggers'],
       configExample: `connector:
   type: s3
@@ -134,7 +134,7 @@ const CONNECTORS: Connector[] = [
     status: 'available',
     docs: {
       overview: 'The Google Cloud Storage connector handles upload, download, and object management with automatic retry, CRC32C checksum validation, and resumable uploads for large files.',
-      authentication: 'Requires a GCP service account JSON key in the Vortex vault under `gcp_service_account`, or uses Application Default Credentials.',
+      authentication: 'Requires a GCP service account JSON key in the Ryuo vault under `gcp_service_account`, or uses Application Default Credentials.',
       capabilities: ['Upload', 'Download', 'List', 'Resumable Uploads', 'Checksum Validation', 'Lifecycle Management'],
       configExample: `connector:
   type: gcs
@@ -159,7 +159,7 @@ const CONNECTORS: Connector[] = [
     status: 'available',
     docs: {
       overview: 'The Delta Lake connector provides read/write access to Delta tables with full support for schema evolution, ACID transactions, time-travel queries, and Z-ordering optimization.',
-      authentication: 'Uses cloud storage credentials (S3/GCS/ADLS) from the Vortex vault. For Databricks-managed Delta tables, provide a Databricks personal access token.',
+      authentication: 'Uses cloud storage credentials (S3/GCS/ADLS) from the Ryuo vault. For Databricks-managed Delta tables, provide a Databricks personal access token.',
       capabilities: ['BatchRead', 'BatchWrite', 'ACID Transactions', 'Schema Evolution', 'Time Travel', 'Z-Ordering', 'Partition Pruning'],
       configExample: `connector:
   type: delta_lake
@@ -216,7 +216,7 @@ const CONNECTORS: Connector[] = [
     color: 'bg-rose-50 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400',
     status: 'beta',
     docs: {
-      overview: 'The dbt connector integrates with dbt Cloud and dbt Core. It can trigger dbt Cloud jobs, run local dbt projects, capture test results, and expose dbt model metadata as Vortex lineage events.',
+      overview: 'The dbt connector integrates with dbt Cloud and dbt Core. It can trigger dbt Cloud jobs, run local dbt projects, capture test results, and expose dbt model metadata as Ryuo lineage events.',
       authentication: 'For dbt Cloud: store API token in vault as `dbt_cloud_token` with account ID. For dbt Core: provide the path to the dbt project directory and profiles.yml.',
       capabilities: ['dbt Cloud Jobs', 'dbt Core Run', 'Test Results', 'Lineage Integration', 'Model Metadata', 'Freshness Checks'],
       configExample: `connector:
@@ -246,7 +246,7 @@ const CONNECTORS: Connector[] = [
     status: 'experimental',
     docs: {
       overview: 'The Apache Iceberg connector provides read/write access to Iceberg tables with schema evolution, partition evolution, hidden partitioning, and snapshot isolation. This connector is experimental — API may change.',
-      authentication: 'Uses a Hive Metastore or REST catalog for table metadata. Cloud storage credentials (S3/GCS/ADLS) are required from the Vortex vault.',
+      authentication: 'Uses a Hive Metastore or REST catalog for table metadata. Cloud storage credentials (S3/GCS/ADLS) are required from the Ryuo vault.',
       capabilities: ['BatchRead', 'BatchWrite', 'Schema Evolution', 'Partition Evolution', 'Snapshot Isolation', 'Time Travel'],
       configExample: `connector:
   type: iceberg
@@ -353,7 +353,7 @@ export function ConnectorsPage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Connector Ecosystem</h1>
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
           Enterprise-grade connectors for cloud data warehouses, object storage, streaming, and lakehouses.
-          Configure connectors via the Vortex plugin SDK or operator config in your DAG definitions.
+          Configure connectors via the Ryuo plugin SDK or operator config in your DAG definitions.
         </p>
       </div>
 
@@ -398,7 +398,7 @@ export function ConnectorsPage() {
                   </span>
                   <button
                     onClick={() => setSelectedConnector(conn)}
-                    className="text-xs font-medium text-vortex-600 hover:text-vortex-700 dark:text-vortex-400"
+                    className="text-xs font-medium text-ryuo-600 hover:text-ryuo-700 dark:text-ryuo-400"
                   >                    View docs →
                   </button>
                 </div>

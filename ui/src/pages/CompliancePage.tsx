@@ -80,7 +80,7 @@ function ApprovalRow({ req }: { req: ApprovalRequest }) {
                   placeholder="Optional comment…"
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
-                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-900 focus:border-vortex-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-900 focus:border-ryuo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
             )}
@@ -125,7 +125,7 @@ export function CompliancePage() {
         </div>
         {gates.isLoading ? (
           <div className="mt-4 flex justify-center py-4">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : (gates.data?.length ?? 0) === 0 ? (
           <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">No approval gates configured.</p>
@@ -161,7 +161,7 @@ export function CompliancePage() {
         </div>
         {requests.isLoading ? (
           <div className="mt-4 flex justify-center py-4">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : (requests.data?.length ?? 0) === 0 ? (
           <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">No approval requests found.</p>
@@ -191,7 +191,7 @@ export function CompliancePage() {
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Audit Log</h2>
         {auditLog.isLoading ? (
           <div className="mt-4 flex items-center justify-center py-8">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : auditLog.data && auditLog.data.length > 0 ? (
           <div className="mt-4 overflow-x-auto">

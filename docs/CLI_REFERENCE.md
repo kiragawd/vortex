@@ -1,56 +1,56 @@
-# VORTEX CLI Reference
+# RYUO CLI Reference
 
-The `vortex-cli` binary allows you to manage VORTEX components from the command line. It communicates directly with the VORTEX server REST API.
+The `ryuo-cli` binary allows you to manage RYUO components from the command line. It communicates directly with the RYUO server REST API.
 
 ## Global Configuration
 
 Use environment variables to configure the CLI:
-- `VORTEX_BASE_URL` — Base URL of the VORTEX server (default: `http://localhost:3000`)
-- `VORTEX_SERVER_URL` — Alias for `VORTEX_BASE_URL` (deprecated)
-- `VORTEX_API_KEY` — API key for authentication (sent as `Bearer <API_KEY>` in the Authorization header)
+- `RYUO_BASE_URL` — Base URL of the RYUO server (default: `http://localhost:3000`)
+- `RYUO_SERVER_URL` — Alias for `RYUO_BASE_URL` (deprecated)
+- `RYUO_API_KEY` — API key for authentication (sent as `Bearer <API_KEY>` in the Authorization header)
 
 ## Commands
 
 ### Manage DAGs
 ```bash
-vortex-cli dags <action>
+ryuo-cli dags <action>
 ```
 
 #### DAG Actions
 - **`list`**
   ```bash
-  vortex-cli dags list
+  ryuo-cli dags list
   ```
   Lists all DAGs registered in the system. Returns paginated results.
 
 - **`trigger <id>`**
   ```bash
-  vortex-cli dags trigger my_pipeline
+  ryuo-cli dags trigger my_pipeline
   ```
   Triggers a manual run of the specified DAG.
 
 - **`pause <id>`**
   ```bash
-  vortex-cli dags pause my_pipeline
+  ryuo-cli dags pause my_pipeline
   ```
   Pauses the specified DAG (calls `PATCH /api/dags/:id/pause`).
 
 - **`unpause <id>`**
   ```bash
-  vortex-cli dags unpause my_pipeline
+  ryuo-cli dags unpause my_pipeline
   ```
   Unpauses the specified DAG (calls `PATCH /api/dags/:id/unpause`).
 
 - **`backfill <id> --start-date <date> --end-date <date> [--parallel] [--dry-run]`**
   ```bash
-  vortex-cli dags backfill my_pipeline --start-date 2026-01-01 --end-date 2026-02-01 --parallel
-  vortex-cli dags backfill my_pipeline --start-date 2026-01-01 --end-date 2026-02-01 --dry-run
+  ryuo-cli dags backfill my_pipeline --start-date 2026-01-01 --end-date 2026-02-01 --parallel
+  ryuo-cli dags backfill my_pipeline --start-date 2026-01-01 --end-date 2026-02-01 --dry-run
   ```
   Triggers a backfill run for the specified date range.
 
 ### Migrate Airflow DAGs
 ```bash
-vortex-cli migrate <path-to-airflow-dags> [options]
+ryuo-cli migrate <path-to-airflow-dags> [options]
 ```
 
 Generates Rust DAG modules from Airflow DAG Python files or dbt projects.
@@ -69,16 +69,16 @@ Generates Rust DAG modules from Airflow DAG Python files or dbt projects.
 
 #### Standard migration
 ```bash
-vortex-cli migrate ./dags --output-dir ./generated_dags
-vortex-cli migrate ./dags --output-dir ./generated_dags --strict
-vortex-cli migrate ./dags --output-dir ./generated_dags --report-format md
-vortex-cli migrate ./dags --output-dir ./generated_dags --use-shim-fallback
+ryuo-cli migrate ./dags --output-dir ./generated_dags
+ryuo-cli migrate ./dags --output-dir ./generated_dags --strict
+ryuo-cli migrate ./dags --output-dir ./generated_dags --report-format md
+ryuo-cli migrate ./dags --output-dir ./generated_dags --use-shim-fallback
 ```
 
 #### Agentic conversion (AI-assisted)
 ```bash
-vortex-cli migrate ./dags --agentic --llm-provider openai --model gpt-4o-mini
-vortex-cli migrate ./dags --agentic --llm-provider anthropic --model claude-3-5-sonnet-latest
+ryuo-cli migrate ./dags --agentic --llm-provider openai --model gpt-4o-mini
+ryuo-cli migrate ./dags --agentic --llm-provider anthropic --model claude-3-5-sonnet-latest
 ```
 
 Required environment variables for agentic mode:
@@ -87,10 +87,10 @@ Required environment variables for agentic mode:
 
 #### dbt project conversion
 ```bash
-vortex-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+ryuo-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
 ```
 
-When migration runs, VORTEX performs:
+When migration runs, RYUO performs:
 - Generated Rust syntax validation.
 - DAG graph equivalence validation (dependency parity).
 - Strict failure if unresolved placeholders remain when `--strict` is enabled.
@@ -98,31 +98,31 @@ When migration runs, VORTEX performs:
 
 ### Manage Tasks
 ```bash
-vortex-cli tasks logs <instance_id>
+ryuo-cli tasks logs <instance_id>
 ```
 Fetches the logs for a specific task instance.
 
 ### Manage Secrets
 ```bash
-vortex-cli secrets <action>
+ryuo-cli secrets <action>
 ```
 
 #### Secrets Actions
 - **`set <key> <value>`**
   ```bash
-  vortex-cli secrets set DB_PASSWORD mysecretpassword
+  ryuo-cli secrets set DB_PASSWORD mysecretpassword
   ```
   Stores a new encrypted secret in the Vault.
 
 ### Manage Users
 ```bash
-vortex-cli users <action>
+ryuo-cli users <action>
 ```
 
 #### Users Actions
 - **`create <user> --role <role> --password <password>`**
   ```bash
-  vortex-cli users create operator1 --role Operator --password supersecret
+  ryuo-cli users create operator1 --role Operator --password supersecret
   ```
   Creates a new user. Default role is `Operator` and default password is `changeme`. Valid roles are `Admin`, `Operator`, `Viewer`.
 
@@ -141,6 +141,6 @@ vortex-cli users <action>
 
 ## Notes
 - `migrate` runs locally and writes generated files/report to disk.
-- `migrate` does not call VORTEX REST API endpoints.
+- `migrate` does not call RYUO REST API endpoints.
 - `migrate --agentic` requires a valid LLM provider API key set via environment variable.
 - `migrate` with dbt projects parses the dbt manifest, expands Jinja SQL, and generates Rust pipeline modules.

@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use crate::scheduler::Dag;
 
 /// Default timeout for Python DAG file execution (in seconds).
-/// Override via `VORTEX_PYTHON_TIMEOUT` environment variable.
+/// Override via `RYUO_PYTHON_TIMEOUT` environment variable.
 ///
 /// **Security note:** Python execution runs inside the host process via PyO3
 /// without OS-level sandboxing. Memory limits cannot be enforced from within
@@ -21,11 +21,11 @@ const DEFAULT_PYTHON_TIMEOUT_SECS: u64 = 30;
 /// Parse a Python DAG file via PyO3.
 ///
 /// SEC-5: Execution is bounded by a configurable timeout (default 30s,
-/// overridable via `VORTEX_PYTHON_TIMEOUT`). Note that OS-level memory
+/// overridable via `RYUO_PYTHON_TIMEOUT`). Note that OS-level memory
 /// sandboxing is NOT provided — use container cgroup limits for that.
 /// The `--allow-unsafe-dag-exec` CLI flag must be set to reach this code.
 pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
-    let timeout_secs: u64 = std::env::var("VORTEX_PYTHON_TIMEOUT")
+    let timeout_secs: u64 = std::env::var("RYUO_PYTHON_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PYTHON_TIMEOUT_SECS);
@@ -54,7 +54,7 @@ pub fn parse_python_dag(file_path: &str) -> Result<Vec<Dag>> {
 
 /// Inner implementation that performs the actual PyO3 execution.
 fn parse_python_dag_inner(file_path: &str) -> Result<Vec<Dag>> {
-    let timeout_secs: u64 = std::env::var("VORTEX_PYTHON_TIMEOUT")
+    let timeout_secs: u64 = std::env::var("RYUO_PYTHON_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PYTHON_TIMEOUT_SECS);
@@ -71,8 +71,8 @@ fn parse_python_dag_inner(file_path: &str) -> Result<Vec<Dag>> {
         path.insert(0, python_shim_path)?;
 
         // Clear registry before loading a new file
-        let vortex = py.import("vortex")?;
-        let registry: Bound<'_, PyList> = vortex.getattr("_DAG_REGISTRY")?.downcast_into()?;
+        let ryuo = py.import("ryuo")?;
+        let registry: Bound<'_, PyList> = ryuo.getattr("_DAG_REGISTRY")?.downcast_into()?;
         debug!("🐍 PyO3: Registry count before clear: {}", registry.len());
         registry.call_method0("clear")?;
 
@@ -97,7 +97,7 @@ fn parse_python_dag_inner(file_path: &str) -> Result<Vec<Dag>> {
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid CString: {}", e)))?;
         py.run(&py_code, Some(&globals), Some(&locals))?;
 
-        let get_dags = vortex.getattr("get_dags")?;
+        let get_dags = ryuo.getattr("get_dags")?;
         let dags_data: Bound<'_, PyList> = get_dags.call0()?.downcast_into()?;
         debug!("🐍 PyO3: get_dags() returned {} items", dags_data.len());
 

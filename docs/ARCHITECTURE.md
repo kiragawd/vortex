@@ -1,14 +1,14 @@
-# Architecture Overview — VORTEX System Design
+# Architecture Overview — RYUO System Design
 
-Vortex replaces Python's heavy, process-based, GIL-bound orchestration architecture with Rust's high-performance, async-first paradigm.
+Ryuo replaces Python's heavy, process-based, GIL-bound orchestration architecture with Rust's high-performance, async-first paradigm.
 
 ### Key Architectural Advantages
 
-1. **Concurrency Model (Tokio vs Python processes):** Airflow spawns heavyweight OS processes for parallel scheduling, creating heavy PostgreSQL lock contention. Vortex uses Rust's `tokio` async runtime with lightweight async tasks (~2KB memory footprint) that yield instead of blocking, enabling orders of magnitude more parallel task executions per core.
+1. **Concurrency Model (Tokio vs Python processes):** Airflow spawns heavyweight OS processes for parallel scheduling, creating heavy PostgreSQL lock contention. Ryuo uses Rust's `tokio` async runtime with lightweight async tasks (~2KB memory footprint) that yield instead of blocking, enabling orders of magnitude more parallel task executions per core.
 
 2. **Native Connectors & Automated Conversion:** An AST-parsing and AI-agentic layer transpiles Airflow Python DAGs into native Rust code. Databricks, Snowflake, and PostgreSQL connectors execute directly in Rust with memory-efficient frameworks.
 
-3. **Single Binary Deployment:** Vortex compiles to a single ~15MB binary containing the web UI, REST API, scheduler, and worker executor — replacing Airflow's multi-process infrastructure (Webserver, Schedulers, Triggerer, Celery/Redis, Workers).
+3. **Single Binary Deployment:** Ryuo compiles to a single ~15MB binary containing the web UI, REST API, scheduler, and worker executor — replacing Airflow's multi-process infrastructure (Webserver, Schedulers, Triggerer, Celery/Redis, Workers).
 
 4. **Distributed gRPC Swarm:** Horizontal scaling via lightweight gRPC Swarm (Worker/Controller) architecture with graceful heartbeat management, node loss handling, and task requeuing.
 
@@ -18,7 +18,7 @@ Vortex replaces Python's heavy, process-based, GIL-bound orchestration architect
 
 ## System Components
 
-VORTEX is a single-binary orchestration engine with the following logical components:
+RYUO is a single-binary orchestration engine with the following logical components:
 
 ### 1. Controller (Orchestrator)
 
@@ -44,11 +44,11 @@ Distributed worker processes that connect to the controller via gRPC:
 - **Report results** (stdout, stderr, duration, success/failure) back to controller
 - **Secrets injection** — decrypted secrets are passed as environment variables
 
-**Implementation:** Same Rust binary, different CLI subcommand (`vortex worker`).
+**Implementation:** Same Rust binary, different CLI subcommand (`ryuo worker`).
 
 ### 3. Database (PostgreSQL)
 
-VORTEX uses PostgreSQL as its primary (and only production) database, accessed through a unified trait abstraction (`Arc<dyn DatabaseBackend>`).
+RYUO uses PostgreSQL as its primary (and only production) database, accessed through a unified trait abstraction (`Arc<dyn DatabaseBackend>`).
 
 | Table | Purpose |
 |-------|---------|
@@ -105,11 +105,11 @@ A unified abstraction for external data systems, defined in `src/enterprise_conn
 
 ### 6. Migration Pipeline
 
-Airflow-to-Vortex transpilation system spanning three modules:
+Airflow-to-Ryuo transpilation system spanning three modules:
 
 - **Static AST Parser** (`src/airflow_ast_parser.rs`) — Parses Python DAG files into an intermediate representation (IR) without executing Python. Extracts DAG definitions, operator instantiations, dependency expressions (`>>`, `set_upstream`), and schedule metadata. Validates unique task IDs, edge references, and detects cycles.
 - **DAG Code Generator** (`src/dag_codegen.rs`) — Transforms AST IR into native Rust DAG modules. Emits `todo!()` for unsupported `PythonOperator` logic with fallback shim payloads. Produces migration reports (converted tasks, placeholder tasks, required manual actions).
-- **CLI Migrate Command** (`src/bin/vortex-cli.rs`) — `vortex-cli migrate <path>` drives the full pipeline: discover → parse → generate → validate → report. Supports `--strict`, `--report-format json|md`, `--output-dir`, and `--use-shim-fallback` flags.
+- **CLI Migrate Command** (`src/bin/ryuo-cli.rs`) — `ryuo-cli migrate <path>` drives the full pipeline: discover → parse → generate → validate → report. Supports `--strict`, `--report-format json|md`, `--output-dir`, and `--use-shim-fallback` flags.
 
 ### 7. Agentic Migration Layer
 
@@ -280,7 +280,7 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 - [Resilience](./RESILIENCE.md) — Auto-recovery and disaster recovery
 - [Plugins](./PLUGINS.md) — Custom operator development and SDK
 - [High Availability](./high-availability.md) — HA deployment with leader election
-- [Migration Guide](./MIGRATION_GUIDE.md) — Airflow-to-Vortex DAG migration
+- [Migration Guide](./MIGRATION_GUIDE.md) — Airflow-to-Ryuo DAG migration
 - [Connector API](./CONNECTOR_API.md) — Enterprise connector trait and implementations
 
 ---
@@ -289,15 +289,15 @@ T+end   Final state (Success or Failed) reported via channel; tx.send fires once
 
 | Term | Definition |
 |------|-----------|
-| **Controller** | The central Vortex server process that accepts API calls, manages the task queue, and coordinates workers via gRPC. Also called "server". Runs as `vortex server`. |
-| **Worker** | A process that connects to the controller via gRPC, polls for tasks, executes them, and reports results. Part of the swarm. Runs as `vortex worker`. |
+| **Controller** | The central Ryuo server process that accepts API calls, manages the task queue, and coordinates workers via gRPC. Also called "server". Runs as `ryuo server`. |
+| **Worker** | A process that connects to the controller via gRPC, polls for tasks, executes them, and reports results. Part of the swarm. Runs as `ryuo worker`. |
 | **Swarm** | The collection of worker processes managed by the controller via gRPC on port 50051. Enabled with `--swarm` on the controller. |
 | **DAG** | Directed Acyclic Graph — a workflow definition composed of tasks and their dependency edges. DAGs are defined in Python or YAML and registered with the controller. |
 | **Task** | A unit of work within a DAG (e.g., a bash command or Python callable). Each task has a unique `task_id` within its DAG. |
 | **Task Instance** | A single execution of a task within a specific DAG run. Tracks state (`Queued`, `Running`, `Success`, `Failed`), stdout/stderr, duration, and retry count. Also called "task execution". |
 | **DAG Run** | One complete execution of an entire DAG from trigger to final state. Each run has a unique `run_id` and is associated with an `execution_date`. |
 | **XCom** | Cross-communication — a key/value store that allows tasks in the same DAG run to pass data to each other. Stored in the `task_xcom` table. |
-| **Vault** | The encrypted secret storage subsystem. Secrets are encrypted with AES-256-GCM using `VORTEX_SECRET_KEY` before storage and decrypted only at task execution time. |
+| **Vault** | The encrypted secret storage subsystem. Secrets are encrypted with AES-256-GCM using `RYUO_SECRET_KEY` before storage and decrypted only at task execution time. |
 | **Sensor** | A task that polls an external system (filesystem, HTTP endpoint, SQL query, or upstream DAG) until a condition is met, then completes successfully. |
 | **Pool** | A named concurrency limiter. Tasks assigned to a pool consume slots; when the pool is full, additional tasks wait in the queue. |
 | **Backfill** | Triggering runs for a date range in the past, allowing historical data reprocessing. |

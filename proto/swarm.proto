@@ -1,8 +1,8 @@
 syntax = "proto3";
-package vortex.swarm;
+package ryuo.swarm;
 
 // SECURITY: All RPCs require a valid `authorization` metadata header containing
-// the bearer token configured via VORTEX_GRPC_AUTH_TOKEN (BUG-C7).
+// the bearer token configured via RYUO_GRPC_AUTH_TOKEN (BUG-C7).
 // In production mode, the gRPC listener MUST use TLS to protect secrets in transit (SEC-10).
 service SwarmController {
   // Register a new worker node with the controller.
@@ -72,7 +72,7 @@ message TaskAssignment {
   string dag_run_id = 5;
   // SECURITY (SEC-10): Decrypted secrets are transmitted in this field.
   // This channel MUST be protected by TLS in production to prevent plaintext exposure.
-  // Set VORTEX_GRPC_TLS_CERT and VORTEX_GRPC_TLS_KEY or use --tls-cert / --tls-key.
+  // Set RYUO_GRPC_TLS_CERT and RYUO_GRPC_TLS_KEY or use --tls-cert / --tls-key.
   map<string, string> secrets = 6;
   string task_type = 7;           // "bash" or "python"
   string config_json = 8;        // Serialized task config

@@ -44,7 +44,7 @@ mod migration;
 mod disaster_recovery;
 mod config_ops;
 
-/// VORTEX Orchestration Engine
+/// RYUO Orchestration Engine
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -72,7 +72,7 @@ struct Cli {
     port: u16,
 
     /// Log level (error, warn, info, debug, trace)
-    #[arg(long, env = "VORTEX_LOG_LEVEL", default_value = "info")]
+    #[arg(long, env = "RYUO_LOG_LEVEL", default_value = "info")]
     log_level: String,
 
     /// Output logs in JSON format
@@ -419,9 +419,9 @@ async fn main() -> Result<()> {
 
     // Initialize structured logging
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("vortex={}", cli.log_level)));
+        .unwrap_or_else(|_| EnvFilter::new(format!("ryuo={}", cli.log_level)));
 
-    let file_appender = tracing_appender::rolling::daily("logs", "vortex.log");
+    let file_appender = tracing_appender::rolling::daily("logs", "ryuo.log");
     // IMPORTANT: This guard must be held for the entire lifetime of main().
     // Dropping it will cause buffered log lines to be lost.
     let (non_blocking, _file_log_guard) = tracing_appender::non_blocking(file_appender);
@@ -458,7 +458,7 @@ async fn main() -> Result<()> {
     if let Some(Commands::Worker { controller, id, capacity, labels }) = cli.command {
         let worker_id = id.unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
         let worker_labels = labels.unwrap_or_default();
-        info!("🌪️ VORTEX Swarm Worker v0.7.0");
+        info!("🌪️ RYUO Swarm Worker v0.7.0");
         return worker::run_worker(&controller, &worker_id, capacity, worker_labels).await;
     }
 
@@ -896,7 +896,7 @@ async fn main() -> Result<()> {
                     Commands::Config { action } => {
                         match action {
                             ConfigAction::Show => {
-                                println!("Vortex Configuration:");
+                                println!("Ryuo Configuration:");
                                 println!("  Port:              {}", cli.port);
                                 println!("  Swarm:             {}", cli.swarm);
                                 println!("  gRPC Bind:         {}", cli.grpc_bind);
@@ -940,7 +940,7 @@ async fn main() -> Result<()> {
     }
     
     // 🌪️ CONTROLLER MODE
-    info!("🌪️ VORTEX Orchestrator v0.7.0 - Operational");
+    info!("🌪️ RYUO Orchestrator v0.7.0 - Operational");
 
     // Initialize Secret Vault
     let vault = match Vault::new() {
@@ -950,7 +950,7 @@ async fn main() -> Result<()> {
 
     // Initialize Database Backend (PostgreSQL only)
     let db_url_owned = cli.database_url
-        .ok_or_else(|| anyhow::anyhow!("❌ --database-url or DATABASE_URL env var is required. VORTEX requires PostgreSQL."))?;
+        .ok_or_else(|| anyhow::anyhow!("❌ --database-url or DATABASE_URL env var is required. RYUO requires PostgreSQL."))?;
 
     let db_idle_timeout = std::time::Duration::from_secs(cli.db_idle_timeout);
 
@@ -968,7 +968,7 @@ async fn main() -> Result<()> {
     info!("✅ Database initialized.");
 
     // Initialize Prometheus Metrics
-    let vortex_metrics = Arc::new(metrics::VortexMetrics::new()?);
+    let ryuo_metrics = Arc::new(metrics::RyuoMetrics::new()?);
     info!("📊 Prometheus metrics initialized (GET /metrics)");
 
     // Recovery Mode
@@ -1067,14 +1067,14 @@ async fn main() -> Result<()> {
                         if let Some(path_str) = path.to_str() {
                             if ext == "py" {
                                 // BUG-18 FIX: Gate Python DAG exec behind --allow-unsafe-dag-exec
-                                // Also accept VORTEX_ALLOW_PYTHON_DAGS=true env var so the flag
+                                // Also accept RYUO_ALLOW_PYTHON_DAGS=true env var so the flag
                                 // can be toggled per-environment without rebuilding the image.
                                 let python_enabled = cli.allow_unsafe_dag_exec
-                                    || std::env::var("VORTEX_ALLOW_PYTHON_DAGS")
+                                    || std::env::var("RYUO_ALLOW_PYTHON_DAGS")
                                         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                                         .unwrap_or(false);
                                 if !python_enabled {
-                                    warn!("⚠️ Skipping Python DAG file {} — set VORTEX_ALLOW_PYTHON_DAGS=true or use --allow-unsafe-dag-exec to enable (SECURITY RISK)", path_str);
+                                    warn!("⚠️ Skipping Python DAG file {} — set RYUO_ALLOW_PYTHON_DAGS=true or use --allow-unsafe-dag-exec to enable (SECURITY RISK)", path_str);
                                 } else {
                                     info!("🐍 Loading DAG file: {}", path_str);
                                     match python_parser::parse_python_dag(path_str) {
@@ -1168,22 +1168,22 @@ async fn main() -> Result<()> {
     // or a specific interface instead of always exposing on all interfaces.
     let grpc_bind = cli.grpc_bind;
     let swarm_port = cli.swarm_port;
-    let grpc_auth_token = std::env::var("VORTEX_GRPC_AUTH_TOKEN").ok();
-    let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone(), Some(Arc::clone(&vortex_metrics)), grpc_auth_token.clone()));
+    let grpc_auth_token = std::env::var("RYUO_GRPC_AUTH_TOKEN").ok();
+    let swarm_state = Arc::new(SwarmState::new(Arc::clone(&db), swarm_enabled, vault.clone(), Some(Arc::clone(&ryuo_metrics)), grpc_auth_token.clone()));
 
     if swarm_enabled {
         let health_state = Arc::clone(&swarm_state);
 
         // BUG-C7: Refuse to start gRPC without auth token in production mode
         if cli.production && grpc_auth_token.is_none() {
-            error!("❌ Production mode requires VORTEX_GRPC_AUTH_TOKEN to be set. Refusing to start gRPC server.");
+            error!("❌ Production mode requires RYUO_GRPC_AUTH_TOKEN to be set. Refusing to start gRPC server.");
         } else {
         let grpc_state = Arc::clone(&swarm_state);
         // SEC-10: Check CLI args first, then fall back to env vars for TLS cert/key
         let tls_cert_grpc = cli.tls_cert.clone()
-            .or_else(|| std::env::var("VORTEX_GRPC_TLS_CERT").ok());
+            .or_else(|| std::env::var("RYUO_GRPC_TLS_CERT").ok());
         let tls_key_grpc = cli.tls_key.clone()
-            .or_else(|| std::env::var("VORTEX_GRPC_TLS_KEY").ok());
+            .or_else(|| std::env::var("RYUO_GRPC_TLS_KEY").ok());
         let is_production = cli.production;
 
         // SEC-10: Production mode without TLS — restrict to localhost only
@@ -1201,7 +1201,7 @@ async fn main() -> Result<()> {
                 let key = std::fs::read(key_path).expect("Failed to read TLS key");
                 let identity = tonic::transport::Identity::from_pem(cert, key);
                 // ENT-1: Load CA cert for mTLS (mutual TLS client verification)
-                let tls_config = if let Ok(ca_path) = std::env::var("VORTEX_GRPC_TLS_CA") {
+                let tls_config = if let Ok(ca_path) = std::env::var("RYUO_GRPC_TLS_CA") {
                     let ca = std::fs::read(&ca_path).expect("Failed to read TLS CA cert");
                     info!("🔒 gRPC mTLS enabled — client certificates required");
                     tonic::transport::ServerTlsConfig::new()
@@ -1260,7 +1260,7 @@ async fn main() -> Result<()> {
     let swarm_web = Arc::clone(&swarm_state);
     let vault_web = vault.clone();
     let dags_web = Arc::clone(&all_dags);
-    let metrics_web = Arc::clone(&vortex_metrics);
+    let metrics_web = Arc::clone(&ryuo_metrics);
     // Bug 26 fix: add --port CLI flag so the web port is configurable.
     let web_port = cli.port;
     tokio::spawn(async move {
@@ -1274,7 +1274,7 @@ async fn main() -> Result<()> {
     let db_sched = Arc::clone(&db);
     let dags_sched = Arc::clone(&all_dags);
     let swarm_sched = Arc::clone(&swarm_state);
-    let metrics_sched = Arc::clone(&vortex_metrics);
+    let metrics_sched = Arc::clone(&ryuo_metrics);
     let mut leader_rx_sched = leader_rx.clone();
     tokio::spawn(async move {
         if !*leader_rx_sched.borrow() {
@@ -1580,7 +1580,7 @@ async fn main() -> Result<()> {
     // Cron Scheduler Loop
     let db_cron = Arc::clone(&db);
     let tx_cron = tx.clone();
-    let metrics_cron = Arc::clone(&vortex_metrics);
+    let metrics_cron = Arc::clone(&ryuo_metrics);
     let mut leader_rx_cron = leader_rx.clone();
     tokio::spawn(async move {
         if !*leader_rx_cron.borrow() {
@@ -1730,7 +1730,7 @@ async fn main() -> Result<()> {
         info!("🔓 Released HA leader lock.");
     }
 
-    info!("👋 VORTEX controller shut down cleanly.");
+    info!("👋 RYUO controller shut down cleanly.");
     Ok(())
 }
 
@@ -1763,11 +1763,11 @@ fn verify_plugin_checksum(
 
 fn create_benchmark_dag() -> Dag {
     let mut dag = Dag::new("parallel_benchmark");
-    dag.add_task("t1", "Warm-up", "echo 'Vortex engine warm-up...'");
+    dag.add_task("t1", "Warm-up", "echo 'Ryuo engine warm-up...'");
     dag.add_task("t2", "A", "sleep 1 && echo 'Ingestion A complete'");
     dag.add_task("t3", "B", "sleep 1 && echo 'Ingestion B complete'");
     dag.add_task("t4", "C", "sleep 1 && echo 'Ingestion C complete'");
-    dag.add_task("t5", "Final", "echo 'All data processed. Vortex out.'");
+    dag.add_task("t5", "Final", "echo 'All data processed. Ryuo out.'");
     dag.add_dependency("t1", "t2"); dag.add_dependency("t1", "t3"); dag.add_dependency("t1", "t4");
     dag.add_dependency("t2", "t5"); dag.add_dependency("t3", "t5"); dag.add_dependency("t4", "t5");
     dag

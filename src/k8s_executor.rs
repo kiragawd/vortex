@@ -28,9 +28,9 @@ pub struct K8sExecutorConfig {
 impl Default for K8sExecutorConfig {
     fn default() -> Self {
         Self {
-            namespace: "vortex".to_string(),
+            namespace: "ryuo".to_string(),
             service_account: None,
-            image: "ghcr.io/vortex/vortex:latest".to_string(),
+            image: "ghcr.io/ryuo/ryuo:latest".to_string(),
             image_pull_policy: "IfNotPresent".to_string(),
             image_pull_secrets: vec![],
             default_resources: K8sResources::default(),
@@ -118,7 +118,7 @@ impl K8sExecutor {
         resources: Option<&K8sResources>,
     ) -> serde_json::Value {
         let res = resources.unwrap_or(&self.config.default_resources);
-        let pod_name = format!("vortex-{}-{}-{}", dag_id, task_id, &run_id[..8.min(run_id.len())]);
+        let pod_name = format!("ryuo-{}-{}-{}", dag_id, task_id, &run_id[..8.min(run_id.len())]);
         let sanitized_name: String = pod_name.chars()
             .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
             .take(63)
@@ -127,17 +127,17 @@ impl K8sExecutor {
         let sanitized_name = sanitized_name.trim_matches('-').to_string();
 
         let mut labels = self.config.labels.clone();
-        labels.insert("app.kubernetes.io/managed-by".into(), "vortex".into());
-        labels.insert("vortex/dag-id".into(), dag_id.to_string());
-        labels.insert("vortex/task-id".into(), task_id.to_string());
-        labels.insert("vortex/run-id".into(), run_id.to_string());
+        labels.insert("app.kubernetes.io/managed-by".into(), "ryuo".into());
+        labels.insert("ryuo/dag-id".into(), dag_id.to_string());
+        labels.insert("ryuo/task-id".into(), task_id.to_string());
+        labels.insert("ryuo/run-id".into(), run_id.to_string());
 
         let env: Vec<serde_json::Value> = env_vars.iter()
             .map(|(k, v)| serde_json::json!({"name": k, "value": v}))
             .chain(vec![
-                serde_json::json!({"name": "VORTEX_DAG_ID", "value": dag_id}),
-                serde_json::json!({"name": "VORTEX_TASK_ID", "value": task_id}),
-                serde_json::json!({"name": "VORTEX_RUN_ID", "value": run_id}),
+                serde_json::json!({"name": "RYUO_DAG_ID", "value": dag_id}),
+                serde_json::json!({"name": "RYUO_TASK_ID", "value": task_id}),
+                serde_json::json!({"name": "RYUO_RUN_ID", "value": run_id}),
             ])
             .collect();
 
@@ -263,7 +263,7 @@ impl K8sExecutor {
             r.trim_matches('-').to_string()
         };
         let pod_name = format!(
-            "vortex-{}-{}-{}",
+            "ryuo-{}-{}-{}",
             sanitize(dag_id),
             sanitize(task_id),
             &run_id[..8.min(run_id.len())]
@@ -398,9 +398,9 @@ mod tests {
             None,
         );
         assert_eq!(spec["kind"], "Pod");
-        assert!(spec["metadata"]["name"].as_str().unwrap().starts_with("vortex-my-dag-my-task-"));
-        assert_eq!(spec["metadata"]["labels"]["vortex/dag-id"], "my_dag");
-        assert_eq!(spec["spec"]["containers"][0]["image"], "ghcr.io/vortex/vortex:latest");
+        assert!(spec["metadata"]["name"].as_str().unwrap().starts_with("ryuo-my-dag-my-task-"));
+        assert_eq!(spec["metadata"]["labels"]["ryuo/dag-id"], "my_dag");
+        assert_eq!(spec["spec"]["containers"][0]["image"], "ghcr.io/ryuo/ryuo:latest");
     }
 
     #[test]

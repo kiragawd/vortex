@@ -77,7 +77,7 @@ export function DagDetailPage() {
   if (tasksLoading) {
     return (
       <div className="flex items-center justify-center py-16">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
       </div>
     );
   }
@@ -148,7 +148,7 @@ export function DagDetailPage() {
           <button
             onClick={() => setConfirmAction('trigger')}
             disabled={triggerMutation.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-vortex-700 active:bg-vortex-800 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-ryuo-700 active:bg-ryuo-800 disabled:opacity-50"
           >
             <Play className="h-3.5 w-3.5" />
             Trigger
@@ -180,7 +180,7 @@ export function DagDetailPage() {
               onClick={() => setTab(t.id)}
               className={`pb-3 text-sm font-medium transition-colors ${
                 tab === t.id
-                  ? 'border-b-2 border-vortex-600 text-vortex-600 dark:border-vortex-400 dark:text-vortex-400'
+                  ? 'border-b-2 border-ryuo-600 text-ryuo-600 dark:border-ryuo-400 dark:text-ryuo-400'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
               }`}
             >
@@ -203,7 +203,7 @@ export function DagDetailPage() {
           )}
           {tasksLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
             </div>
           ) : (
             <DagGraph
@@ -250,7 +250,7 @@ export function DagDetailPage() {
         <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
           {runsLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
             </div>
           ) : runs.length === 0 ? (
             <div className="p-12 text-center text-sm text-gray-500 dark:text-gray-400">
@@ -339,7 +339,7 @@ export function DagDetailPage() {
               <ul className="mt-4 space-y-2">
                 {tasks.map((t) => (
                   <li key={t.id} className="flex items-center gap-2 rounded-lg border border-gray-100 px-3 py-2 dark:border-gray-800">
-                    <span className="h-2 w-2 rounded-full bg-vortex-500" />
+                    <span className="h-2 w-2 rounded-full bg-ryuo-500" />
                     <span className="flex-1 text-sm text-gray-800 dark:text-gray-200">{t.name}</span>
                     <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                       {t.task_type ?? 'task'}
@@ -375,7 +375,7 @@ export function DagDetailPage() {
             <button
               onClick={handleSaveSource}
               disabled={sourceSaving || sourceLoading}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-vortex-700 active:bg-vortex-800 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-ryuo-700 active:bg-ryuo-800 disabled:opacity-50"
             >
               <Save className="h-3.5 w-3.5" />
               {sourceSaving ? 'Saving & Reparsing…' : 'Save & Reparse'}
@@ -387,14 +387,14 @@ export function DagDetailPage() {
           </p>
           {sourceLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
             </div>
           ) : (
             <textarea
               value={sourceCode}
               onChange={(e) => setSourceCode(e.target.value)}
               spellCheck={false}
-              className="h-[500px] w-full rounded-xl border border-gray-200 bg-gray-950 p-4 font-mono text-sm text-green-400 focus:border-vortex-500 focus:outline-none focus:ring-1 focus:ring-vortex-500 dark:border-gray-700"
+              className="h-[500px] w-full rounded-xl border border-gray-200 bg-gray-950 p-4 font-mono text-sm text-green-400 focus:border-ryuo-500 focus:outline-none focus:ring-1 focus:ring-ryuo-500 dark:border-gray-700"
             />
           )}
         </div>

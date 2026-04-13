@@ -1,15 +1,15 @@
 #![allow(dead_code)]
-// db_trait.rs — Database abstraction trait for VORTEX
+// db_trait.rs — Database abstraction trait for RYUO
 //
 // This trait defines the full interface that both the SQLite and PostgreSQL
-// backends must implement. Add new methods here as VORTEX grows.
+// backends must implement. Add new methods here as RYUO grows.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-/// Unified async database interface for VORTEX.
+/// Unified async database interface for RYUO.
 ///
 /// All database backends (SQLite via spawn_blocking, PostgreSQL via sqlx)
 /// implement this trait so the rest of the application is backend-agnostic.

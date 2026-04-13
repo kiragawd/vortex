@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex includes an enterprise single-page application embedded directly into the binary via `rust-embed`. No separate web server or Node.js runtime is required in production.
+Ryuo includes an enterprise single-page application embedded directly into the binary via `rust-embed`. No separate web server or Node.js runtime is required in production.
 
 **Modules:** `ui/`, `assets/`
 
@@ -100,7 +100,7 @@ npm install
 npm run dev
 ```
 
-The Vite dev server runs on `http://localhost:5173` with hot module replacement (HMR) and proxies API requests to the Vortex backend.
+The Vite dev server runs on `http://localhost:5173` with hot module replacement (HMR) and proxies API requests to the Ryuo backend.
 
 ### Production Build
 
@@ -123,7 +123,7 @@ npm test
 
 ## Embedding
 
-The dashboard is embedded into the Vortex binary using `rust-embed`:
+The dashboard is embedded into the Ryuo binary using `rust-embed`:
 
 1. `npm run build` produces optimized static assets in `assets/`
 2. `rust-embed` includes these files at Rust compile time

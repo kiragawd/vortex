@@ -65,8 +65,8 @@ test.describe('01 - Dashboard Rendering', () => {
     await expect(userArea).toBeVisible();
   });
 
-  test('Vortex branding in sidebar', async ({ page }) => {
-    await expect(page.locator('aside >> text=Vortex')).toBeVisible();
+  test('Ryuo branding in sidebar', async ({ page }) => {
+    await expect(page.locator('aside >> text=Ryuo')).toBeVisible();
     await expect(page.locator('aside >> text=Enterprise')).toBeVisible();
   });
 

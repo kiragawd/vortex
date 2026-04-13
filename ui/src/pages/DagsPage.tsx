@@ -61,7 +61,7 @@ export function DagsPage() {
             e.stopPropagation();
             setTriggerTarget(dag.id);
           }}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-vortex-700 active:bg-vortex-800"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-ryuo-700 active:bg-ryuo-800"
         >
           <Play className="h-3 w-3" /> Trigger
         </button>
@@ -79,7 +79,7 @@ export function DagsPage() {
       </div>
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
         </div>
       ) : isError ? (
         <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/20 dark:text-red-400">

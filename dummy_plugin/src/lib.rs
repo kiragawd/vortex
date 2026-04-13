@@ -1,11 +1,11 @@
-use vortex::executor::{VortexOperator, TaskContext, ExecutionResult};
-use vortex::declare_plugin;
+use ryuo::executor::{RyuoOperator, TaskContext, ExecutionResult};
+use ryuo::declare_plugin;
 use anyhow::Result;
 
 pub struct DummyOperator;
 
 #[async_trait::async_trait]
-impl VortexOperator for DummyOperator {
+impl RyuoOperator for DummyOperator {
     async fn execute(&self, _ctx: &TaskContext) -> Result<ExecutionResult> {
         Ok(ExecutionResult {
             task_id: _ctx.task_id.clone(),

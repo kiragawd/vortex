@@ -96,7 +96,7 @@ test.describe('08 - API Integration', () => {
   test('API error handling - invalid endpoint returns error gracefully', async ({ page }) => {
     await page.goto('/');
     const res = await page.request.fetch('http://localhost:3000/api/nonexistent', {
-      headers: { Authorization: 'Bearer vortex_admin_key' },
+      headers: { Authorization: 'Bearer ryuo_admin_key' },
     });
     expect(res.status()).toBeGreaterThanOrEqual(400);
   });

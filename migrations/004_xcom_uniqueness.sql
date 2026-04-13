@@ -1,5 +1,5 @@
 -- ============================================================================
--- Vortex Migration #4: XCom Uniqueness Constraint (BUG-H6)
+-- Ryuo Migration #4: XCom Uniqueness Constraint (BUG-H6)
 --
 -- Ensures the UNIQUE constraint on (dag_id, task_id, run_id, key) exists on
 -- the task_xcom table. This prevents duplicate XCom entries for the same

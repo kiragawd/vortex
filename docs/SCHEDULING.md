@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex provides a multi-strategy scheduling engine covering cron-based schedules, dataset-triggered execution, cross-DAG dependencies, and dynamic task mapping.
+Ryuo provides a multi-strategy scheduling engine covering cron-based schedules, dataset-triggered execution, cross-DAG dependencies, and dynamic task mapping.
 
 **Modules:** `src/scheduler.rs`, `src/advanced_scheduler.rs`
 
@@ -26,7 +26,7 @@ Standard cron expressions and presets for time-based DAG execution:
 ### Example
 
 ```python
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("etl_daily", schedule_interval="@daily") as dag:
     extract = BashOperator(task_id="extract", bash_command="echo 'extracting'")

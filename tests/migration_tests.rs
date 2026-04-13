@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod migration_tests {
-    use vortex::migration::*;
+    use ryuo::migration::*;
 
     #[test]
     fn test_tws_parser_basic_jobs() {
@@ -82,7 +82,7 @@ job_type: b
     }
 
     #[test]
-    fn test_convert_to_vortex_dag() {
+    fn test_convert_to_ryuo_dag() {
         let jobs = vec![
             MigrationJob {
                 source: SourceScheduler::Tws,
@@ -109,12 +109,12 @@ job_type: b
                 properties: std::collections::HashMap::new(),
             },
         ];
-        let result = convert_to_vortex_dag(&jobs, "test_pipeline");
+        let result = convert_to_ryuo_dag(&jobs, "test_pipeline");
         assert_eq!(result.source, SourceScheduler::Tws);
         assert_eq!(result.jobs_parsed, 2);
         assert_eq!(result.jobs_converted, 2);
-        assert_eq!(result.vortex_dag.dag_id, "test_pipeline");
-        assert_eq!(result.vortex_dag.tasks.len(), 2);
+        assert_eq!(result.ryuo_dag.dag_id, "test_pipeline");
+        assert_eq!(result.ryuo_dag.tasks.len(), 2);
     }
 
     #[test]
@@ -131,19 +131,19 @@ job_type: b
             notifications: vec![],
             properties: std::collections::HashMap::new(),
         }];
-        let result = convert_to_vortex_dag(&jobs, "orphan_dag");
+        let result = convert_to_ryuo_dag(&jobs, "orphan_dag");
         // The orphan dependency should be filtered out and warned about
-        assert!(!result.warnings.is_empty() || result.vortex_dag.tasks[0].dependencies.is_empty(),
+        assert!(!result.warnings.is_empty() || result.ryuo_dag.tasks[0].dependencies.is_empty(),
                 "Should warn about or remove invalid dependency");
     }
 
     #[test]
     fn test_generate_rust_code() {
-        let dag = VortexDagDef {
+        let dag = RyuoDagDef {
             dag_id: "etl_pipeline".to_string(),
             description: "Test pipeline".to_string(),
             schedule: Some("0 8 * * *".to_string()),
-            tasks: vec![VortexTaskDef {
+            tasks: vec![RyuoTaskDef {
                 task_id: "extract".to_string(),
                 operator: "ShellOperator".to_string(),
                 config: serde_json::json!({"command": "/opt/extract.sh"}),
@@ -161,11 +161,11 @@ job_type: b
 
     #[test]
     fn test_generate_python_code() {
-        let dag = VortexDagDef {
+        let dag = RyuoDagDef {
             dag_id: "py_pipeline".to_string(),
             description: "Python test".to_string(),
             schedule: None,
-            tasks: vec![VortexTaskDef {
+            tasks: vec![RyuoTaskDef {
                 task_id: "step_one".to_string(),
                 operator: "ShellOperator".to_string(),
                 config: serde_json::json!({"command": "echo hello"}),
@@ -178,7 +178,7 @@ job_type: b
         let code = generate_python_dag_code(&dag);
         assert!(code.contains("py_pipeline"), "Should contain dag_id");
         assert!(code.contains("step_one"), "Should contain task_id");
-        assert!(code.contains("from vortex"), "Should import vortex");
+        assert!(code.contains("from ryuo"), "Should import ryuo");
     }
 
     #[test]
@@ -190,7 +190,7 @@ job_type: b
             jobs_converted: 4,
             warnings: vec!["Some warning".to_string()],
             errors: vec![],
-            vortex_dag: VortexDagDef {
+            ryuo_dag: RyuoDagDef {
                 dag_id: "report_test".to_string(),
                 description: "test".to_string(),
                 schedule: None,

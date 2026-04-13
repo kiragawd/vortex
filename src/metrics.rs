@@ -1,16 +1,16 @@
-//! # VORTEX Prometheus Metrics
+//! # RYUO Prometheus Metrics
 //!
-//! Self-contained Prometheus metrics module for the VORTEX orchestration engine.
+//! Self-contained Prometheus metrics module for the RYUO orchestration engine.
 //!
 //! ## Usage
 //!
 //! ```ignore
 //! use std::sync::Arc;
 //! use axum::{routing::get, Router};
-//! use vortex::metrics::{VortexMetrics, metrics_handler};
+//! use ryuo::metrics::{RyuoMetrics, metrics_handler};
 //!
 //! // In your app setup:
-//! let metrics = Arc::new(VortexMetrics::new().expect("failed to init metrics"));
+//! let metrics = Arc::new(RyuoMetrics::new().expect("failed to init metrics"));
 //!
 //! // In your Axum router:
 //! let app = Router::new()
@@ -35,7 +35,7 @@ use prometheus::{
 // Metric name constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NAMESPACE: &str = "vortex";
+const NAMESPACE: &str = "ryuo";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Gauge safety helpers
@@ -63,14 +63,14 @@ pub fn safe_gauge_dec(gauge: &IntGauge) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VortexMetrics
+// RyuoMetrics
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Central Prometheus metrics registry for the VORTEX engine.
+/// Central Prometheus metrics registry for the RYUO engine.
 ///
 /// All metric types from the `prometheus` crate are `Send + Sync`, so this
-/// struct is safe to share across threads via `Arc<VortexMetrics>`.
-pub struct VortexMetrics {
+/// struct is safe to share across threads via `Arc<RyuoMetrics>`.
+pub struct RyuoMetrics {
     /// Private registry — we don't use the global default so multiple test
     /// instances don't collide.
     registry: Registry,
@@ -105,16 +105,16 @@ pub struct VortexMetrics {
 
     // ── Scheduler health ─────────────────────────────────────────────────────
     /// Unix epoch (seconds) of the last scheduler tick. Use this to build a
-    /// "heartbeat staleness" alert in Grafana: `time() - vortex_scheduler_heartbeat_timestamp`.
+    /// "heartbeat staleness" alert in Grafana: `time() - ryuo_scheduler_heartbeat_timestamp`.
     pub scheduler_heartbeat_timestamp: IntGauge,
 }
 
-impl VortexMetrics {
+impl RyuoMetrics {
     // ─────────────────────────────────────────────────────────────────────────
     // Constructor
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Create and register all VORTEX metrics in a fresh, isolated [`Registry`].
+    /// Create and register all RYUO metrics in a fresh, isolated [`Registry`].
     ///
     /// Returns an error if any metric registration fails (e.g., duplicate name).
     pub fn new() -> anyhow::Result<Self> {
@@ -283,7 +283,7 @@ impl VortexMetrics {
     /// Sets `scheduler_heartbeat_timestamp` to the current Unix epoch (seconds).
     ///
     /// Call this at the top of every scheduler tick so Grafana can alert on
-    /// staleness: `time() - vortex_scheduler_heartbeat_timestamp > threshold`.
+    /// staleness: `time() - ryuo_scheduler_heartbeat_timestamp > threshold`.
     #[inline]
     pub fn update_scheduler_heartbeat(&self) {
         let epoch = SystemTime::now()
@@ -331,20 +331,20 @@ impl VortexMetrics {
 
 /// Axum handler for `GET /metrics`.
 ///
-/// Wire this into your router with `State<Arc<VortexMetrics>>`:
+/// Wire this into your router with `State<Arc<RyuoMetrics>>`:
 ///
 /// ```ignore
 /// use std::sync::Arc;
 /// use axum::{routing::get, Router};
-/// use vortex::metrics::{VortexMetrics, metrics_handler};
+/// use ryuo::metrics::{RyuoMetrics, metrics_handler};
 ///
-/// let metrics = Arc::new(VortexMetrics::new().unwrap());
+/// let metrics = Arc::new(RyuoMetrics::new().unwrap());
 /// let app = Router::new()
 ///     .route("/metrics", get(metrics_handler))
 ///     .with_state(metrics);
 /// ```
 pub async fn metrics_handler(
-    State(metrics): State<Arc<VortexMetrics>>,
+    State(metrics): State<Arc<RyuoMetrics>>,
 ) -> Response {
     match metrics.render_text() {
         Ok(body) => (
@@ -373,8 +373,8 @@ pub async fn metrics_handler(
 mod tests {
     use super::*;
 
-    fn fresh_metrics() -> VortexMetrics {
-        VortexMetrics::new().expect("metrics init failed")
+    fn fresh_metrics() -> RyuoMetrics {
+        RyuoMetrics::new().expect("metrics init failed")
     }
 
     #[test]
@@ -477,10 +477,10 @@ mod tests {
         m.update_scheduler_heartbeat();
 
         let text = m.render_text().expect("render failed");
-        assert!(text.contains("vortex_tasks_succeeded_total"));
-        assert!(text.contains("vortex_task_duration_seconds"));
-        assert!(text.contains("vortex_dag_runs_total"));
-        assert!(text.contains("vortex_scheduler_heartbeat_timestamp"));
+        assert!(text.contains("ryuo_tasks_succeeded_total"));
+        assert!(text.contains("ryuo_task_duration_seconds"));
+        assert!(text.contains("ryuo_dag_runs_total"));
+        assert!(text.contains("ryuo_scheduler_heartbeat_timestamp"));
     }
 
     // ── BUG-H4: Gauge safety tests ──────────────────────────────────────────

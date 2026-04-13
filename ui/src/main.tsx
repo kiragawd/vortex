@@ -15,7 +15,7 @@ const queryClient = new QueryClient({
 })
 
 // Apply stored theme preference on load
-const storedTheme = localStorage.getItem('vortex_theme') || 'light';
+const storedTheme = localStorage.getItem('ryuo_theme') || 'light';
 document.documentElement.classList.toggle('dark', storedTheme === 'dark');
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

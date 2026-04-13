@@ -32,5 +32,5 @@ jobs:
         with:
           body_path: release_notes.txt
           files: |
-            target/release/vortex
-            target/release/vortex-cli
+            target/release/ryuo
+            target/release/ryuo-cli

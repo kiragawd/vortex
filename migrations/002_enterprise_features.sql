@@ -1,5 +1,5 @@
 -- ============================================================================
--- Vortex Core Features (Consolidated Migration #2)
+-- Ryuo Core Features (Consolidated Migration #2)
 -- Covers: IAM/SSO, Lineage, Compliance, RBAC, API Tokens, IP Allowlist
 -- ============================================================================
 
@@ -54,9 +54,9 @@ CREATE TABLE IF NOT EXISTS lineage_events (
     run_id        TEXT NOT NULL,
     dag_id        TEXT NOT NULL,
     task_id       TEXT,
-    job_namespace TEXT NOT NULL DEFAULT 'vortex',
+    job_namespace TEXT NOT NULL DEFAULT 'ryuo',
     job_name      TEXT NOT NULL,
-    producer      TEXT NOT NULL DEFAULT 'vortex',
+    producer      TEXT NOT NULL DEFAULT 'ryuo',
     inputs        JSONB NOT NULL DEFAULT '[]',
     outputs       JSONB NOT NULL DEFAULT '[]',
     facets        JSONB NOT NULL DEFAULT '{}'

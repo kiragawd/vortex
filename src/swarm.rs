@@ -63,10 +63,10 @@ pub struct SwarmState {
     pub task_queue: RwLock<VecDeque<PendingTask>>,
     pub db: Arc<dyn DatabaseBackend>,
     pub vault: Option<Arc<Vault>>,
-    pub metrics: Option<Arc<crate::metrics::VortexMetrics>>,
+    pub metrics: Option<Arc<crate::metrics::RyuoMetrics>>,
     pub enabled: bool,
     /// Token used to authenticate gRPC requests from workers (BUG-C7).
-    /// Loaded from `VORTEX_GRPC_AUTH_TOKEN`. When `None`, auth is disabled (dev mode only).
+    /// Loaded from `RYUO_GRPC_AUTH_TOKEN`. When `None`, auth is disabled (dev mode only).
     pub grpc_auth_token: Option<String>,
     /// PERF-6: Atomic counter of total registered workers for O(1) count.
     /// Counts all registered entries; stale workers are purged by health_check_cycle.
@@ -78,7 +78,7 @@ impl SwarmState {
         db: Arc<dyn DatabaseBackend>,
         enabled: bool,
         vault: Option<Arc<Vault>>,
-        metrics: Option<Arc<crate::metrics::VortexMetrics>>,
+        metrics: Option<Arc<crate::metrics::RyuoMetrics>>,
         grpc_auth_token: Option<String>,
     ) -> Self {
         Self {
@@ -233,7 +233,7 @@ impl SwarmController for SwarmService {
         });
         // PERF-6: Increment atomic worker counter alongside HashMap insert.
         self.state.worker_count.fetch_add(1, Ordering::Relaxed);
-        Ok(Response::new(RegisterResponse { accepted: true, message: "Welcome to the VORTEX Swarm".to_string() }))
+        Ok(Response::new(RegisterResponse { accepted: true, message: "Welcome to the RYUO Swarm".to_string() }))
     }
 
     async fn heartbeat(&self, request: Request<HeartbeatRequest>) -> Result<Response<HeartbeatResponse>, Status> {

@@ -1,6 +1,6 @@
-# VORTEX - Dual License Agreement
+# RYUO - Dual License Agreement
 
-**VORTEX** is offered under a dual licensing model:
+**RYUO** is offered under a dual licensing model:
 1. **Personal & Open Source License** — Free, permissive (MIT-style)
 2. **Enterprise Commercial License** — Paid, required for business use
 
@@ -55,10 +55,10 @@ SOFTWARE.
 
 **Enterprise use includes (but is not limited to):**
 
-1. **Commercial Products** — Using VORTEX in a product/service you sell or monetize
-2. **Business Operations** — Running VORTEX in a company with 10+ employees
-3. **Revenue-Generating Systems** — Using VORTEX to generate revenue directly or indirectly
-4. **SaaS Offerings** — Offering VORTEX as a service (managed, hosted, or white-label)
+1. **Commercial Products** — Using RYUO in a product/service you sell or monetize
+2. **Business Operations** — Running RYUO in a company with 10+ employees
+3. **Revenue-Generating Systems** — Using RYUO to generate revenue directly or indirectly
+4. **SaaS Offerings** — Offering RYUO as a service (managed, hosted, or white-label)
 5. **Government/Institutional Use** — Federal agencies, government contractors, large institutions
 6. **Closed-Source Derivatives** — Proprietary modifications or integrations in commercial products
 
@@ -66,8 +66,8 @@ SOFTWARE.
 
 - **Duration:** Annual license (renewable)
 - **Deployment:** Licensed for unlimited internal deployments within the purchasing organization
-- **Modifications:** You may modify VORTEX internally; modifications remain your property
-- **Resale:** You may NOT resell, white-label, or embed VORTEX in your commercial product without explicit agreement
+- **Modifications:** You may modify RYUO internally; modifications remain your property
+- **Resale:** You may NOT resell, white-label, or embed RYUO in your commercial product without explicit agreement
 
 ### To Obtain a License
 
@@ -88,18 +88,18 @@ Include in your inquiry:
 **Use Part A (Personal/OSS) if:**
 - Your project is not generating revenue
 - You're publishing code under an OSI-approved open source license
-- You're using VORTEX for learning, research, or hobby purposes
+- You're using RYUO for learning, research, or hobby purposes
 - You're a student or educator
 
 **Use Part B (Enterprise) if:**
-- Your company uses VORTEX to deliver products or services
-- VORTEX runs in a commercial SaaS or managed service
-- You integrate VORTEX into proprietary products you sell
+- Your company uses RYUO to deliver products or services
+- RYUO runs in a commercial SaaS or managed service
+- You integrate RYUO into proprietary products you sell
 - Your organization has $1M+ annual revenue (or 10+ employees)
 
 ### License Verification
 
-- Open source projects must clearly document use of VORTEX
+- Open source projects must clearly document use of RYUO
 - Commercial deployments will be checked against the license registry
 - Violations will trigger cease-and-desist + licensing demand
 
@@ -119,8 +119,8 @@ Unlicensed commercial use is a **breach of contract**. We reserve the right to:
 Include the following in your project README or documentation:
 
 ```
-This project uses VORTEX, a distributed workflow orchestration engine.
-VORTEX is © 2026 Ashwin Vasireddy. Used under [Personal OSS License / Enterprise License].
+This project uses RYUO, a distributed workflow orchestration engine.
+RYUO is © 2026 Ashwin Vasireddy. Used under [Personal OSS License / Enterprise License].
 ```
 
 ---

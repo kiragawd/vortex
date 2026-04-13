@@ -1,7 +1,7 @@
 // auth.rs — Authentication Provider Framework
 // SSO/OIDC/SAML/LDAP Integration
 //
-// Provides a pluggable authentication backend so Vortex can authenticate
+// Provides a pluggable authentication backend so Ryuo can authenticate
 // users against local DB, OIDC providers (Okta, Azure AD, PingIdentity),
 // SAML 2.0 IdPs, or LDAP/AD directories.
 
@@ -87,9 +87,9 @@ pub struct OidcConfig {
     pub username_claim: Option<String>,
     /// Claim used for role mapping (default: "groups")
     pub role_claim: Option<String>,
-    /// Map of OIDC group name → Vortex role
+    /// Map of OIDC group name → Ryuo role
     pub role_mapping: HashMap<String, String>,
-    /// Map of OIDC group name → Vortex team_id
+    /// Map of OIDC group name → Ryuo team_id
     pub team_mapping: HashMap<String, String>,
     /// ENT-13: Allowlist of email domains permitted for auto-provisioning.
     /// Leave empty to allow all domains.
@@ -123,9 +123,9 @@ pub struct LdapConfig {
     pub display_name_attribute: String,
     pub group_attribute: String,
     pub use_tls: bool,
-    /// Map of LDAP group → Vortex role
+    /// Map of LDAP group → Ryuo role
     pub role_mapping: HashMap<String, String>,
-    /// Map of LDAP group → Vortex team_id
+    /// Map of LDAP group → Ryuo team_id
     pub team_mapping: HashMap<String, String>,
     /// Sync interval in seconds (0 = manual only)
     pub sync_interval_secs: u64,
@@ -1024,7 +1024,7 @@ impl LdapAuthProvider {
         None
     }
 
-    /// Sync LDAP groups to Vortex teams/roles.
+    /// Sync LDAP groups to Ryuo teams/roles.
     pub async fn sync_groups(&self) -> Result<u64> {
         warn!("LDAP group sync not fully implemented — requires ldap3 crate integration");
         // In production: use ldap3 crate to search groups and map to teams
@@ -1032,7 +1032,7 @@ impl LdapAuthProvider {
         // 1. Connect to LDAP server using bind_dn/bind_password
         // 2. Search for groups under group_search_base
         // 3. For each group, find members
-        // 4. Map members to Vortex users, create/update as needed
+        // 4. Map members to Ryuo users, create/update as needed
         // 5. Apply role_mapping and team_mapping
         Ok(0)
     }

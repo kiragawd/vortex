@@ -1,34 +1,34 @@
-# High Availability (HA) in VORTEX
+# High Availability (HA) in RYUO
 
-VORTEX is designed for ultra-low latency execution and minimalist deployment. Because of this, the core architecture leverages an in-memory topological struct and async `tokio` coroutines rather than a heavy, distributed metadata store like ZooKeeper or etcd.
+RYUO is designed for ultra-low latency execution and minimalist deployment. Because of this, the core architecture leverages an in-memory topological struct and async `tokio` coroutines rather than a heavy, distributed metadata store like ZooKeeper or etcd.
 
-However, running a single controller process introduces a Single Point of Failure (SPOF). This guide explains how to properly deploy VORTEX for production resilience.
+However, running a single controller process introduces a Single Point of Failure (SPOF). This guide explains how to properly deploy RYUO for production resilience.
 
 ---
 
 ## 1. Process Supervision (Recommended for 90%)
 
-For the vast majority of workloads, true multi-node HA is unnecessary if **auto-recovery** is extremely fast. Since VORTEX starts up in milliseconds (compared to minutes for Airflow), the simplest and most effective "HA" strategy is to rely on an external supervisor to restart a crashed node.
+For the vast majority of workloads, true multi-node HA is unnecessary if **auto-recovery** is extremely fast. Since RYUO starts up in milliseconds (compared to minutes for Airflow), the simplest and most effective "HA" strategy is to rely on an external supervisor to restart a crashed node.
 
-*   **Kubernetes:** Deploy the VORTEX controller as a `Deployment` with `replicas: 1` and let the Kubelet instantly restart the pod if it fails.
+*   **Kubernetes:** Deploy the RYUO controller as a `Deployment` with `replicas: 1` and let the Kubelet instantly restart the pod if it fails.
 *   **Systemd/Supervisord:** Configure the service unit with `Restart=always` and `RestartSec=1`.
 
-Because VORTEX workers are stateless and use gRPC polling, they will automatically seamlessly reconnect to the controller once it restores.
+Because RYUO workers are stateless and use gRPC polling, they will automatically seamlessly reconnect to the controller once it restores.
 
 ---
 
 ## 2. Active-Standby Leader Election (Advanced)
 
-If you must guarantee no downtime (e.g., zero single-machine SPOF) and intend to run multiple VORTEX controller instances simultaneously, you must orchestrate leader election to prevent split-brain execution (multiple controllers scheduling the same tasks).
+If you must guarantee no downtime (e.g., zero single-machine SPOF) and intend to run multiple RYUO controller instances simultaneously, you must orchestrate leader election to prevent split-brain execution (multiple controllers scheduling the same tasks).
 
-VORTEX supports native active-standby leader election via **PostgreSQL Advisory Locks**.
+RYUO supports native active-standby leader election via **PostgreSQL Advisory Locks**.
 
 ### Enabling HA Mode
 
 When starting the server, pass the `--ha-mode` flag:
 
 ```bash
-vortex server --ha-mode --database-url "$DATABASE_URL"
+ryuo server --ha-mode --database-url "$DATABASE_URL"
 ```
 
 ### How it Works
@@ -45,8 +45,8 @@ vortex server --ha-mode --database-url "$DATABASE_URL"
 Each controller instance is identified by a `node_id`. Set this explicitly:
 
 ```bash
-export VORTEX_NODE_ID="controller-primary"
-vortex server --ha-mode --database-url "$DATABASE_URL"
+export RYUO_NODE_ID="controller-primary"
+ryuo server --ha-mode --database-url "$DATABASE_URL"
 ```
 
 If not set, a random ID is generated at startup (e.g., `node-a1b2c3d4`). In Kubernetes, a good value is the pod name (`$POD_NAME`).

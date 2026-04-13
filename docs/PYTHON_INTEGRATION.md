@@ -1,21 +1,21 @@
-# Python Integration in VORTEX
+# Python Integration in RYUO
 
-VORTEX supports defining DAGs using Python, similar to Apache Airflow. This allows users to leverage Python's flexibility while benefiting from VORTEX's high-performance Rust core.
+RYUO supports defining DAGs using Python, similar to Apache Airflow. This allows users to leverage Python's flexibility while benefiting from RYUO's high-performance Rust core.
 
 ## Overview
 
-Python integration in VORTEX is achieved through two complementary approaches:
+Python integration in RYUO is achieved through two complementary approaches:
 1.  **Regex-based Parsing:** A fast, lightweight parser that extracts DAG structure from Python files without requiring a full Python interpreter for basic validation and UI visualization.
 2.  **PyO3-based Runtime:** A robust integration that uses the Python interpreter to execute DAG files, supporting advanced features and dynamic task generation.
 
 ## DAG Upload & Management
 
-VORTEX provides a secure API and user-friendly Web UI for uploading and versioning your Python DAG files.
+RYUO provides a secure API and user-friendly Web UI for uploading and versioning your Python DAG files.
 
 ### Web UI Workflow
 1. Click the **"📤 Upload DAG"** button in the top navigation bar.
 2. Select or drag-and-drop a `.py` file.
-3. VORTEX automatically validates the file structure (checking for imports, `dag_id`, and cyclic dependencies).
+3. RYUO automatically validates the file structure (checking for imports, `dag_id`, and cyclic dependencies).
 4. On success, a preview of the parsed metadata (tasks, schedule) is shown.
 5. The DAG is immediately registered and becomes visible in the registry.
 
@@ -30,15 +30,15 @@ curl -X POST http://localhost:3000/api/dags/upload \
 ```
 
 ### DAG Versioning
-Every time a DAG file is uploaded, VORTEX creates a new version in the `dag_versions` table.
+Every time a DAG file is uploaded, RYUO creates a new version in the `dag_versions` table.
 - **Incremental Versioning:** Each upload for the same `dag_id` increments the version number.
 - **Storage:** Files are stored in the `dags/` directory with their original names (overwriting the active file but tracked in the DB version history).
-- **Metadata Tracking:** VORTEX tracks the creator, upload time, and file path for every version.
+- **Metadata Tracking:** RYUO tracks the creator, upload time, and file path for every version.
 - **Rollback:** Use the API or Dashboard to rollback to any previous version.
 
 ## Supported Operators
 
-VORTEX currently supports the following core operators:
+RYUO currently supports the following core operators:
 
 ### `BashOperator`
 Executes a bash command or script.
@@ -69,7 +69,7 @@ When defining a DAG, the following fields are supported:
 
 ## Task Relationship Syntax
 
-VORTEX supports the standard Airflow bitshift operators and methods for defining task dependencies:
+RYUO supports the standard Airflow bitshift operators and methods for defining task dependencies:
 
 - **Bitshift Operators:**
     ```python
@@ -86,20 +86,20 @@ VORTEX supports the standard Airflow bitshift operators and methods for defining
 Here is a complete example showing the supported features:
 
 ```python
-from vortex import DAG
-from vortex.operators.bash import BashOperator
-from vortex.operators.python import PythonOperator
-from vortex.operators.dummy import DummyOperator
+from ryuo import DAG
+from ryuo.operators.bash import BashOperator
+from ryuo.operators.python import PythonOperator
+from ryuo.operators.dummy import DummyOperator
 from datetime import datetime
 
 def my_python_logic():
     print("Executing custom logic!")
 
 with DAG(
-    dag_id="example_vortex_dag",
+    dag_id="example_ryuo_dag",
     schedule_interval="0 12 * * *",
-    owner="vortex_team",
-    description="An example DAG showcasing VORTEX features",
+    owner="ryuo_team",
+    description="An example DAG showcasing RYUO features",
     tags=["example", "python"]
 ) as dag:
 
@@ -107,7 +107,7 @@ with DAG(
 
     run_script = BashOperator(
         task_id="run_script",
-        bash_command="echo 'Hello from VORTEX!'"
+        bash_command="echo 'Hello from RYUO!'"
     )
 
     process_data = PythonOperator(
@@ -123,11 +123,11 @@ with DAG(
 
 ## Airflow Compatibility
 
-VORTEX provides an Airflow-compatible shim that allows many existing Airflow DAGs to run on VORTEX with zero or minimal modifications. This is particularly useful for migrating from Airflow to VORTEX or for teams that prefer the familiar Airflow API.
+RYUO provides an Airflow-compatible shim that allows many existing Airflow DAGs to run on RYUO with zero or minimal modifications. This is particularly useful for migrating from Airflow to RYUO or for teams that prefer the familiar Airflow API.
 
 ### Import Syntax
 
-You can use either VORTEX-native imports or standard Airflow-style imports. The VORTEX parser recognizes all of these:
+You can use either RYUO-native imports or standard Airflow-style imports. The RYUO parser recognizes all of these:
 
 ```python
 # Standard Airflow imports
@@ -138,8 +138,8 @@ from airflow.operators.dummy import DummyOperator
 # or
 from airflow.models import DAG
 
-# VORTEX-style Airflow shim
-from vortex import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
+# RYUO-style Airflow shim
+from ryuo import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
 ```
 
 ### Supported Operators List
@@ -166,7 +166,7 @@ with DAG(dag_id="my_dag", schedule_interval="@daily") as dag:
 
 ## Task Execution
 
-VORTEX workers handle the execution of both Bash and Python tasks using an isolated `TaskExecutor`.
+RYUO workers handle the execution of both Bash and Python tasks using an isolated `TaskExecutor`.
 
 ### BashOperator Execution
 When a `BashOperator` task is received, the worker spawns a subprocess:
@@ -179,19 +179,19 @@ When a `BashOperator` task is received, the worker spawns a subprocess:
 ### PythonOperator Execution
 When a `PythonOperator` task is received:
 - **Preparation:** The worker writes the Python code to a temporary file.
-- **Command:** `python3 /tmp/vortex_task_{task_id}.py`
+- **Command:** `python3 /tmp/ryuo_task_{task_id}.py`
 - **Secrets:** Secrets are injected via environment variables and accessible through `os.environ`.
 - **Cleanup:** The temporary file is automatically removed after execution.
 - **Result:** Captures all print statements (stdout), exceptions (stderr), and duration.
 
 ### Secret Injection
 
-Secrets are securely fetched from the VORTEX vault and injected as environment variables at execution time. Additionally, the following helper variables are injected:
+Secrets are securely fetched from the RYUO vault and injected as environment variables at execution time. Additionally, the following helper variables are injected:
 
 | Variable | Description |
 |----------|-------------|
-| `VORTEX_BASE_URL` | Base URL of the VORTEX server (default: `http://localhost:3000`) |
-| `VORTEX_API_KEY` | Task-scoped API key (only if `VORTEX_TASK_API_KEY` is configured on the server) |
+| `RYUO_BASE_URL` | Base URL of the RYUO server (default: `http://localhost:3000`) |
+| `RYUO_API_KEY` | Task-scoped API key (only if `RYUO_TASK_API_KEY` is configured on the server) |
 
 > **Security:** Tasks do NOT receive the admin API key. See [Secrets Vault](./SECRETS_VAULT.md) for details.
 
@@ -214,7 +214,7 @@ task = BashOperator(
 
 ## Monitoring
 
-The VORTEX Dashboard provides real-time monitoring of task execution:
+The RYUO Dashboard provides real-time monitoring of task execution:
 -   **Live Logs:** Click "View Logs" on any task instance to see stdout and stderr.
 -   **Status Badges:** Color-coded badges indicate task state:
     -   ✅ **Success** (Green)
@@ -228,10 +228,10 @@ The VORTEX Dashboard provides real-time monitoring of task execution:
 
 ### Running Integration Tests
 
-Ensure the VORTEX server is running (defaulting to `http://localhost:3000`):
+Ensure the RYUO server is running (defaulting to `http://localhost:3000`):
 
 ```bash
-# In one terminal, start VORTEX
+# In one terminal, start RYUO
 cargo run -- server --database-url "postgres://..."
 
 # In another terminal, run the integration test
@@ -258,14 +258,14 @@ The integration suite (`tests/integration_full.py`) covers:
 
 ## Python SDK API Reference
 
-The `vortex` Python package provides the following modules for DAG authoring and runtime integration:
+The `ryuo` Python package provides the following modules for DAG authoring and runtime integration:
 
-### `vortex.dag`
+### `ryuo.dag`
 
 DAG definition classes.
 
 ```python
-from vortex import DAG
+from ryuo import DAG
 
 # Create a DAG context manager
 with DAG(
@@ -285,14 +285,14 @@ with DAG(
 | `DAG(dag_id, schedule_interval, ...)` | Root workflow definition. Supports context manager syntax. |
 | `TaskGroup(group_id)` | Logical grouping of tasks for visual nesting. |
 
-### `vortex.task`
+### `ryuo.task`
 
 Task operator classes for defining units of work.
 
 ```python
-from vortex.operators.bash import BashOperator
-from vortex.operators.python import PythonOperator
-from vortex.operators.dummy import DummyOperator, EmptyOperator
+from ryuo.operators.bash import BashOperator
+from ryuo.operators.python import PythonOperator
+from ryuo.operators.dummy import DummyOperator, EmptyOperator
 
 task = BashOperator(task_id="hello", bash_command="echo hello", max_retries=3, retry_delay_secs=30)
 ```
@@ -304,12 +304,12 @@ task = BashOperator(task_id="hello", bash_command="echo hello", max_retries=3, r
 | `DummyOperator(task_id)` | No-op placeholder task for DAG structure. |
 | `EmptyOperator(task_id)` | Alias for `DummyOperator`. |
 
-### `vortex.xcom`
+### `ryuo.xcom`
 
 Cross-task communication — push and pull values between tasks in the same DAG run.
 
 ```python
-from vortex.xcom import xcom_push, xcom_pull
+from ryuo.xcom import xcom_push, xcom_pull
 
 # In a task: push a value
 xcom_push(dag_id="my_pipeline", task_id="extract", run_id=run_id, key="row_count", value="42")
@@ -323,11 +323,11 @@ row_count = xcom_pull(dag_id="my_pipeline", task_id="extract", run_id=run_id, ke
 | `xcom_push(dag_id, task_id, run_id, key, value)` | Store a string value in the XCom store. |
 | `xcom_pull(dag_id, task_id, run_id, key)` | Retrieve a stored XCom value. Returns `None` if not found. |
 
-The Vortex server base URL can be overridden with the `VORTEX_BASE_URL` environment variable (default: `http://localhost:3000`). A task-scoped API key is available via `VORTEX_API_KEY` if `VORTEX_TASK_API_KEY` is configured on the server.
+The Ryuo server base URL can be overridden with the `RYUO_BASE_URL` environment variable (default: `http://localhost:3000`). A task-scoped API key is available via `RYUO_API_KEY` if `RYUO_TASK_API_KEY` is configured on the server.
 
-### `vortex.secrets`
+### `ryuo.secrets`
 
-Secret retrieval from the Vortex vault. Secrets are injected as environment variables at task start — direct vault access from Python is generally not needed.
+Secret retrieval from the Ryuo vault. Secrets are injected as environment variables at task start — direct vault access from Python is generally not needed.
 
 ```python
 import os
@@ -340,14 +340,14 @@ api_key     = os.environ["THIRD_PARTY_TOKEN"] # set from Secrets Vault key "THIR
 | Mechanism | Description |
 |-----------|-------------|
 | Environment variable injection | The recommended approach. All vault secrets assigned to the DAG are automatically decrypted and injected as env vars before task execution. Tasks do not need direct vault API access. |
-| `VORTEX_API_KEY` | Task-scoped API key (available if `VORTEX_TASK_API_KEY` is set on the server). |
+| `RYUO_API_KEY` | Task-scoped API key (available if `RYUO_TASK_API_KEY` is set on the server). |
 
-### `vortex.notifications`
+### `ryuo.notifications`
 
 Alert and notification hooks for sending messages on task events.
 
 ```python
-from vortex.notifications import notify_failure
+from ryuo.notifications import notify_failure
 
 # Call in a PythonOperator on exception:
 def my_task():

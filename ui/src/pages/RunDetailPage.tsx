@@ -81,7 +81,7 @@ export function RunDetailPage() {
         <button
           onClick={() => retryMutation.mutate()}
           disabled={retryMutation.isPending}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-vortex-700 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-ryuo-700 disabled:opacity-50"
         >
           <RotateCcw className="h-3.5 w-3.5" />
           {retryMutation.isPending ? 'Retrying…' : 'Re-run DAG'}
@@ -112,7 +112,7 @@ export function RunDetailPage() {
       {/* Graph */}
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
         </div>
       ) : (
         <>
@@ -155,7 +155,7 @@ export function RunDetailPage() {
                       <tr
                         key={inst.id}
                         onClick={() => setSelectedTask(task?.name === selectedTask ? null : (task?.name ?? null))}
-                        className={`cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50 ${isSel ? 'bg-vortex-50 dark:bg-vortex-950/20' : ''}`}
+                        className={`cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50 ${isSel ? 'bg-ryuo-50 dark:bg-ryuo-950/20' : ''}`}
                       >
                         <td className="whitespace-nowrap px-5 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">
                           {task?.name ?? inst.task_id.slice(0, 12)}

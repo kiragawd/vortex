@@ -68,7 +68,7 @@ impl Default for BackupConfig {
         Self {
             schedule_cron: "0 2 * * *".to_string(),
             targets: vec![BackupTarget::Full],
-            storage_path: "/var/vortex/backups".to_string(),
+            storage_path: "/var/ryuo/backups".to_string(),
             retention_days: 30,
             encryption_enabled: true,
             compression: true,

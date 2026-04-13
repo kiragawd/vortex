@@ -1,14 +1,14 @@
-# VORTEX 🌪️
+# RYUO 🌪️
 
-**VORTEX** is a high-performance, single-binary enterprise orchestration engine designed to replace Apache Airflow with disruptive speed and simplicity.
+**RYUO** is a high-performance, single-binary enterprise orchestration engine designed to replace Apache Airflow with disruptive speed and simplicity.
 
-Built in **Rust** with native **Python** DAG support via PyO3, VORTEX delivers sub-second scheduling, visual DAG monitoring, encrypted secret management, and distributed task execution — all from a single binary.
+Built in **Rust** with native **Python** DAG support via PyO3, RYUO delivers sub-second scheduling, visual DAG monitoring, encrypted secret management, and distributed task execution — all from a single binary.
 
-## Why VORTEX?
+## Why RYUO?
 
 Because your data pipelines shouldn't spend more time scheduling tasks than executing them.
 
-| Feature | Airflow | VORTEX |
+| Feature | Airflow | RYUO |
 |---------|---------|--------|
 | **Startup** | Minutes (webserver + scheduler + workers + Redis + DB) | Seconds (single binary) |
 | **Scheduling** | Python-based, GIL-bound | Lock-free Rust async (Tokio) |
@@ -20,7 +20,7 @@ Because your data pipelines shouldn't spend more time scheduling tasks than exec
 
 ```mermaid
 graph TB
-    subgraph Controller["VORTEX Controller"]
+    subgraph Controller["RYUO Controller"]
         API["REST API<br/>(Axum :3000)"]
         SCHED["Scheduler<br/>(Tokio async)"]
         PARSER["DAG Parser<br/>(PyO3)"]
@@ -58,7 +58,7 @@ graph TB
 - **Dependency-aware orchestration** — Topological sort with fan-out/fan-in support
 - **Python DAG support** — Write DAGs in Python, execute at Rust speed via PyO3
 - **Dynamic DAG Generation** — Support for loops and parameterization (Jinja/f-strings)
-- **Airflow compatibility shim** — `from vortex import DAG, BashOperator, PythonOperator`
+- **Airflow compatibility shim** — `from ryuo import DAG, BashOperator, PythonOperator`
 
 ### Enterprise Connectors
 - **Unified Connector Trait** — `EnterpriseConnector` contract in `src/enterprise_connector.rs` with config validation, health checks, query execution, streaming, and introspection
@@ -75,7 +75,7 @@ graph TB
 ### Airflow Migration Pipeline
 - **Static AST Parser** — Rust-native Python AST parser (`src/airflow_ast_parser.rs`) extracts DAGs, tasks, dependencies, and schedules without executing Python
 - **Rust DAG Code Generator** — Generates native Rust DAG modules from parsed AST IR (`src/dag_codegen.rs`), with `todo!()` placeholders for unsupported constructs
-- **CLI `migrate` Command** — `vortex-cli migrate <path>` transpiles Airflow DAGs to Rust with `--strict`, `--report-format`, and `--use-shim-fallback` options
+- **CLI `migrate` Command** — `ryuo-cli migrate <path>` transpiles Airflow DAGs to Rust with `--strict`, `--report-format`, and `--use-shim-fallback` options
 - **Migration Reports** — JSON/Markdown reports listing converted tasks, placeholder tasks, and required manual actions
 - **Graph Equivalence Validation** — Automated checks that generated DAG dependency topology matches the source Airflow DAG
 
@@ -157,17 +157,17 @@ graph TB
 
 ## ⚠️ Production Considerations
 
-By default, VORTEX runs as a single-node controller, which introduces a Single Point of Failure (SPOF). For production environments, it is strongly recommended to run VORTEX behind a supervisor (like `systemd` or Kubernetes deployments) configured to automatically restart the process on failure.
+By default, RYUO runs as a single-node controller, which introduces a Single Point of Failure (SPOF). For production environments, it is strongly recommended to run RYUO behind a supervisor (like `systemd` or Kubernetes deployments) configured to automatically restart the process on failure.
 
-For true active-standby High Availability (HA) across multiple machines, VORTEX supports a leader election mode using PostgreSQL advisory locks.
+For true active-standby High Availability (HA) across multiple machines, RYUO supports a leader election mode using PostgreSQL advisory locks.
 
 See the [High Availability Guide](./docs/high-availability.md) for full setup instructions and architectural details.
 
 ## Current Limitations & Future Enhancements
 
-While VORTEX provides a comprehensive orchestration platform, some features are scaffolded for future completion:
+While RYUO provides a comprehensive orchestration platform, some features are scaffolded for future completion:
 
-- **Kubernetes Executor:** Kubernetes Executor: pod spec generation and namespace validation implemented. Pod API submission requires the `kube` crate feature (TODO: ENT-16). VORTEX scales horizontally via its built-in gRPC Swarm in the meantime.
+- **Kubernetes Executor:** Kubernetes Executor: pod spec generation and namespace validation implemented. Pod API submission requires the `kube` crate feature (TODO: ENT-16). RYUO scales horizontally via its built-in gRPC Swarm in the meantime.
 - **SSO (SAML/LDAP):** Local and OIDC authentication are functional. SAML and LDAP providers have configuration types defined but lack full provider implementations.
 - **Disaster Recovery:** Backup metadata tracking and failover types exist, but end-to-end backup I/O and automated restore are not yet operational.
 - **OpenTelemetry Export:** W3C TraceContext propagation and span types are complete but the OTLP exporter (HTTP/gRPC sender) is not yet wired.
@@ -187,8 +187,8 @@ While VORTEX provides a comprehensive orchestration platform, some features are 
 ### Build
 
 ```bash
-git clone https://github.com/kiragawd/vortex.git
-cd vortex
+git clone https://github.com/kiragawd/ryuo.git
+cd ryuo
 
 # Python 3.14+ requires this env var
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
@@ -196,27 +196,27 @@ export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 cargo build --release
 ```
 
-**Note:** By default, VORTEX runs in a secure sandbox mode. To execute Python DAGs or load dynamic plugins, you must pass the corresponding explicit opt-in flags.
+**Note:** By default, RYUO runs in a secure sandbox mode. To execute Python DAGs or load dynamic plugins, you must pass the corresponding explicit opt-in flags.
 
 ### Run Controller + Swarm
 
 > **Port Reference:**
 > - **Port 3000** — REST API, web dashboard, and Prometheus `/metrics` (default; override with `--port`)
 > - **Port 50051** — gRPC swarm endpoint for worker–controller communication (override with `--swarm-port`)
-> - **Port 9090** — Prometheus server (configure it to scrape Vortex on port 3000)
+> - **Port 9090** — Prometheus server (configure it to scrape Ryuo on port 3000)
 
 ```bash
 # Terminal 1: Start server with PostgreSQL (and Python DAG support enabled)
-./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex" --allow-unsafe-dag-exec
+./target/release/ryuo server --swarm --database-url "postgres://user:pass@localhost/ryuo" --allow-unsafe-dag-exec
 
 # Optional: custom web port (default 3000) and restrict gRPC to localhost
-./target/release/vortex server --swarm --database-url "postgres://..." --port 8080 --grpc-bind 127.0.0.1 --allow-unsafe-dag-exec
+./target/release/ryuo server --swarm --database-url "postgres://..." --port 8080 --grpc-bind 127.0.0.1 --allow-unsafe-dag-exec
 
 # Optional: register the built-in benchmark DAG
-./target/release/vortex server --swarm --database-url "postgres://..." --benchmark
+./target/release/ryuo server --swarm --database-url "postgres://..." --benchmark
 
 # Terminal 2: Start a worker (use http:// for plaintext gRPC, https:// for TLS)
-./target/release/vortex worker --controller http://localhost:50051 --capacity 4
+./target/release/ryuo worker --controller http://localhost:50051 --capacity 4
 ```
 
 ### Access Dashboard
@@ -230,7 +230,7 @@ Open **http://localhost:3000** in your browser.
 Create `dags/my_pipeline.py`:
 
 ```python
-from vortex import DAG, BashOperator, TaskGroup
+from ryuo import DAG, BashOperator, TaskGroup
 
 with DAG("my_pipeline", schedule_interval="@daily") as dag:
     with TaskGroup("ingestion") as tg:
@@ -246,26 +246,26 @@ The DAG is automatically loaded on server startup or can be uploaded via the web
 
 ## CLI Reference
 
-VORTEX comes with a dedicated CLI (`vortex-cli`) for automation.
+RYUO comes with a dedicated CLI (`ryuo-cli`) for automation.
 
 ```bash
-vortex-cli dags list
-vortex-cli dags trigger <dag_id>
-vortex-cli dags pause <dag_id>
-vortex-cli dags unpause <dag_id>
-vortex-cli dags backfill <dag_id> --start 2026-01-01 --end 2026-02-01 --parallel 4
-vortex-cli migrate ./dags --output-dir ./generated_dags --strict
-vortex-cli migrate ./dags --agentic --llm-provider openai --model gpt-4o-mini
-vortex-cli tasks logs <task_instance_id>
-vortex-cli secrets set MY_KEY MY_VAL
-vortex-cli users create new_user --role Operator
+ryuo-cli dags list
+ryuo-cli dags trigger <dag_id>
+ryuo-cli dags pause <dag_id>
+ryuo-cli dags unpause <dag_id>
+ryuo-cli dags backfill <dag_id> --start 2026-01-01 --end 2026-02-01 --parallel 4
+ryuo-cli migrate ./dags --output-dir ./generated_dags --strict
+ryuo-cli migrate ./dags --agentic --llm-provider openai --model gpt-4o-mini
+ryuo-cli tasks logs <task_instance_id>
+ryuo-cli secrets set MY_KEY MY_VAL
+ryuo-cli users create new_user --role Operator
 ```
 
-Run `vortex-cli --help` for full command reference. See [CLI Reference](./docs/CLI_REFERENCE.md) for details on all supported flags.
+Run `ryuo-cli --help` for full command reference. See [CLI Reference](./docs/CLI_REFERENCE.md) for details on all supported flags.
 
 ## Database Schema
 
-VORTEX uses PostgreSQL with the following tables:
+RYUO uses PostgreSQL with the following tables:
 
 **Core:**
 - **`dags`** — DAG definitions, schedule, team assignment, pause state
@@ -306,7 +306,7 @@ VORTEX uses PostgreSQL with the following tables:
 ## Project Structure
 
 ```
-vortex/
+ryuo/
 ├── src/
 │   ├── main.rs               # Entry point, CLI parsing, orchestration loop
 │   ├── lib.rs                 # Library exports
@@ -352,17 +352,17 @@ vortex/
 │   ├── src/                   # Components, pages, stores, API clients
 │   ├── package.json           # Node dependencies
 │   └── vite.config.ts         # Build configuration
-├── python/vortex/             # Python Airflow-compatibility shim
+├── python/ryuo/             # Python Airflow-compatibility shim
 ├── assets/                    # Compiled static assets (embedded via rust-embed)
 ├── plugins/                   # Dynamic .so/.dylib operator plugins
 ├── migrations/                # PostgreSQL migration scripts
 ├── dags/                      # DAG files (auto-loaded on startup)
 ├── proto/                     # gRPC Protobuf definitions
-├── helm/vortex/               # Helm chart for Kubernetes deployment
+├── helm/ryuo/               # Helm chart for Kubernetes deployment
 ├── tests/                     # Unit + integration + E2E tests
 ├── docs/                      # Documentation
 ├── Dockerfile                 # Multi-stage production build
-├── docker-compose.yml         # Local dev stack (Vortex + PostgreSQL + Prometheus)
+├── docker-compose.yml         # Local dev stack (Ryuo + PostgreSQL + Prometheus)
 └── prometheus.yml             # Prometheus scrape configuration
 ```
 
@@ -384,7 +384,7 @@ vortex/
 - **[Resilience](./docs/RESILIENCE.md)** — Auto-recovery, health monitoring, and disaster recovery
 - **[Plugins](./docs/PLUGINS.md)** — Custom operator development and SDK
 - **[High Availability](./docs/high-availability.md)** — HA deployment with leader election
-- **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow-to-Vortex DAG migration
+- **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow-to-Ryuo DAG migration
 - **[Connector API](./docs/CONNECTOR_API.md)** — Connector trait and implementations
 
 ## Testing

@@ -15,7 +15,7 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    info!("🐝 VORTEX Worker starting...");
+    info!("🐝 RYUO Worker starting...");
     info!("   ├─ Worker ID: {}", worker_id);
     info!("   ├─ Hostname: {}", host);
     info!("   ├─ Capacity: {} concurrent tasks", capacity);
@@ -23,15 +23,15 @@ pub async fn run_worker(controller_addr: &str, worker_id: &str, capacity: i32, l
     info!("   └─ Controller: {}", controller_addr);
 
     // BUG-C7: Load auth token for gRPC requests
-    let grpc_auth_token = std::env::var("VORTEX_GRPC_AUTH_TOKEN").ok();
+    let grpc_auth_token = std::env::var("RYUO_GRPC_AUTH_TOKEN").ok();
     if grpc_auth_token.is_some() {
         info!("   🔑 gRPC auth token configured");
     } else {
-        warn!("   ⚠️ No VORTEX_GRPC_AUTH_TOKEN set — running without gRPC auth (dev mode only)");
+        warn!("   ⚠️ No RYUO_GRPC_AUTH_TOKEN set — running without gRPC auth (dev mode only)");
     }
 
-    // ENT-1: Configure TLS channel if VORTEX_GRPC_TLS_CA is set (mTLS to controller)
-    let ca_path_opt = std::env::var("VORTEX_GRPC_TLS_CA").ok();
+    // ENT-1: Configure TLS channel if RYUO_GRPC_TLS_CA is set (mTLS to controller)
+    let ca_path_opt = std::env::var("RYUO_GRPC_TLS_CA").ok();
     let endpoint = {
         let ep = tonic::transport::Endpoint::from_shared(controller_addr.to_string())?;
         if let Some(ref ca_path) = ca_path_opt {

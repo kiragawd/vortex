@@ -8,5 +8,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0"
-vortex = { path = ".." }
+ryuo = { path = ".." }
 async-trait = "0.1"

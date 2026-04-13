@@ -2,7 +2,7 @@
 
 ## Overview
 
-The VORTEX Secrets Vault provides encrypted storage for sensitive data (database credentials, API keys, tokens, etc.) within distributed DAG workflows. Secrets are encrypted at rest using AES-256-GCM with unique nonces, ensuring that even if the database is compromised, secret values remain protected.
+The RYUO Secrets Vault provides encrypted storage for sensitive data (database credentials, API keys, tokens, etc.) within distributed DAG workflows. Secrets are encrypted at rest using AES-256-GCM with unique nonces, ensuring that even if the database is compromised, secret values remain protected.
 
 ### Key Security Properties
 
@@ -10,7 +10,7 @@ The VORTEX Secrets Vault provides encrypted storage for sensitive data (database
 |----------|----------------|
 | **Encryption Algorithm** | AES-256-GCM (Authenticated Encryption with Associated Data) |
 | **Nonce Size** | 96 bits (12 bytes), randomly generated per encryption |
-| **Key Source** | `VORTEX_SECRET_KEY` environment variable (32-character string) |
+| **Key Source** | `RYUO_SECRET_KEY` environment variable (32-character string) |
 | **Storage Format** | Base64-encoded (nonce + ciphertext) in a TEXT column |
 | **Integrity** | GCM authentication tag ensures ciphertext hasn't been modified |
 | **Freshness** | Unique nonce per secret prevents replay attacks |
@@ -43,7 +43,7 @@ When a secret is stored:
 
 1. **Generate a random 96-bit nonce** (12 bytes)
 2. **Encrypt the plaintext value** using AES-256-GCM with:
-   - Key: Raw bytes of `VORTEX_SECRET_KEY` (32 characters = 32 bytes = 256 bits)
+   - Key: Raw bytes of `RYUO_SECRET_KEY` (32 characters = 32 bytes = 256 bits)
    - Plaintext: User-provided secret value
    - Nonce: Randomly generated per operation
 3. **Combine nonce + ciphertext** into a single byte array
@@ -51,10 +51,10 @@ When a secret is stored:
 
 ### Key Format
 
-VORTEX uses the raw bytes of the `VORTEX_SECRET_KEY` string directly as the AES-256 key:
+RYUO uses the raw bytes of the `RYUO_SECRET_KEY` string directly as the AES-256 key:
 
 ```rust
-let key_str = env::var("VORTEX_SECRET_KEY")?;
+let key_str = env::var("RYUO_SECRET_KEY")?;
 let key_bytes = key_str.as_bytes();  // Raw bytes, NOT hex-decoded
 assert_eq!(key_bytes.len(), 32);     // Must be exactly 32 characters
 ```
@@ -63,7 +63,7 @@ assert_eq!(key_bytes.len(), 32);     // Must be exactly 32 characters
 
 ```bash
 # Generate a valid key
-export VORTEX_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
+export RYUO_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
 ```
 
 ---
@@ -127,7 +127,7 @@ curl -X DELETE http://localhost:3000/api/secrets/DB_PASSWORD \
 When a task is dispatched to a worker:
 
 1. The controller fetches all secrets from the vault
-2. Secrets are decrypted using the `VORTEX_SECRET_KEY`
+2. Secrets are decrypted using the `RYUO_SECRET_KEY`
 3. Decrypted values are injected as environment variables into the task process
 4. The task can access secrets via `os.environ` (Python) or `$ENV_VAR` (Bash)
 
@@ -148,14 +148,14 @@ echo $DB_PASSWORD
 
 ### Additional Environment Variables
 
-VORTEX also injects helper variables for tasks that need API access:
+RYUO also injects helper variables for tasks that need API access:
 
 | Variable | Description |
 |----------|-------------|
-| `VORTEX_BASE_URL` | Base URL of the VORTEX server (default: `http://localhost:3000`) |
-| `VORTEX_API_KEY` | Task-scoped API key (only if `VORTEX_TASK_API_KEY` is set on the server) |
+| `RYUO_BASE_URL` | Base URL of the RYUO server (default: `http://localhost:3000`) |
+| `RYUO_API_KEY` | Task-scoped API key (only if `RYUO_TASK_API_KEY` is set on the server) |
 
-> **Security Note:** Tasks do NOT receive the admin API key. If tasks need API access, set the `VORTEX_TASK_API_KEY` environment variable on the server process with a scoped, limited-privilege key.
+> **Security Note:** Tasks do NOT receive the admin API key. If tasks need API access, set the `RYUO_TASK_API_KEY` environment variable on the server process with a scoped, limited-privilege key.
 
 ---
 
@@ -163,7 +163,7 @@ VORTEX also injects helper variables for tasks that need API access:
 
 ### 1. Protect the Master Key
 
-- Store `VORTEX_SECRET_KEY` securely (e.g., HashiCorp Vault, AWS Secrets Manager, systemd credentials)
+- Store `RYUO_SECRET_KEY` securely (e.g., HashiCorp Vault, AWS Secrets Manager, systemd credentials)
 - Only the controller process should have access to the key
 - Rotate after any suspected compromise
 
@@ -181,35 +181,35 @@ All secret operations are logged to the audit log:
 
 ### 4. Never Log Secret Values
 
-Secrets should never appear in logs, error messages, or stack traces. VORTEX enforces this at the API level by never returning decrypted values.
+Secrets should never appear in logs, error messages, or stack traces. RYUO enforces this at the API level by never returning decrypted values.
 
 ### 5. Use Scoped Task API Keys
 
-If tasks need VORTEX API access, use `VORTEX_TASK_API_KEY` with a dedicated, limited-privilege API key rather than the admin key.
+If tasks need RYUO API access, use `RYUO_TASK_API_KEY` with a dedicated, limited-privilege API key rather than the admin key.
 
 ---
 
 ## Troubleshooting
 
-### Error: "VORTEX_SECRET_KEY environment variable not set"
+### Error: "RYUO_SECRET_KEY environment variable not set"
 
 **Solution:** Set the environment variable before starting the server:
 ```bash
-export VORTEX_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
+export RYUO_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
 ```
 
-### Error: "VORTEX_SECRET_KEY must be exactly 32 bytes"
+### Error: "RYUO_SECRET_KEY must be exactly 32 bytes"
 
 **Cause:** The key is not exactly 32 characters long.
 
 **Solution:** Ensure the key is exactly 32 characters:
 ```bash
-echo -n "$VORTEX_SECRET_KEY" | wc -c  # Should output 32
+echo -n "$RYUO_SECRET_KEY" | wc -c  # Should output 32
 ```
 
 ### Error: "Secret Vault is not initialized"
 
-**Cause:** The server was started without `VORTEX_SECRET_KEY`. The vault is disabled (non-fatal).
+**Cause:** The server was started without `RYUO_SECRET_KEY`. The vault is disabled (non-fatal).
 
 **Solution:** Set the environment variable and restart the server.
 
@@ -217,7 +217,7 @@ echo -n "$VORTEX_SECRET_KEY" | wc -c  # Should output 32
 
 **Cause:** The ciphertext was encrypted with a different key than the one currently set.
 
-**Solution:** Ensure `VORTEX_SECRET_KEY` matches the key used when the secret was stored.
+**Solution:** Ensure `RYUO_SECRET_KEY` matches the key used when the secret was stored.
 
 ---
 

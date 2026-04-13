@@ -543,7 +543,7 @@ impl CiPipelineManager {
 
 // ─── Workspace Federation ─────────────────────────────────────
 
-/// Federated Vortex workspace — connects multiple Vortex instances.
+/// Federated Ryuo workspace — connects multiple Ryuo instances.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederatedWorkspace {
     pub id: String,
@@ -753,7 +753,7 @@ mod tests {
         let ws = FederatedWorkspace {
             id: "remote-1".to_string(),
             name: "Production".to_string(),
-            endpoint: "https://vortex-prod.example.com".to_string(),
+            endpoint: "https://ryuo-prod.example.com".to_string(),
             api_token: Some("token-xxx".to_string()),
             enabled: true,
             last_heartbeat: None,

@@ -18,18 +18,18 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   user: null,
-  theme: (localStorage.getItem('vortex_theme') as 'light' | 'dark') || 'light',
+  theme: (localStorage.getItem('ryuo_theme') as 'light' | 'dark') || 'light',
   sidebarOpen: true,
   setUser: (user) => set({ user }),
   logout: () => {
-    localStorage.removeItem('vortex_token');
+    localStorage.removeItem('ryuo_token');
     set({ user: null });
     window.location.href = '/login';
   },
   toggleTheme: () =>
     set((state) => {
       const next = state.theme === 'light' ? 'dark' : 'light';
-      localStorage.setItem('vortex_theme', next);
+      localStorage.setItem('ryuo_theme', next);
       document.documentElement.classList.toggle('dark', next === 'dark');
       return { theme: next };
     }),

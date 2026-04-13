@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use vortex::agentic::{
+use ryuo::agentic::{
     CompletionRequest, CompletionResponse, LlmProvider, convert_dbt_manifest_to_pipeline,
     translate_python_to_rust_agentic,
 };

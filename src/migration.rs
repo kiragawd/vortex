@@ -2,7 +2,7 @@
 // Legacy Scheduler Migration
 //
 // Parsers for TWS (Tivoli Workload Scheduler) and Autosys JIL definitions,
-// migration CLI tooling, and Airflow-to-Vortex transpilation helpers.
+// migration CLI tooling, and Airflow-to-Ryuo transpilation helpers.
 
 use anyhow::Result;
 use chrono::Utc;
@@ -53,21 +53,21 @@ pub struct MigrationResult {
     pub jobs_converted: usize,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
-    pub vortex_dag: VortexDagDef,
+    pub ryuo_dag: RyuoDagDef,
 }
 
-/// Vortex DAG definition output from migration.
+/// Ryuo DAG definition output from migration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VortexDagDef {
+pub struct RyuoDagDef {
     pub dag_id: String,
     pub description: String,
     pub schedule: Option<String>,
-    pub tasks: Vec<VortexTaskDef>,
+    pub tasks: Vec<RyuoTaskDef>,
     pub default_args: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VortexTaskDef {
+pub struct RyuoTaskDef {
     pub task_id: String,
     pub operator: String,
     pub config: Value,
@@ -283,8 +283,8 @@ fn parse_autosys_conditions(condition: &str) -> Vec<String> {
 
 // ─── Migration Converter ──────────────────────────────────────
 
-/// Convert parsed legacy jobs into a Vortex DAG definition.
-pub fn convert_to_vortex_dag(jobs: &[MigrationJob], dag_id: &str) -> MigrationResult {
+/// Convert parsed legacy jobs into a Ryuo DAG definition.
+pub fn convert_to_ryuo_dag(jobs: &[MigrationJob], dag_id: &str) -> MigrationResult {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     let mut tasks = Vec::new();
@@ -331,7 +331,7 @@ pub fn convert_to_vortex_dag(jobs: &[MigrationJob], dag_id: &str) -> MigrationRe
         jobs_converted: tasks.len(),
         warnings,
         errors,
-        vortex_dag: VortexDagDef {
+        ryuo_dag: RyuoDagDef {
             dag_id: dag_id.to_string(),
             description: format!("Migrated from {:?}", source),
             schedule,
@@ -341,7 +341,7 @@ pub fn convert_to_vortex_dag(jobs: &[MigrationJob], dag_id: &str) -> MigrationRe
     }
 }
 
-fn convert_job(job: &MigrationJob) -> Result<(VortexTaskDef, Vec<String>)> {
+fn convert_job(job: &MigrationJob) -> Result<(RyuoTaskDef, Vec<String>)> {
     let mut warnings = Vec::new();
     let task_id = sanitize_id(&job.job_name);
 
@@ -379,7 +379,7 @@ fn convert_job(job: &MigrationJob) -> Result<(VortexTaskDef, Vec<String>)> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    Ok((VortexTaskDef {
+    Ok((RyuoTaskDef {
         task_id,
         operator,
         config,
@@ -389,7 +389,7 @@ fn convert_job(job: &MigrationJob) -> Result<(VortexTaskDef, Vec<String>)> {
     }, warnings))
 }
 
-/// Sanitize a job name to a valid Vortex task ID.
+/// Sanitize a job name to a valid Ryuo task ID.
 fn sanitize_id(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
@@ -400,10 +400,10 @@ fn sanitize_id(name: &str) -> String {
 
 // ─── Code Generator ───────────────────────────────────────────
 
-/// Generate Vortex Rust DAG code from a VortexDagDef.
-pub fn generate_rust_dag_code(dag: &VortexDagDef) -> String {
+/// Generate Ryuo Rust DAG code from a RyuoDagDef.
+pub fn generate_rust_dag_code(dag: &RyuoDagDef) -> String {
     let mut code = String::new();
-    code.push_str(&format!("// Auto-generated Vortex DAG: {}\n", dag.dag_id));
+    code.push_str(&format!("// Auto-generated Ryuo DAG: {}\n", dag.dag_id));
     code.push_str(&format!("// {}\n\n", dag.description));
     code.push_str("use serde_json::json;\n\n");
     code.push_str(&format!("pub fn create_dag() -> serde_json::Value {{\n"));
@@ -432,12 +432,12 @@ pub fn generate_rust_dag_code(dag: &VortexDagDef) -> String {
     code
 }
 
-/// Generate a Python-compatible DAG definition for Vortex Python SDK.
-pub fn generate_python_dag_code(dag: &VortexDagDef) -> String {
+/// Generate a Python-compatible DAG definition for Ryuo Python SDK.
+pub fn generate_python_dag_code(dag: &RyuoDagDef) -> String {
     let mut code = String::new();
-    code.push_str(&format!("# Auto-generated Vortex DAG: {}\n", dag.dag_id));
+    code.push_str(&format!("# Auto-generated Ryuo DAG: {}\n", dag.dag_id));
     code.push_str(&format!("# {}\n\n", dag.description));
-    code.push_str("from vortex import DAG, ShellOperator\n\n");
+    code.push_str("from ryuo import DAG, ShellOperator\n\n");
     code.push_str(&format!("with DAG(\"{}\", description=\"{}\") as dag:\n", dag.dag_id, dag.description));
 
     for task in &dag.tasks {
@@ -470,7 +470,7 @@ pub fn generate_python_dag_code(dag: &VortexDagDef) -> String {
 /// Generate a migration report.
 pub fn generate_migration_report(results: &[MigrationResult]) -> String {
     let mut report = String::new();
-    report.push_str("# Vortex Migration Report\n\n");
+    report.push_str("# Ryuo Migration Report\n\n");
     report.push_str(&format!("Generated: {}\n\n", Utc::now().format("%Y-%m-%d %H:%M:%S UTC")));
 
     let total_parsed: usize = results.iter().map(|r| r.jobs_parsed).sum();
@@ -487,7 +487,7 @@ pub fn generate_migration_report(results: &[MigrationResult]) -> String {
     report.push_str(&format!("| Errors | {} |\n\n", total_errors));
 
     for result in results {
-        report.push_str(&format!("## {} (from {:?})\n\n", result.vortex_dag.dag_id, result.source));
+        report.push_str(&format!("## {} (from {:?})\n\n", result.ryuo_dag.dag_id, result.source));
         report.push_str(&format!("- Jobs parsed: {}\n", result.jobs_parsed));
         report.push_str(&format!("- Jobs converted: {}\n", result.jobs_converted));
 
@@ -585,7 +585,7 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
     }
 
     #[test]
-    fn test_convert_to_vortex_dag() {
+    fn test_convert_to_ryuo_dag() {
         let jobs = vec![
             MigrationJob {
                 source: SourceScheduler::Autosys,
@@ -613,13 +613,13 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
             },
         ];
 
-        let result = convert_to_vortex_dag(&jobs, "migrated_etl");
+        let result = convert_to_ryuo_dag(&jobs, "migrated_etl");
         assert_eq!(result.jobs_parsed, 2);
         assert_eq!(result.jobs_converted, 2);
-        assert_eq!(result.vortex_dag.tasks.len(), 2);
-        assert_eq!(result.vortex_dag.tasks[0].task_id, "etl_extract");
-        assert_eq!(result.vortex_dag.tasks[0].operator, "ShellOperator");
-        assert_eq!(result.vortex_dag.tasks[1].retries, 2);
+        assert_eq!(result.ryuo_dag.tasks.len(), 2);
+        assert_eq!(result.ryuo_dag.tasks[0].task_id, "etl_extract");
+        assert_eq!(result.ryuo_dag.tasks[0].operator, "ShellOperator");
+        assert_eq!(result.ryuo_dag.tasks[1].retries, 2);
     }
 
     #[test]
@@ -631,11 +631,11 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
 
     #[test]
     fn test_generate_rust_dag_code() {
-        let dag = VortexDagDef {
+        let dag = RyuoDagDef {
             dag_id: "test_dag".to_string(),
             description: "Test".to_string(),
             schedule: Some("0 8 * * *".to_string()),
-            tasks: vec![VortexTaskDef {
+            tasks: vec![RyuoTaskDef {
                 task_id: "task1".to_string(),
                 operator: "ShellOperator".to_string(),
                 config: serde_json::json!({"command": "echo hello"}),
@@ -653,12 +653,12 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
 
     #[test]
     fn test_generate_python_dag_code() {
-        let dag = VortexDagDef {
+        let dag = RyuoDagDef {
             dag_id: "python_dag".to_string(),
             description: "Python test".to_string(),
             schedule: None,
             tasks: vec![
-                VortexTaskDef {
+                RyuoTaskDef {
                     task_id: "extract".to_string(),
                     operator: "ShellOperator".to_string(),
                     config: serde_json::json!({"command": "echo extract"}),
@@ -666,7 +666,7 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
                     retries: 0,
                     retry_delay_secs: 60,
                 },
-                VortexTaskDef {
+                RyuoTaskDef {
                     task_id: "load".to_string(),
                     operator: "ShellOperator".to_string(),
                     config: serde_json::json!({"command": "echo load"}),
@@ -678,7 +678,7 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
             default_args: HashMap::new(),
         };
         let code = generate_python_dag_code(&dag);
-        assert!(code.contains("from vortex import DAG"));
+        assert!(code.contains("from ryuo import DAG"));
         assert!(code.contains("extract >> load"));
     }
 
@@ -691,7 +691,7 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
             jobs_converted: 4,
             warnings: vec!["Some warning".to_string()],
             errors: vec!["Some error".to_string()],
-            vortex_dag: VortexDagDef {
+            ryuo_dag: RyuoDagDef {
                 dag_id: "migrated".to_string(),
                 description: "Test".to_string(),
                 schedule: None,
@@ -719,7 +719,7 @@ transform_job DOCOMMAND "/opt/scripts/transform.sh"
             notifications: vec![],
             properties: HashMap::new(),
         }];
-        let result = convert_to_vortex_dag(&jobs, "custom_dag");
+        let result = convert_to_ryuo_dag(&jobs, "custom_dag");
         assert_eq!(result.jobs_converted, 1);
         assert!(!result.warnings.is_empty()); // Should warn about unknown type
     }

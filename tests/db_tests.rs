@@ -5,7 +5,7 @@
 /// `DATABASE_URL` is not set.
 ///
 /// Run with:
-///   DATABASE_URL=postgres://user:pass@localhost/vortex_test cargo test db_tests
+///   DATABASE_URL=postgres://user:pass@localhost/ryuo_test cargo test db_tests
 
 #[cfg(test)]
 mod db_tests {
@@ -14,7 +14,7 @@ mod db_tests {
     /// Helper: attempt to build a PostgresDb from `DATABASE_URL`.
     /// Returns None if `DATABASE_URL` is not set, allowing tests to be skipped
     /// gracefully in CI environments without a live database.
-    async fn try_postgres_db() -> Option<std::sync::Arc<vortex::db_postgres::PostgresDb>> {
+    async fn try_postgres_db() -> Option<std::sync::Arc<ryuo::db_postgres::PostgresDb>> {
         let url = match std::env::var("DATABASE_URL") {
             Ok(u) => u,
             Err(_) => {
@@ -22,7 +22,7 @@ mod db_tests {
                 return None;
             }
         };
-        let db = vortex::db_postgres::PostgresDb::new(
+        let db = ryuo::db_postgres::PostgresDb::new(
             &url, 2, 1, std::time::Duration::from_secs(30),
         )
         .await
@@ -49,7 +49,7 @@ mod db_tests {
             eprintln!("SKIP test_workers_table_operations — DATABASE_URL not set");
             return Ok(());
         };
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
         let id = format!("test-worker-{}", uuid::Uuid::new_v4());
         db.upsert_worker(&id, "test-host", 4, "test").await?;
         db.update_worker_heartbeat(&id, 0).await?;
@@ -63,7 +63,7 @@ mod db_tests {
             eprintln!("SKIP test_task_instance_state_transitions — DATABASE_URL not set");
             return Ok(());
         };
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
         let dag_id = format!("test-dag-{}", uuid::Uuid::new_v4());
         let run_id = uuid::Uuid::new_v4().to_string();
         let ti_id  = uuid::Uuid::new_v4().to_string();
@@ -83,7 +83,7 @@ mod db_tests {
             eprintln!("SKIP test_secrets_table_crud — DATABASE_URL not set");
             return Ok(());
         };
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
         let key = format!("test-secret-{}", uuid::Uuid::new_v4());
         db.store_secret(&key, "encrypted_val", None, None).await?;
         let val = db.get_secret(&key).await?;
@@ -101,7 +101,7 @@ mod db_tests {
             eprintln!("SKIP test_xcom_push_pull — DATABASE_URL not set");
             return Ok(());
         };
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
         let dag_id = format!("xcom-dag-{}", uuid::Uuid::new_v4());
         let run_id = uuid::Uuid::new_v4().to_string();
         db.save_dag(&dag_id, None).await?;
@@ -123,7 +123,7 @@ mod db_tests {
             eprintln!("SKIP test_task_event_logs — DATABASE_URL not set");
             return Ok(());
         };
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
         let dag_id = format!("test-dag-{}", uuid::Uuid::new_v4());
         let run_id = uuid::Uuid::new_v4().to_string();
         let ti_id  = uuid::Uuid::new_v4().to_string();
@@ -153,7 +153,7 @@ mod db_tests {
             eprintln!("SKIP test_sla_breach — DATABASE_URL not set");
             return Ok(());
         };
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
         let dag_id = format!("sla-dag-{}", uuid::Uuid::new_v4());
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -182,7 +182,7 @@ mod db_tests {
             return Ok(());
         };
 
-        use vortex::db_trait::DatabaseBackend;
+        use ryuo::db_trait::DatabaseBackend;
 
         // Clean slate - ensure lock is released if left over from a panicked test
         let _ = db1.release_leader_lock().await;

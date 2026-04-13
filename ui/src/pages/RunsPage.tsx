@@ -88,7 +88,7 @@ export function RunsPage() {
       </div>
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
         </div>
       ) : (
         <DataTable

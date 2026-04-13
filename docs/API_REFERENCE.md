@@ -1,11 +1,11 @@
-# API Reference — VORTEX REST API
+# API Reference — RYUO REST API
 
 ## Port Reference
 
 | Port | Purpose |
 |------|---------|
-| **3000** | Vortex REST API, web dashboard, and Prometheus `/metrics` endpoint (default; override with `--port`) |
-| **9090** | Prometheus server (scrapes Vortex `/metrics` on port 3000) |
+| **3000** | Ryuo REST API, web dashboard, and Prometheus `/metrics` endpoint (default; override with `--port`) |
+| **9090** | Prometheus server (scrapes Ryuo `/metrics` on port 3000) |
 | **50051** | gRPC swarm endpoint for worker–controller communication (override with `--swarm-port`) |
 
 > The web UI, REST API, and `/metrics` endpoint all share the same HTTP port (default **3000**). There is no separate port 8080 — docs referencing 8080 should be updated to 3000.
@@ -29,7 +29,7 @@ The API key is obtained via the login endpoint.
 ### Global Constraints
 
 - **Payload Size Limits**: All endpoints have a strict `DefaultBodyLimit::max()` enforced at 10 MB. Any request surpassing this size will receive a `413 Payload Too Large` response.
-- **CORS Policies**: Cross-origin requests are naturally supported with wide permissibility, as VORTEX secures endpoints via stateless bearer tokens. Every response securely attaches `Content-Security-Policy`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff` headers.
+- **CORS Policies**: Cross-origin requests are naturally supported with wide permissibility, as RYUO secures endpoints via stateless bearer tokens. Every response securely attaches `Content-Security-Policy`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff` headers.
 
 ### RBAC Roles
 
@@ -65,7 +65,7 @@ The API key is obtained via the login endpoint.
 
 **`GET /health`** — No auth required
 
-Returns the system health along with VORTEX release version and PostgreSQL connectivity status. Used for Kubernetes liveness probes/load-balancer configurations.
+Returns the system health along with RYUO release version and PostgreSQL connectivity status. Used for Kubernetes liveness probes/load-balancer configurations.
 
 ```json
 // Response (200)
@@ -144,7 +144,7 @@ Supports pagination for instances via `?limit=N&offset=N`.
   "dag_id": "parallel_benchmark",
   "dag": { "id": "parallel_benchmark", "created_at": "...", "is_paused": false, ... },
   "tasks": [
-    { "id": "t1", "name": "Warm-up", "command": "echo 'Vortex engine warm-up...'", "task_type": "bash", "config": {}, "max_retries": 0, "retry_delay_secs": 30 }
+    { "id": "t1", "name": "Warm-up", "command": "echo 'Ryuo engine warm-up...'", "task_type": "bash", "config": {}, "max_retries": 0, "retry_delay_secs": 30 }
   ],
   "instances": [
     { "id": "uuid", "task_id": "t1", "state": "Success", "execution_date": "...", "run_id": "uuid", "stdout": "...", "stderr": "", "duration_ms": 42 }
@@ -256,7 +256,7 @@ curl -X POST http://localhost:3000/api/dags/upload \
 
 ```json
 // Response (200)
-{ "dag_id": "example_dag", "source": "from vortex import DAG...", "file_path": "dags/example_dag.py" }
+{ "dag_id": "example_dag", "source": "from ryuo import DAG...", "file_path": "dags/example_dag.py" }
 ```
 
 ### Update DAG Source Code
@@ -267,7 +267,7 @@ Writes updated source to disk, re-parses with PyO3, and updates the in-memory DA
 
 ```json
 // Request
-{ "source": "from vortex import DAG, BashOperator\n..." }
+{ "source": "from ryuo import DAG, BashOperator\n..." }
 
 // Response (200)
 { "message": "Source updated and re-parsed" }
@@ -325,7 +325,7 @@ Returns the source code for a specific DAG version.
 
 ```json
 // Response (200)
-{ "version": 1, "source": "from vortex import DAG..." }
+{ "version": 1, "source": "from ryuo import DAG..." }
 ```
 
 ### Rollback DAG Version
@@ -351,7 +351,7 @@ Checks DB first (stdout/stderr columns), falls back to filesystem logs.
 
 ```json
 // Response (200)
-{ "stdout": "Vortex engine warm-up...\n", "stderr": "" }
+{ "stdout": "Ryuo engine warm-up...\n", "stderr": "" }
 
 // Error (404)
 { "error": "Log not found" }
@@ -807,12 +807,12 @@ Returns `200 OK` when healthy. Returns `503 Service Unavailable` with `"status":
 Exposes internal engine metrics in Prometheus text exposition format.
 
 ```text
-# HELP vortex_dags_total Total number of registered DAGs
-# TYPE vortex_dags_total gauge
-vortex_dags_total 3
-# HELP vortex_scheduler_heartbeat_timestamp Unix epoch (seconds) of the last scheduler tick
-# TYPE vortex_scheduler_heartbeat_timestamp gauge
-vortex_scheduler_heartbeat_timestamp 1709249581
+# HELP ryuo_dags_total Total number of registered DAGs
+# TYPE ryuo_dags_total gauge
+ryuo_dags_total 3
+# HELP ryuo_scheduler_heartbeat_timestamp Unix epoch (seconds) of the last scheduler tick
+# TYPE ryuo_scheduler_heartbeat_timestamp gauge
+ryuo_scheduler_heartbeat_timestamp 1709249581
 ...
 ```
 

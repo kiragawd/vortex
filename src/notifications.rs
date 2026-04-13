@@ -180,7 +180,7 @@ pub async fn send_notification(
         } => {
             // Format a minimal Slack-compatible payload.
             let text = format!(
-                "*[VORTEX]* `{}` — DAG `{}` run `{}` → *{}*\n{}",
+                "*[RYUO]* `{}` — DAG `{}` run `{}` → *{}*\n{}",
                 payload.event_type,
                 payload.dag_id,
                 payload.run_id,
@@ -238,7 +238,7 @@ pub async fn send_notification(
             };
 
             let subject = format!(
-                "VORTEX: {} — DAG {} ({})",
+                "RYUO: {} — DAG {} ({})",
                 payload.event_type, payload.dag_id, payload.state
             );
 

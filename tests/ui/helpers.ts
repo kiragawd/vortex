@@ -1,13 +1,13 @@
 import { Page, expect } from '@playwright/test';
 
 /**
- * VORTEX Test Helpers — React UI
+ * RYUO Test Helpers — React UI
  * Utility functions for the new React/TypeScript/Vite UI at localhost:3000
  */
 
-export class VortexHelpers {
+export class RyuoHelpers {
   private page: Page;
-  private apiKey: string = 'vortex_admin_key';
+  private apiKey: string = 'ryuo_admin_key';
 
   constructor(page: Page) {
     this.page = page;
@@ -45,7 +45,7 @@ export class VortexHelpers {
    * Login as admin user (set auth header)
    */
   async loginAsAdmin(): Promise<void> {
-    this.apiKey = 'vortex_admin_key';
+    this.apiKey = 'ryuo_admin_key';
     const response = await this.page.request.fetch('http://localhost:3000/api/dags', {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
@@ -170,6 +170,6 @@ export class VortexHelpers {
 /**
  * Export helper factory
  */
-export function createHelpers(page: Page): VortexHelpers {
-  return new VortexHelpers(page);
+export function createHelpers(page: Page): RyuoHelpers {
+  return new RyuoHelpers(page);
 }

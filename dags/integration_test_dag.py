@@ -1,5 +1,5 @@
-from vortex import DAG
-from vortex.operators import BashOperator, PythonOperator
+from ryuo import DAG
+from ryuo.operators import BashOperator, PythonOperator
 from datetime import datetime, timedelta
 import os
 

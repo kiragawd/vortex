@@ -239,12 +239,12 @@ impl OtlpExporter {
             "resourceSpans": [{
                 "resource": {
                     "attributes": [
-                        {"key": "service.name", "value": {"stringValue": "vortex"}},
+                        {"key": "service.name", "value": {"stringValue": "ryuo"}},
                         {"key": "service.version", "value": {"stringValue": env!("CARGO_PKG_VERSION")}}
                     ]
                 },
                 "scopeSpans": [{
-                    "scope": {"name": "vortex.telemetry", "version": env!("CARGO_PKG_VERSION")},
+                    "scope": {"name": "ryuo.telemetry", "version": env!("CARGO_PKG_VERSION")},
                     "spans": spans.iter().map(|s| {
                         serde_json::json!({
                             "traceId": s.trace_id,

@@ -224,7 +224,7 @@ impl IncidentProvider for OpsgenieProvider {
             "description": alert.description,
             "priority": priority,
             "source": alert.source,
-            "tags": [&alert.dag_id, "vortex"],
+            "tags": [&alert.dag_id, "ryuo"],
             "details": {
                 "dag_id": alert.dag_id,
                 "task_id": alert.task_id,
@@ -317,13 +317,13 @@ impl IncidentProvider for DatadogProvider {
             "title": alert.title,
             "text": alert.description,
             "alert_type": alert_type,
-            "source_type_name": "vortex",
+            "source_type_name": "ryuo",
             "aggregation_key": alert.dedup_key,
             "tags": [
                 format!("dag_id:{}", alert.dag_id),
                 format!("run_id:{}", alert.run_id),
                 format!("severity:{}", alert.severity),
-                "source:vortex".to_string(),
+                "source:ryuo".to_string(),
             ],
         });
 
@@ -354,11 +354,11 @@ impl IncidentProvider for DatadogProvider {
         let site = self.config.site.as_deref().unwrap_or("datadoghq.com");
         let payload = serde_json::json!({
             "title": format!("Resolved: {}", dedup_key),
-            "text": "Incident resolved automatically by Vortex.",
+            "text": "Incident resolved automatically by Ryuo.",
             "alert_type": "success",
-            "source_type_name": "vortex",
+            "source_type_name": "ryuo",
             "aggregation_key": dedup_key,
-            "tags": ["source:vortex", "resolved:true"],
+            "tags": ["source:ryuo", "resolved:true"],
         });
 
         self.http_client
@@ -421,14 +421,14 @@ impl IncidentManager {
             severity: Severity::Error,
             title: format!("Task failed: {}.{}", dag_id, task_id),
             description: format!("Task '{}' in DAG '{}' (run: {}) failed: {}", task_id, dag_id, run_id, error),
-            source: "vortex-scheduler".to_string(),
+            source: "ryuo-scheduler".to_string(),
             dag_id: dag_id.to_string(),
             task_id: Some(task_id.to_string()),
             run_id: run_id.to_string(),
             team_id: team_id.map(|s| s.to_string()),
             timestamp: chrono::Utc::now(),
             details: serde_json::json!({"error": error}),
-            dedup_key: format!("vortex-{}-{}-{}", dag_id, task_id, run_id),
+            dedup_key: format!("ryuo-{}-{}-{}", dag_id, task_id, run_id),
         }
     }
 
@@ -447,14 +447,14 @@ impl IncidentManager {
                 "DAG '{}' (run: {}) has exceeded its SLA of {}s (elapsed: {}s)",
                 dag_id, run_id, sla_seconds, elapsed_seconds
             ),
-            source: "vortex-scheduler".to_string(),
+            source: "ryuo-scheduler".to_string(),
             dag_id: dag_id.to_string(),
             task_id: None,
             run_id: run_id.to_string(),
             team_id: team_id.map(|s| s.to_string()),
             timestamp: chrono::Utc::now(),
             details: serde_json::json!({"sla_seconds": sla_seconds, "elapsed_seconds": elapsed_seconds}),
-            dedup_key: format!("vortex-sla-{}-{}", dag_id, run_id),
+            dedup_key: format!("ryuo-sla-{}-{}", dag_id, run_id),
         }
     }
 }

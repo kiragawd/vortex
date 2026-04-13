@@ -1,5 +1,5 @@
 -- ============================================================================
--- Vortex Advanced Scheduling & Audit Fixes (Consolidated Migration #3)
+-- Ryuo Advanced Scheduling & Audit Fixes (Consolidated Migration #3)
 -- Covers: Dataset-aware scheduling, cross-DAG deps, dynamic mapping, audit indexes
 -- ============================================================================
 

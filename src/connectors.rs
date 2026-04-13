@@ -510,7 +510,7 @@ impl SnowflakeConnector {
                 // Write key to a temp file for snowsql --private-key-path.
                 // Use tempfile crate for a secure, auto-cleaned temp path.
                 let key_path = std::env::temp_dir().join(format!(
-                    "vortex_sf_key_{}.pem",
+                    "ryuo_sf_key_{}.pem",
                     ctx.request_id
                 ));
                 tokio::fs::write(&key_path, private_key_pem)
@@ -587,7 +587,7 @@ impl SnowflakeConnector {
         // Clean up temp key file if created
         if let SnowflakeAuth::Keypair { .. } = &self.auth_method {
             let key_path = std::env::temp_dir().join(format!(
-                "vortex_sf_key_{}.pem",
+                "ryuo_sf_key_{}.pem",
                 ctx.request_id
             ));
             let _ = tokio::fs::remove_file(&key_path).await;

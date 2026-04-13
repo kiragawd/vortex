@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex provides built-in observability through data lineage tracking, incident management integrations, distributed tracing, and Prometheus metrics.
+Ryuo provides built-in observability through data lineage tracking, incident management integrations, distributed tracing, and Prometheus metrics.
 
 **Modules:** `src/lineage.rs`, `src/incident.rs`, `src/telemetry.rs`, `src/metrics.rs`
 
@@ -47,10 +47,10 @@ Each lineage event includes:
 
 ```bash
 # Query lineage events
-vortex-cli lineage query --dag-id "etl_pipeline" --limit 50
+ryuo-cli lineage query --dag-id "etl_pipeline" --limit 50
 
 # Export lineage data
-vortex-cli lineage export --format json --output lineage_export.json
+ryuo-cli lineage export --format json --output lineage_export.json
 ```
 
 ---
@@ -87,7 +87,7 @@ Configuration types are defined for both platforms. HTTP implementations are pen
 
 ## OpenTelemetry
 
-W3C TraceContext propagation for distributed tracing across Vortex components.
+W3C TraceContext propagation for distributed tracing across Ryuo components.
 
 ### Implemented
 
@@ -119,19 +119,19 @@ Built-in `/metrics` endpoint exposing Prometheus-format metrics.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `vortex_tasks_total` | Counter | Total tasks by state (queued, running, success, failed) |
-| `vortex_task_duration_seconds` | Histogram | Task execution duration |
-| `vortex_workers_active` | Gauge | Number of active workers |
-| `vortex_workers_total` | Gauge | Total registered workers |
-| `vortex_dag_runs_total` | Counter | Total DAG runs by state |
-| `vortex_queue_depth` | Gauge | Number of tasks in queue |
+| `ryuo_tasks_total` | Counter | Total tasks by state (queued, running, success, failed) |
+| `ryuo_task_duration_seconds` | Histogram | Task execution duration |
+| `ryuo_workers_active` | Gauge | Number of active workers |
+| `ryuo_workers_total` | Gauge | Total registered workers |
+| `ryuo_dag_runs_total` | Counter | Total DAG runs by state |
+| `ryuo_queue_depth` | Gauge | Number of tasks in queue |
 
 ### Scrape Configuration
 
 ```yaml
 # prometheus.yml
 scrape_configs:
-  - job_name: "vortex"
+  - job_name: "ryuo"
     static_configs:
       - targets: ["localhost:3000"]
     scrape_interval: 15s
@@ -139,7 +139,7 @@ scrape_configs:
 
 ### Grafana Dashboard
 
-A pre-built Grafana dashboard is available at `docs/grafana/vortex-dashboard.json`. Import it into Grafana and point it at your Prometheus data source.
+A pre-built Grafana dashboard is available at `docs/grafana/ryuo-dashboard.json`. Import it into Grafana and point it at your Prometheus data source.
 
 ---
 

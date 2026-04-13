@@ -1,10 +1,10 @@
-# VORTEX Plugins Guide
+# RYUO Plugins Guide
 
-VORTEX supports extensibility through a dynamic plugin system. You can write custom implementations of the `VortexOperator` trait, compile them as shared libraries (`.so` or `.dylib`), and drop them into the `plugins/` directory.
+RYUO supports extensibility through a dynamic plugin system. You can write custom implementations of the `RyuoOperator` trait, compile them as shared libraries (`.so` or `.dylib`), and drop them into the `plugins/` directory.
 
-## 1. Implement the `VortexOperator` Trait
+## 1. Implement the `RyuoOperator` Trait
 
-A plugin must implement the `VortexOperator` trait, which executes the task logic within a given `TaskContext`.
+A plugin must implement the `RyuoOperator` trait, which executes the task logic within a given `TaskContext`.
 
 ```rust
 use std::sync::Arc;
@@ -16,20 +16,20 @@ pub struct TaskContext {
     pub config: serde_json::Value,
 }
 
-pub trait VortexOperator: Send + Sync {
+pub trait RyuoOperator: Send + Sync {
     fn execute(&self, context: &TaskContext) -> Result<String, String>;
 }
 ```
 
 ## 2. Use the `declare_plugin!` Macro
 
-Once you have your custom struct implementing `VortexOperator`, use the `declare_plugin!` macro to export it using Rust's C-ABI compatibility. This allows VORTEX's `PluginRegistry` to safely load it dynamically at engine boot.
+Once you have your custom struct implementing `RyuoOperator`, use the `declare_plugin!` macro to export it using Rust's C-ABI compatibility. This allows RYUO's `PluginRegistry` to safely load it dynamically at engine boot.
 
 ```rust
 // In your plugin's lib.rs
 pub struct MyCustomOperator;
 
-impl VortexOperator for MyCustomOperator {
+impl RyuoOperator for MyCustomOperator {
     fn execute(&self, context: &TaskContext) -> Result<String, String> {
         println!("Executing MyCustomOperator for task {}", context.task_id);
         Ok("Success!".to_string())
@@ -56,17 +56,17 @@ cargo build --release
 
 ## 4. Install the Plugin
 
-Copy the resulting shared library (e.g., `libmy_custom_plugin.so` or `libmy_custom_plugin.dylib` on macOS) into your VORTEX root's `plugins/` directory:
+Copy the resulting shared library (e.g., `libmy_custom_plugin.so` or `libmy_custom_plugin.dylib` on macOS) into your RYUO root's `plugins/` directory:
 
 ```bash
-cp target/release/libmy_custom_plugin.dylib /path/to/vortex/plugins/
+cp target/release/libmy_custom_plugin.dylib /path/to/ryuo/plugins/
 ```
 
-When you start VORTEX **with the `--allow-unsafe-plugins` flag**, it will automatically scan the `plugins/` directory, load the shared library, and register `my_custom_task` as an official executor. You can now use this task type in your Python DAG definitions.
+When you start RYUO **with the `--allow-unsafe-plugins` flag**, it will automatically scan the `plugins/` directory, load the shared library, and register `my_custom_task` as an official executor. You can now use this task type in your Python DAG definitions.
 
 ```bash
-# Start VORTEX and explicitly opt-in to loading dynamic plugins
-./target/release/vortex server --swarm --database-url "postgres://..." --allow-unsafe-plugins
+# Start RYUO and explicitly opt-in to loading dynamic plugins
+./target/release/ryuo server --swarm --database-url "postgres://..." --allow-unsafe-plugins
 ```
 
 ## ⚠️ Security Warning
@@ -98,16 +98,16 @@ Plugins are useful for custom integrations (database operators, cloud service op
 Generate a new plugin project with the scaffold CLI:
 
 ```bash
-vortex-cli plugin init my_custom_operator
+ryuo-cli plugin init my_custom_operator
 ```
 
 This generates a complete Cargo project structure:
 
 ```
 my_custom_operator/
-├── Cargo.toml          # Pre-configured with cdylib crate-type and vortex dependency
+├── Cargo.toml          # Pre-configured with cdylib crate-type and ryuo dependency
 ├── src/
-│   └── lib.rs          # VortexOperator trait implementation template
+│   └── lib.rs          # RyuoOperator trait implementation template
 ├── tests/
 │   └── integration.rs  # Test scaffold
 └── plugin.toml         # Plugin manifest (name, version, author, capabilities)
@@ -123,7 +123,7 @@ name = "my_custom_operator"
 version = "0.1.0"
 author = "Your Name"
 description = "Custom operator for XYZ"
-vortex_version = ">=0.6.0"
+ryuo_version = ">=0.6.0"
 
 [capabilities]
 task_types = ["my_custom_task"]
@@ -131,9 +131,9 @@ task_types = ["my_custom_task"]
 
 ### Manifest Validation
 
-On plugin load, Vortex validates:
+On plugin load, Ryuo validates:
 - Plugin name uniqueness in the registry
-- Version compatibility with the running Vortex version
+- Version compatibility with the running Ryuo version
 - Required fields are present and well-formed
 
 ---

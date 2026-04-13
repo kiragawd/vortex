@@ -2,9 +2,9 @@
 
 ## Overview
 
-VORTEX is built for reliability in distributed systems. Worker failures (crashes, network partitions, timeouts) are inevitable—the system must recover automatically without losing tasks or compromising data. The resilience layer implements a distributed health monitoring and task recovery mechanism that ensures zero task loss and automatic failover.
+RYUO is built for reliability in distributed systems. Worker failures (crashes, network partitions, timeouts) are inevitable—the system must recover automatically without losing tasks or compromising data. The resilience layer implements a distributed health monitoring and task recovery mechanism that ensures zero task loss and automatic failover.
 
-### VORTEX's Auto-Recovery Approach
+### RYUO's Auto-Recovery Approach
 
 1. **Continuous Health Monitoring**: Controller runs a health check loop every 15 seconds
 2. **Heartbeat Detection**: Workers send heartbeats every 15 seconds; missed heartbeats trigger recovery
@@ -217,7 +217,7 @@ CREATE INDEX idx_task_instances_state ON task_instances(state);
 
 ### 1. Use Process Supervision
 
-Run VORTEX behind a supervisor for automatic restart on failure:
+Run RYUO behind a supervisor for automatic restart on failure:
 
 - **Kubernetes:** `Deployment` with `replicas: 1` and liveness probe
 - **systemd:** `Restart=always` with `RestartSec=1`

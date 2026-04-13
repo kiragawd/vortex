@@ -7,7 +7,7 @@ use crate::db_trait::DatabaseBackend;
 /// Maximum allowed size for an XCom value (64KB).
 pub const XCOM_MAX_VALUE_BYTES: usize = 65536;
 
-/// XComStore provides inter-task data passing backed by the VORTEX database.
+/// XComStore provides inter-task data passing backed by the RYUO database.
 pub struct XComStore {
     db: Arc<dyn DatabaseBackend>,
 }

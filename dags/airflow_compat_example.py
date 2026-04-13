@@ -1,7 +1,7 @@
 """
-Airflow-compatible example DAG for VORTEX.
+Airflow-compatible example DAG for RYUO.
 
-This file demonstrates how to migrate an existing Airflow DAG to VORTEX with
+This file demonstrates how to migrate an existing Airflow DAG to RYUO with
 zero code changes — just swap the import line.
 
   Airflow:  from airflow import DAG
@@ -9,10 +9,10 @@ zero code changes — just swap the import line.
             from airflow.operators.python import PythonOperator
             from airflow.operators.dummy import DummyOperator
 
-  VORTEX:   from vortex import DAG, BashOperator, PythonOperator, DummyOperator
+  RYUO:   from ryuo import DAG, BashOperator, PythonOperator, DummyOperator
 """
 
-from vortex import DAG, BashOperator, PythonOperator, DummyOperator
+from ryuo import DAG, BashOperator, PythonOperator, DummyOperator
 from datetime import datetime
 
 

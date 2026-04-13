@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * VORTEX Dashboard Playwright Configuration
+ * RYUO Dashboard Playwright Configuration
  * 
  * Base URL: http://localhost:3000
  * Browsers: Chromium (headless)
@@ -55,7 +55,7 @@ export default defineConfig({
 
   /* Run your local dev server before starting the tests */
   webServer: {
-    command: 'echo "NOTE: Server must be running manually. Start: cargo run --release --bin vortex"',
+    command: 'echo "NOTE: Server must be running manually. Start: cargo run --release --bin ryuo"',
     port: 3000,
     reuseExistingServer: true,
   },

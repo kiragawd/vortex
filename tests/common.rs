@@ -1,4 +1,4 @@
-/// Common test utilities for VORTEX tests
+/// Common test utilities for RYUO tests
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
@@ -13,7 +13,7 @@ pub fn create_test_db() -> (PathBuf, NamedTempFile) {
 /// Test database path for isolated tests
 pub fn get_test_db_path(test_name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!("vortex_test_{}.db", test_name));
+    path.push(format!("ryuo_test_{}.db", test_name));
     path
 }
 

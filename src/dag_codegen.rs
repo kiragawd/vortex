@@ -27,7 +27,7 @@ pub fn generate_rust_dag_source_with_overrides(
     python_overrides: &HashMap<String, String>,
 ) -> (String, GenerationSummary) {
     let mut source = String::new();
-    source.push_str("use vortex::scheduler::Dag;\n\n");
+    source.push_str("use ryuo::scheduler::Dag;\n\n");
     source.push_str("pub fn build_dag() -> Dag {\n");
     source.push_str(&format!("    let mut dag = Dag::new(\"{}\");\n", dag.dag_id));
     if let Some(schedule) = &dag.schedule_interval {

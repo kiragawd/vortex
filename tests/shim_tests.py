@@ -1,5 +1,5 @@
 import unittest
-from vortex import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
+from ryuo import DAG, BashOperator, PythonOperator, DummyOperator, EmptyOperator
 
 class TestAirflowShim(unittest.TestCase):
 

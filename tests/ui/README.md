@@ -1,6 +1,6 @@
-# VORTEX Dashboard - Playwright UI Tests
+# RYUO Dashboard - Playwright UI Tests
 
-Comprehensive end-to-end UI tests for the VORTEX distributed DAG orchestration platform.
+Comprehensive end-to-end UI tests for the RYUO distributed DAG orchestration platform.
 
 ## Overview
 
@@ -21,8 +21,8 @@ This test suite covers **10 test modules with 100+ test cases**, testing:
 ### Prerequisites
 
 - Node.js 16+ and npm
-- VORTEX server running on `http://localhost:8080`
-- Valid API key: `vortex_admin_key`
+- RYUO server running on `http://localhost:8080`
+- Valid API key: `ryuo_admin_key`
 
 ### Setup
 
@@ -50,7 +50,7 @@ npx playwright show-report
 #### 1. **01-dashboard.spec.ts** — Dashboard Rendering (9 tests)
 Tests the main dashboard page load and UI elements:
 - Page loads without console errors
-- Navigation bar displays VORTEX logo, Status, Admin button
+- Navigation bar displays RYUO logo, Status, Admin button
 - Stats cards render with correct labels (Total, Active, Paused, Success, Failures)
 - Refresh button is clickable
 - DAG list is populated (or empty state shown)
@@ -114,7 +114,7 @@ Tests user and role-based access control:
 ---
 
 #### 5. **05-swarm-panel.spec.ts** — Swarm Monitoring (12 tests)
-Tests the 🐝 VORTEX Swarm panel:
+Tests the 🐝 RYUO Swarm panel:
 - Panel displays title and bee emoji
 - Status badge shows (LOADING, ACTIVE, OFFLINE, etc.)
 - Worker count displays
@@ -124,7 +124,7 @@ Tests the 🐝 VORTEX Swarm panel:
 - Chevron icon rotates on expand
 - All header info visible (title, status, workers, queue)
 - Worker list accessible when expanded
-- Styling applied (glass, vortex-border)
+- Styling applied (glass, ryuo-border)
 - Status badge properly styled
 - Responsive layout maintained
 
@@ -159,7 +159,7 @@ Tests modals and form interactions:
 - Empty forms have validation (required fields)
 - Fields clear after successful submit
 - Modal backdrops properly styled
-- Form buttons styled with vortex-gradient
+- Form buttons styled with ryuo-gradient
 - Input fields have proper styling
 - Role dropdown shows all options with labels
 - Modal has proper z-index
@@ -244,7 +244,7 @@ Tests authentication and role-based access:
 Helper class with utility methods:
 
 ```typescript
-class VortexHelpers {
+class RyuoHelpers {
   // API
   async api(path, method, body?)
   async loginAsAdmin()
@@ -361,12 +361,12 @@ npx playwright test --ui
 
 ## Prerequisites & Server
 
-Before running tests, start the VORTEX server:
+Before running tests, start the RYUO server:
 
 ```bash
-# Terminal 1: Start VORTEX server
-cd /Users/ashwin/vortex
-cargo run --release --bin vortex
+# Terminal 1: Start RYUO server
+cd /Users/ashwin/ryuo
+cargo run --release --bin ryuo
 # Server listens on http://localhost:8080
 
 # Terminal 2: Run tests
@@ -413,7 +413,7 @@ npm test
 
 ### Tests hang waiting for `/api/dags`
 - Check server is running on `http://localhost:8080`
-- Verify API key in code: `vortex_admin_key`
+- Verify API key in code: `ryuo_admin_key`
 
 ### Modal tests fail
 - Check modal element IDs match HTML
@@ -483,7 +483,7 @@ For issues or questions about tests:
 1. Check existing test examples
 2. Review helpers.ts for available methods
 3. Check Playwright docs: https://playwright.dev
-4. Review VORTEX API documentation
+4. Review RYUO API documentation
 
 ---
 

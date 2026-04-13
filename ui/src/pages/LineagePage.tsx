@@ -40,7 +40,7 @@ export function LineagePage() {
         </h2>
         {datasetsLoading ? (
           <div className="flex items-center justify-center py-12">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : datasets.length === 0 ? (
           <div className="rounded-xl border border-dashed border-gray-300 p-12 text-center dark:border-gray-700">
@@ -103,7 +103,7 @@ export function LineagePage() {
           </div>
         ) : eventsLoading ? (
           <div className="flex items-center justify-center py-12">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : events.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-400">

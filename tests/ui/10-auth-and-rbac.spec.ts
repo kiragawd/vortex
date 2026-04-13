@@ -12,9 +12,9 @@ test.describe('10 - Auth & Login', () => {
     await expect(page.locator('button:has-text("Sign in")')).toBeVisible();
   });
 
-  test('Login page shows Vortex branding', async ({ page }) => {
+  test('Login page shows Ryuo branding', async ({ page }) => {
     await page.goto('/login');
-    await expect(page.locator('text=Vortex')).toBeVisible();
+    await expect(page.locator('text=Ryuo')).toBeVisible();
   });
 
   test('Login page shows default credentials hint', async ({ page }) => {

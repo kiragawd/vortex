@@ -287,7 +287,7 @@ pub async fn check_sql_sensor(connection_string: &str, query: &str) -> bool {
     }
 
     let trimmed = query.trim().trim_end_matches(';');
-    let count_query = format!("SELECT COUNT(*) FROM ({}) AS _vortex_sensor_q", trimmed);
+    let count_query = format!("SELECT COUNT(*) FROM ({}) AS _ryuo_sensor_q", trimmed);
     match sqlx::query_scalar::<_, i64>(&count_query)
         .fetch_one(&pool)
         .await
@@ -489,14 +489,14 @@ mod tests {
 
     #[tokio::test]
     async fn file_sensor_missing() {
-        let exists = check_file_sensor("/tmp/vortex_sensor_test_nonexistent_xyz123").await;
+        let exists = check_file_sensor("/tmp/ryuo_sensor_test_nonexistent_xyz123").await;
         assert!(!exists);
     }
 
     #[tokio::test]
     async fn file_sensor_present() {
         // Create a temp file, then verify the sensor sees it.
-        let path = "/tmp/vortex_sensor_test_file_check";
+        let path = "/tmp/ryuo_sensor_test_file_check";
         tokio::fs::write(path, b"ok").await.unwrap();
         let exists = check_file_sensor(path).await;
         tokio::fs::remove_file(path).await.ok();
@@ -523,7 +523,7 @@ mod tests {
             poke_interval_secs: 1,
             timeout_secs: 2,
             mode: "poke".into(),
-            config: serde_json::json!({ "filepath": "/tmp/vortex_no_such_file_xyz9999" }),
+            config: serde_json::json!({ "filepath": "/tmp/ryuo_no_such_file_xyz9999" }),
         };
         let result = evaluate_sensor(&cfg).await;
         assert_eq!(result, SensorResult::Waiting);

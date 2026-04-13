@@ -1,5 +1,5 @@
-use vortex::airflow_ast_parser::parse_airflow_source;
-use vortex::dag_codegen::{
+use ryuo::airflow_ast_parser::parse_airflow_source;
+use ryuo::dag_codegen::{
     assert_graph_equivalence, generate_rust_dag_source, validate_generated_rust_source,
 };
 

@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod config_ops_tests {
-    use vortex::config_ops::*;
+    use ryuo::config_ops::*;
     use std::collections::HashMap;
 
     #[tokio::test]

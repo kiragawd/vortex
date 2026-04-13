@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex provides environment-scoped configuration management, feature flags, health checks, and Git-Sync for DAG repository synchronization.
+Ryuo provides environment-scoped configuration management, feature flags, health checks, and Git-Sync for DAG repository synchronization.
 
 **Modules:** `src/config_ops.rs`, `src/devops.rs`
 
@@ -28,13 +28,13 @@ Configuration values cascade from less specific to more specific environments. A
 
 ```bash
 # List configuration values
-vortex-cli config list --environment prod
+ryuo-cli config list --environment prod
 
 # Get a specific config value
-vortex-cli config get --key "scheduler.max_parallel_tasks" --environment prod
+ryuo-cli config get --key "scheduler.max_parallel_tasks" --environment prod
 
 # Set a config value
-vortex-cli config set --key "scheduler.max_parallel_tasks" --value "32" --environment prod
+ryuo-cli config set --key "scheduler.max_parallel_tasks" --value "32" --environment prod
 ```
 
 ---
@@ -88,7 +88,7 @@ DAG repository synchronization for team-based DAG management.
 ### How It Works
 
 1. Configure a Git repository URL and branch
-2. Vortex periodically pulls the repository to the `dags/` directory
+2. Ryuo periodically pulls the repository to the `dags/` directory
 3. New or updated DAG files are automatically loaded by the scheduler
 
 ### Authentication
@@ -139,38 +139,38 @@ Complete reference for all supported environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VORTEX_SECRET_KEY` | none (vault disabled) | AES-256-GCM vault master key — must be exactly 32 bytes. Without it, secret storage is disabled. |
+| `RYUO_SECRET_KEY` | none (vault disabled) | AES-256-GCM vault master key — must be exactly 32 bytes. Without it, secret storage is disabled. |
 
 ### Server & API
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VORTEX_BASE_URL` | `http://localhost:3000` | Base URL injected into task processes as `VORTEX_BASE_URL` for API callbacks |
-| `VORTEX_TASK_API_KEY` | none | Scoped API key injected into task processes for task-to-server API access |
-| `VORTEX_NODE_ID` | auto-generated UUID | Unique identifier for this controller node (used in HA mode) |
+| `RYUO_BASE_URL` | `http://localhost:3000` | Base URL injected into task processes as `RYUO_BASE_URL` for API callbacks |
+| `RYUO_TASK_API_KEY` | none | Scoped API key injected into task processes for task-to-server API access |
+| `RYUO_NODE_ID` | auto-generated UUID | Unique identifier for this controller node (used in HA mode) |
 
 ### gRPC / Swarm
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VORTEX_GRPC_AUTH_TOKEN` | none | Bearer token workers must supply when connecting to the controller gRPC endpoint |
-| `VORTEX_GRPC_TLS_CERT` | none | Path to PEM TLS certificate for gRPC mTLS |
-| `VORTEX_GRPC_TLS_KEY` | none | Path to PEM TLS private key for gRPC mTLS |
-| `VORTEX_GRPC_TLS_CA` | none | Path to PEM CA certificate — when set, workers enable mTLS validation against this CA |
+| `RYUO_GRPC_AUTH_TOKEN` | none | Bearer token workers must supply when connecting to the controller gRPC endpoint |
+| `RYUO_GRPC_TLS_CERT` | none | Path to PEM TLS certificate for gRPC mTLS |
+| `RYUO_GRPC_TLS_KEY` | none | Path to PEM TLS private key for gRPC mTLS |
+| `RYUO_GRPC_TLS_CA` | none | Path to PEM CA certificate — when set, workers enable mTLS validation against this CA |
 
 ### CORS & Rate Limiting
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VORTEX_CORS_ORIGINS` | none (same-origin only) | Comma-separated list of allowed CORS origins. Set to `*` for open access (dev only — logs a warning). |
-| `VORTEX_RATE_LIMIT_MAX` | `100` | Maximum requests per rate-limit window per `(IP, username)` key |
-| `VORTEX_RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |
+| `RYUO_CORS_ORIGINS` | none (same-origin only) | Comma-separated list of allowed CORS origins. Set to `*` for open access (dev only — logs a warning). |
+| `RYUO_RATE_LIMIT_MAX` | `100` | Maximum requests per rate-limit window per `(IP, username)` key |
+| `RYUO_RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |
 
 ### Python Execution
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VORTEX_PYTHON_TIMEOUT` | `30` | Python task execution timeout in seconds |
+| `RYUO_PYTHON_TIMEOUT` | `30` | Python task execution timeout in seconds |
 | `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | none | Set to `1` when using Python 3.14+ for PyO3 ABI compatibility |
 
 ### Observability
@@ -183,7 +183,7 @@ Complete reference for all supported environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | none | API key for OpenAI LLM provider (used by `vortex-cli migrate --agentic --llm-provider openai`) |
+| `OPENAI_API_KEY` | none | API key for OpenAI LLM provider (used by `ryuo-cli migrate --agentic --llm-provider openai`) |
 | `OPENAI_ENDPOINT` | OpenAI default | Custom OpenAI-compatible API base URL |
 | `ANTHROPIC_API_KEY` | none | API key for Anthropic LLM provider |
 | `ANTHROPIC_ENDPOINT` | Anthropic default | Custom Anthropic-compatible API base URL |

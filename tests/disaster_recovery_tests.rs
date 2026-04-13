@@ -3,13 +3,13 @@
 
 #[cfg(test)]
 mod disaster_recovery_tests {
-    use vortex::disaster_recovery::*;
+    use ryuo::disaster_recovery::*;
     use std::collections::HashMap;
 
     #[tokio::test]
     async fn test_backup_create_and_list() {
         let config = BackupConfig {
-            storage_path: "/tmp/vortex_test_backups".to_string(),
+            storage_path: "/tmp/ryuo_test_backups".to_string(),
             max_backups: 10,
             ..BackupConfig::default()
         };
@@ -27,7 +27,7 @@ mod disaster_recovery_tests {
     #[tokio::test]
     async fn test_backup_max_limit_enforcement() {
         let config = BackupConfig {
-            storage_path: "/tmp/vortex_test_backups_limit".to_string(),
+            storage_path: "/tmp/ryuo_test_backups_limit".to_string(),
             max_backups: 3,
             ..BackupConfig::default()
         };
@@ -46,7 +46,7 @@ mod disaster_recovery_tests {
     #[tokio::test]
     async fn test_backup_filter_by_target() {
         let config = BackupConfig {
-            storage_path: "/tmp/vortex_test_filter".to_string(),
+            storage_path: "/tmp/ryuo_test_filter".to_string(),
             max_backups: 10,
             ..BackupConfig::default()
         };

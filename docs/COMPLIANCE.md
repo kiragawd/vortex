@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex provides enterprise compliance features including audit logging, approval workflows, data retention policies, and regulatory control mapping.
+Ryuo provides enterprise compliance features including audit logging, approval workflows, data retention policies, and regulatory control mapping.
 
 **Module:** `src/compliance.rs`
 
@@ -42,10 +42,10 @@ Each `AuditEntry` records:
 
 ```bash
 # Query audit logs
-vortex-cli audit query --action "dag.trigger" --limit 100
+ryuo-cli audit query --action "dag.trigger" --limit 100
 
 # Export audit data
-vortex-cli audit export --format json --output audit_export.json
+ryuo-cli audit export --format json --output audit_export.json
 ```
 
 ---
@@ -121,9 +121,9 @@ Regulatory control mapping and assessment for enterprise compliance requirements
 
 ### Control Mapping
 
-Each compliance control maps to specific Vortex capabilities:
+Each compliance control maps to specific Ryuo capabilities:
 
-| Control Area | Vortex Feature |
+| Control Area | Ryuo Feature |
 |-------------|----------------|
 | Access control | RBAC, team isolation, API token scoping |
 | Audit trails | Audit logging with immutable event records |
@@ -142,16 +142,16 @@ Each compliance control maps to specific Vortex capabilities:
 
 ```bash
 # List compliance controls
-vortex-cli compliance list
+ryuo-cli compliance list
 
 # Create a new control
-vortex-cli compliance create --framework "SOC2" --control "CC6.1" --description "Logical access controls"
+ryuo-cli compliance create --framework "SOC2" --control "CC6.1" --description "Logical access controls"
 
 # Update control status
-vortex-cli compliance update --id <control_id> --status "implemented"
+ryuo-cli compliance update --id <control_id> --status "implemented"
 
 # Run compliance check
-vortex-cli compliance check --framework "SOC2"
+ryuo-cli compliance check --framework "SOC2"
 ```
 
 ---

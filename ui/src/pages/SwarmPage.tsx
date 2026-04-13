@@ -27,8 +27,8 @@ export function SwarmPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-vortex-50 dark:bg-vortex-950/30">
-              <Server className="h-5 w-5 text-vortex-600 dark:text-vortex-400" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-ryuo-50 dark:bg-ryuo-950/30">
+              <Server className="h-5 w-5 text-ryuo-600 dark:text-ryuo-400" />
             </div>
             <div>
               <p className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Swarm Mode</p>
@@ -75,13 +75,13 @@ export function SwarmPage() {
         </div>
         {workersLoading ? (
           <div className="flex items-center justify-center py-12">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : workers.length === 0 ? (
           <div className="p-12 text-center">
             <WifiOff className="mx-auto h-10 w-10 text-gray-300 dark:text-gray-700" />
             <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
-              No workers registered. Start workers with <code className="rounded bg-gray-100 px-1.5 font-mono text-xs dark:bg-gray-800">vortex worker</code>.
+              No workers registered. Start workers with <code className="rounded bg-gray-100 px-1.5 font-mono text-xs dark:bg-gray-800">ryuo worker</code>.
             </p>
           </div>
         ) : (

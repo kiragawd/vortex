@@ -3,7 +3,7 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 (async () => {
-  const outDir = '/Users/Ashwin/Desktop/vortex_screenshots';
+  const outDir = '/Users/Ashwin/Desktop/ryuo_screenshots';
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
   const browser = await chromium.launch({ headless: true });

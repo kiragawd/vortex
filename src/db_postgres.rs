@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-// db_postgres.rs — PostgreSQL backend for VORTEX
+// db_postgres.rs — PostgreSQL backend for RYUO
 //
 // Implements `DatabaseBackend` using `sqlx` with an async `PgPool`.
 // Schema is created/migrated lazily in `PostgresDb::new()`.
@@ -87,7 +87,7 @@ impl PostgresDb {
             .await
             .context("Failed to connect to PostgreSQL")?;
 
-        let node_id = std::env::var("VORTEX_NODE_ID")
+        let node_id = std::env::var("RYUO_NODE_ID")
             .unwrap_or_else(|_| format!("node-{}", &uuid::Uuid::new_v4().to_string()[..8]));
 
         let db = Self { pool, node_id };
@@ -99,7 +99,7 @@ impl PostgresDb {
     async fn init(&self) -> Result<()> {
         // Allow Docker / production deployments to skip automatic migrations
         // when a dedicated `migrate` init-container has already applied them.
-        let skip_migrate = std::env::var("VORTEX_SKIP_AUTO_MIGRATE")
+        let skip_migrate = std::env::var("RYUO_SKIP_AUTO_MIGRATE")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
 
@@ -158,7 +158,7 @@ impl PostgresDb {
             let hashed = hash("admin", DEFAULT_COST).context("bcrypt hash failed")?;
             sqlx::query(
                 "INSERT INTO users (username, password_hash, role, api_key, password_change_required)
-                 VALUES ('admin', $1, 'Admin', 'vortex_admin_key', TRUE)
+                 VALUES ('admin', $1, 'Admin', 'ryuo_admin_key', TRUE)
                  ON CONFLICT (username) DO NOTHING",
             )
             .bind(&hashed)
@@ -2199,7 +2199,7 @@ impl DatabaseBackend for PostgresDb {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO lineage_events (id, event_type, event_time, run_id, dag_id, task_id, job_namespace, job_name, producer, inputs, outputs, facets)
-             VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, 'vortex', $8::jsonb, $9::jsonb, $10::jsonb)"
+             VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, 'ryuo', $8::jsonb, $9::jsonb, $10::jsonb)"
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(event_type)

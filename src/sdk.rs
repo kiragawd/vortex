@@ -16,7 +16,7 @@ use tracing::info;
 
 // ─── Plugin Manifest ──────────────────────────────────────────
 
-/// Plugin manifest (vortex-plugin.toml) — describes a plugin package.
+/// Plugin manifest (ryuo-plugin.toml) — describes a plugin package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub name: String,
@@ -24,7 +24,7 @@ pub struct PluginManifest {
     pub description: String,
     pub authors: Vec<String>,
     pub license: String,
-    pub vortex_version: String,
+    pub ryuo_version: String,
     pub plugin_type: PluginType,
     pub entry_point: String,
     pub capabilities: Vec<String>,
@@ -91,9 +91,9 @@ impl PluginScaffold {
         tokio::fs::write(&cargo_path, cargo_toml).await?;
         created.push(cargo_path);
 
-        // vortex-plugin.toml
+        // ryuo-plugin.toml
         let manifest = Self::generate_manifest(name, &plugin_type);
-        let manifest_path = project_dir.join("vortex-plugin.toml");
+        let manifest_path = project_dir.join("ryuo-plugin.toml");
         tokio::fs::write(&manifest_path, manifest).await?;
         created.push(manifest_path);
 
@@ -111,7 +111,7 @@ impl PluginScaffold {
 
         // README.md
         let readme = format!(
-            "# {}\n\nA Vortex {:?} plugin.\n\n## Build\n\n```bash\ncargo build --release\n```\n\n## Test\n\n```bash\ncargo test\n```\n",
+            "# {}\n\nA Ryuo {:?} plugin.\n\n## Build\n\n```bash\ncargo build --release\n```\n\n## Test\n\n```bash\ncargo test\n```\n",
             name, plugin_type
         );
         let readme_path = project_dir.join("README.md");
@@ -132,7 +132,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-vortex = {{ path = "../.." }}
+ryuo = {{ path = "../.." }}
 anyhow = "1.0"
 async-trait = "0.1"
 serde = {{ version = "1.0", features = ["derive"] }}
@@ -152,12 +152,12 @@ tracing = "0.1"
         };
         format!(r#"name = "{name}"
 version = "0.1.0"
-description = "A Vortex {type_str} plugin"
+description = "A Ryuo {type_str} plugin"
 authors = []
 license = "Apache-2.0"
-vortex_version = ">=0.6.0"
+ryuo_version = ">=0.6.0"
 plugin_type = "{type_str}"
-entry_point = "_vortex_plugin_create"
+entry_point = "_ryuo_plugin_create"
 capabilities = []
 "#)
     }
@@ -172,14 +172,14 @@ capabilities = []
         }).collect::<String>();
 
         match plugin_type {
-            PluginType::Operator => format!(r#"use vortex::executor::{{VortexOperator, TaskContext, ExecutionResult}};
-use vortex::declare_plugin;
+            PluginType::Operator => format!(r#"use ryuo::executor::{{RyuoOperator, TaskContext, ExecutionResult}};
+use ryuo::declare_plugin;
 use anyhow::Result;
 
 pub struct {struct_name};
 
 #[async_trait::async_trait]
-impl VortexOperator for {struct_name} {{
+impl RyuoOperator for {struct_name} {{
     async fn execute(&self, ctx: &TaskContext) -> Result<ExecutionResult> {{
         // TEMPLATE: Implement your operator logic here
         Ok(ExecutionResult {{
@@ -219,7 +219,7 @@ pub struct {struct_name};
 
         match plugin_type {
             PluginType::Operator => format!(r#"use {crate_name}::{struct_name};
-use vortex::executor::{{VortexOperator, TaskContext}};
+use ryuo::executor::{{RyuoOperator, TaskContext}};
 
 #[tokio::test]
 async fn test_{name}_executes_successfully() {{
@@ -677,9 +677,9 @@ mod tests {
             description: "Test plugin".to_string(),
             authors: vec!["Test Author".to_string()],
             license: "Apache-2.0".to_string(),
-            vortex_version: ">=0.6.0".to_string(),
+            ryuo_version: ">=0.6.0".to_string(),
             plugin_type: PluginType::Operator,
-            entry_point: "_vortex_plugin_create".to_string(),
+            entry_point: "_ryuo_plugin_create".to_string(),
             capabilities: vec![],
             dependencies: HashMap::new(),
             config_schema: None,
@@ -696,7 +696,7 @@ mod tests {
             description: "".to_string(),
             authors: vec![],
             license: "".to_string(),
-            vortex_version: "".to_string(),
+            ryuo_version: "".to_string(),
             plugin_type: PluginType::Operator,
             entry_point: "entry".to_string(),
             capabilities: vec![],
@@ -770,11 +770,11 @@ mod tests {
             name: "bigquery-loader".to_string(),
             version: "1.0.0".to_string(),
             description: "Load data into BigQuery".to_string(),
-            authors: vec!["Vortex Team".to_string()],
+            authors: vec!["Ryuo Team".to_string()],
             license: "Apache-2.0".to_string(),
-            vortex_version: ">=0.6.0".to_string(),
+            ryuo_version: ">=0.6.0".to_string(),
             plugin_type: PluginType::Operator,
-            entry_point: "_vortex_plugin_create".to_string(),
+            entry_point: "_ryuo_plugin_create".to_string(),
             capabilities: vec!["write".to_string()],
             dependencies: HashMap::new(),
             config_schema: None,
@@ -799,7 +799,7 @@ mod tests {
                 description: "Test".to_string(),
                 authors: vec![],
                 license: "MIT".to_string(),
-                vortex_version: ">=0.6.0".to_string(),
+                ryuo_version: ">=0.6.0".to_string(),
                 plugin_type: PluginType::Operator,
                 entry_point: "entry".to_string(),
                 capabilities: vec![],
@@ -847,7 +847,7 @@ normal_var = "hello"
 
     #[tokio::test]
     async fn test_scaffold_generates_files() {
-        let dir = std::env::temp_dir().join("vortex_scaffold_test");
+        let dir = std::env::temp_dir().join("ryuo_scaffold_test");
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
@@ -856,7 +856,7 @@ normal_var = "hello"
         assert!(dir.join("test-operator/Cargo.toml").exists());
         assert!(dir.join("test-operator/src/lib.rs").exists());
         assert!(dir.join("test-operator/tests/integration.rs").exists());
-        assert!(dir.join("test-operator/vortex-plugin.toml").exists());
+        assert!(dir.join("test-operator/ryuo-plugin.toml").exists());
 
         // Cleanup
         let _ = tokio::fs::remove_dir_all(&dir).await;

@@ -97,13 +97,13 @@ impl RunEvent {
                 facets: serde_json::json!({}),
             },
             job: JobFacet {
-                namespace: "vortex".to_string(),
+                namespace: "ryuo".to_string(),
                 name: job_name,
                 facets: serde_json::json!({}),
             },
             inputs,
             outputs,
-            producer: "https://github.com/vortex-engine/vortex".to_string(),
+            producer: "https://github.com/ryuo-engine/ryuo".to_string(),
             schema_url: "https://openlineage.io/spec/2-0-2/OpenLineage.json#/definitions/RunEvent".to_string(),
         }
     }

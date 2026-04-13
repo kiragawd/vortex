@@ -11,10 +11,10 @@ use std::env;
 ///
 /// # Security
 /// A fixed salt is acceptable here because the input key material
-/// (VORTEX_SECRET_KEY) is already high-entropy. The KDF serves to
+/// (RYUO_SECRET_KEY) is already high-entropy. The KDF serves to
 /// harden the key against brute-force rather than defend against
 /// rainbow tables on low-entropy passwords.
-const VAULT_KDF_SALT: &[u8; 16] = b"vortex-vault-kdf";
+const VAULT_KDF_SALT: &[u8; 16] = b"ryuo-vault-kdf--";
 
 pub struct Vault {
     cipher: Aes256Gcm,
@@ -24,13 +24,13 @@ impl Vault {
     /// Create a new Vault instance.
     ///
     /// # Security
-    /// The raw `VORTEX_SECRET_KEY` is stretched through Argon2id key
+    /// The raw `RYUO_SECRET_KEY` is stretched through Argon2id key
     /// derivation before being used as the AES-256-GCM key. This
     /// prevents direct use of raw string bytes as cryptographic keys
     /// (SEC-1).
     pub fn new() -> Result<Self> {
-        let key_str = env::var("VORTEX_SECRET_KEY")
-            .map_err(|_| anyhow!("VORTEX_SECRET_KEY environment variable not set. A 32-byte key is required."))?;
+        let key_str = env::var("RYUO_SECRET_KEY")
+            .map_err(|_| anyhow!("RYUO_SECRET_KEY environment variable not set. A 32-byte key is required."))?;
         
         // BUG-14 FIX: Auto-detect key format to allow higher-entropy keys.
         // Supports: hex (64 hex chars → 32 bytes), base64 (44 chars → 32 bytes),
@@ -40,13 +40,13 @@ impl Vault {
             (0..64).step_by(2)
                 .map(|i| u8::from_str_radix(&key_str[i..i+2], 16))
                 .collect::<Result<Vec<u8>, _>>()
-                .map_err(|e| anyhow!("VORTEX_SECRET_KEY hex decode failed: {}", e))?
+                .map_err(|e| anyhow!("RYUO_SECRET_KEY hex decode failed: {}", e))?
         } else if key_str.len() == 44 && key_str.ends_with('=') {
             // Base64-encoded 32-byte key
             let decoded = general_purpose::STANDARD.decode(&key_str)
-                .map_err(|e| anyhow!("VORTEX_SECRET_KEY base64 decode failed: {}", e))?;
+                .map_err(|e| anyhow!("RYUO_SECRET_KEY base64 decode failed: {}", e))?;
             if decoded.len() != 32 {
-                return Err(anyhow!("VORTEX_SECRET_KEY base64 decoded to {} bytes, expected 32", decoded.len()));
+                return Err(anyhow!("RYUO_SECRET_KEY base64 decoded to {} bytes, expected 32", decoded.len()));
             }
             decoded
         } else if key_str.as_bytes().len() == 32 {
@@ -54,7 +54,7 @@ impl Vault {
             key_str.as_bytes().to_vec()
         } else {
             return Err(anyhow!(
-                "VORTEX_SECRET_KEY must be one of: 32 raw ASCII bytes, 64 hex chars, or 44-char base64 string. Got {} chars.",
+                "RYUO_SECRET_KEY must be one of: 32 raw ASCII bytes, 64 hex chars, or 44-char base64 string. Got {} chars.",
                 key_str.len()
             ));
         };

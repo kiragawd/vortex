@@ -66,7 +66,7 @@ export function MonitoringPage() {
             </div>
             <div>
               <dt className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Active Workers</dt>
-              <dd className="mt-1 text-2xl font-bold text-vortex-600 dark:text-vortex-400">
+              <dd className="mt-1 text-2xl font-bold text-ryuo-600 dark:text-ryuo-400">
                 {swarmStatus.isLoading ? '…' : (swarmStatus.data?.active_workers ?? 0)}
               </dd>
             </div>
@@ -116,7 +116,7 @@ export function MonitoringPage() {
           href="/api/openapi.json"
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-vortex-700"
+          className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-ryuo-700"
         >
           View OpenAPI Spec →
         </a>

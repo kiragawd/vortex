@@ -45,7 +45,7 @@ use crate::db_trait::DatabaseBackend;
 use crate::scheduler::{ScheduleRequest, RunType};
 use crate::xcom::XComStore;
 use crate::pools::PoolManager;
-use crate::metrics::VortexMetrics;
+use crate::metrics::RyuoMetrics;
 
 /// Extension injected by auth_middleware so handlers can read the caller's identity.
 #[derive(Clone)]
@@ -64,7 +64,7 @@ pub struct AppState {
     pub dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
     pub xcom: Arc<XComStore>,
     pub pool_manager: Arc<PoolManager>,
-    pub metrics: Arc<VortexMetrics>,
+    pub metrics: Arc<RyuoMetrics>,
     // Bug 18 fix: use tokio::sync::RwLock so .write()/.read() are async-aware
     // and do not block the Tokio worker thread when held across await points.
     pub backfill_progress: Arc<tokio::sync::RwLock<HashMap<String, f32>>>,
@@ -79,11 +79,11 @@ pub struct WebServer {
     swarm: Arc<SwarmState>,
     vault: Option<Arc<Vault>>,
     dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
-    metrics: Arc<VortexMetrics>,
+    metrics: Arc<RyuoMetrics>,
 }
 
 impl WebServer {
-    pub fn new(db: Arc<dyn DatabaseBackend>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>, metrics: Arc<VortexMetrics>) -> Self {
+    pub fn new(db: Arc<dyn DatabaseBackend>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>, metrics: Arc<RyuoMetrics>) -> Self {
         Self { db, tx, swarm, vault, dags, metrics }
     }
 
@@ -191,7 +191,7 @@ impl WebServer {
             .route("/api/network/ip-allowlist/:id", delete(delete_ip_allowlist_rule_handler))
             .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
-        // BUG-H14 FIX: CORS origins are configurable via VORTEX_CORS_ORIGINS.
+        // BUG-H14 FIX: CORS origins are configurable via RYUO_CORS_ORIGINS.
         // If unset, no Access-Control-Allow-Origin header is emitted (same-origin only).
         // If set to "*", allow any origin (development only — a warning is logged).
         // Otherwise, parse as comma-separated list of allowed origins.
@@ -201,9 +201,9 @@ impl WebServer {
                 .allow_methods(Any)
                 .allow_headers(Any);
 
-            match std::env::var("VORTEX_CORS_ORIGINS") {
+            match std::env::var("RYUO_CORS_ORIGINS") {
                 Ok(val) if val.trim() == "*" => {
-                    warn!("⚠️  VORTEX_CORS_ORIGINS=* allows any origin — use only in development");
+                    warn!("⚠️  RYUO_CORS_ORIGINS=* allows any origin — use only in development");
                     cors_base.allow_origin(AllowOrigin::any())
                 }
                 Ok(val) if !val.trim().is_empty() => {
@@ -212,7 +212,7 @@ impl WebServer {
                         .filter_map(|s| s.trim().parse().ok())
                         .collect();
                     if origins.is_empty() {
-                        warn!("VORTEX_CORS_ORIGINS contains no valid origins, defaulting to same-origin");
+                        warn!("RYUO_CORS_ORIGINS contains no valid origins, defaulting to same-origin");
                         cors_base
                     } else {
                         info!("CORS allowed origins: {:?}", val);
@@ -2086,7 +2086,7 @@ async fn saml_acs_handler(
             // 1. Decode base64 SAML response
             // 2. Validate XML signature
             // 3. Extract assertions (NameID, attributes)
-            // 4. Map to Vortex user/role/team
+            // 4. Map to Ryuo user/role/team
             // 5. Create session
             Json(json!({
                 "status": "saml_received",

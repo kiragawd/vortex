@@ -1,4 +1,4 @@
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG('dynamic_loops') as dag:
     for i in range(5):

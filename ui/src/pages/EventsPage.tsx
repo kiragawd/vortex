@@ -84,7 +84,7 @@ function NewIncidentForm({ onClose }: { onClose: () => void }) {
   });
 
   return (
-    <div className="rounded-xl border border-vortex-200 bg-vortex-50/30 p-5 dark:border-vortex-800 dark:bg-vortex-950/20">
+    <div className="rounded-xl border border-ryuo-200 bg-ryuo-50/30 p-5 dark:border-ryuo-800 dark:bg-ryuo-950/20">
       <h3 className="mb-4 text-sm font-semibold text-gray-900 dark:text-white">New Alert Config</h3>
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
@@ -94,7 +94,7 @@ function NewIncidentForm({ onClose }: { onClose: () => void }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. on-call-pagerduty"
-            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-vortex-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-ryuo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
           />
         </div>
         <div>
@@ -102,7 +102,7 @@ function NewIncidentForm({ onClose }: { onClose: () => void }) {
           <select
             value={channel}
             onChange={(e) => setChannel(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-vortex-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-ryuo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
           >
             {['slack', 'pagerduty', 'email', 'webhook'].map((c) => (
               <option key={c} value={c}>{c}</option>
@@ -116,7 +116,7 @@ function NewIncidentForm({ onClose }: { onClose: () => void }) {
             value={severity}
             onChange={(e) => setSeverity(e.target.value)}
             placeholder="critical, warning, info"
-            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-vortex-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-ryuo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
           />
         </div>
         <div>
@@ -126,7 +126,7 @@ function NewIncidentForm({ onClose }: { onClose: () => void }) {
             value={dagFilter}
             onChange={(e) => setDagFilter(e.target.value)}
             placeholder="e.g. prod_*"
-            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-vortex-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-ryuo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
           />
         </div>
       </div>
@@ -134,7 +134,7 @@ function NewIncidentForm({ onClose }: { onClose: () => void }) {
         <button
           onClick={() => createMut.mutate()}
           disabled={!name || createMut.isPending}
-          className="rounded-lg bg-vortex-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-vortex-700 disabled:opacity-50"
+          className="rounded-lg bg-ryuo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-ryuo-700 disabled:opacity-50"
         >
           {createMut.isPending ? 'Creating…' : 'Create'}
         </button>
@@ -184,7 +184,7 @@ export function EventsPage() {
       {/* Sensor Types */}
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="flex items-center gap-2">
-          <Radio className="h-5 w-5 text-vortex-600 dark:text-vortex-400" />
+          <Radio className="h-5 w-5 text-ryuo-600 dark:text-ryuo-400" />
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">Available Sensor Types</h2>
         </div>
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -214,12 +214,12 @@ export function EventsPage() {
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Bell className="h-5 w-5 text-vortex-600 dark:text-vortex-400" />
+            <Bell className="h-5 w-5 text-ryuo-600 dark:text-ryuo-400" />
             <h2 className="text-base font-semibold text-gray-900 dark:text-white">Alert Routing</h2>
           </div>
           <button
             onClick={() => setShowNewForm((v) => !v)}
-            className="flex items-center gap-1.5 rounded-lg bg-vortex-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-vortex-700"
+            className="flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-ryuo-700"
           >
             <Plus className="h-3.5 w-3.5" />
             New Config
@@ -234,7 +234,7 @@ export function EventsPage() {
 
         {incidentConfigs.isLoading ? (
           <div className="mt-4 flex justify-center py-4">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : (incidentConfigs.data?.length ?? 0) === 0 ? (
           <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">No alert configurations yet. Create one above to route incidents to Slack, PagerDuty, or webhooks.</p>
@@ -275,7 +275,7 @@ export function EventsPage() {
       {/* Event Feed */}
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="flex items-center gap-2">
-          <Zap className="h-5 w-5 text-vortex-600 dark:text-vortex-400" />
+          <Zap className="h-5 w-5 text-ryuo-600 dark:text-ryuo-400" />
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">Event Feed</h2>
           <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
             last 100 events
@@ -283,7 +283,7 @@ export function EventsPage() {
         </div>
         {auditLog.isLoading ? (
           <div className="mt-4 flex justify-center py-4">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
           </div>
         ) : eventFeed.length === 0 ? (
           <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">No events recorded yet. Trigger a DAG to generate events.</p>

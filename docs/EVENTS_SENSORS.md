@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vortex provides an event-driven architecture with an in-memory event bus, webhook ingestion, event-triggered DAG execution, and a sensor framework for polling external conditions.
+Ryuo provides an event-driven architecture with an in-memory event bus, webhook ingestion, event-triggered DAG execution, and a sensor framework for polling external conditions.
 
 **Modules:** `src/event_framework.rs`, `src/sensors.rs`
 
@@ -39,7 +39,7 @@ Filters are composable — multiple conditions are combined with AND logic.
 
 HTTP endpoint for ingesting external events into the event bus.
 
-External systems (GitHub, CI/CD pipelines, monitoring tools) can push events to Vortex via webhook:
+External systems (GitHub, CI/CD pipelines, monitoring tools) can push events to Ryuo via webhook:
 
 ```bash
 curl -X POST http://localhost:3000/api/events/webhook \

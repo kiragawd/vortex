@@ -2668,6 +2668,64 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "ryuo"
+version = "0.7.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "async-recursion",
+ "async-trait",
+ "axum",
+ "axum-server",
+ "base64 0.22.1",
+ "bcrypt",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "cli-table",
+ "cron",
+ "hex",
+ "hmac",
+ "hostname",
+ "jsonwebtoken",
+ "lettre",
+ "libloading",
+ "lru",
+ "mime_guess",
+ "once_cell",
+ "prometheus",
+ "prost",
+ "prost-types",
+ "pyo3",
+ "regex",
+ "reqwest",
+ "rsa",
+ "rust-embed",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sqlparser",
+ "sqlx",
+ "subtle",
+ "syn 2.0.117",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-test",
+ "tonic",
+ "tonic-build",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "salsa20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3867,64 +3925,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vortex"
-version = "0.7.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "async-recursion",
- "async-trait",
- "axum",
- "axum-server",
- "base64 0.22.1",
- "bcrypt",
- "chrono",
- "chrono-tz",
- "clap",
- "cli-table",
- "cron",
- "hex",
- "hmac",
- "hostname",
- "jsonwebtoken",
- "lettre",
- "libloading",
- "lru",
- "mime_guess",
- "once_cell",
- "prometheus",
- "prost",
- "prost-types",
- "pyo3",
- "regex",
- "reqwest",
- "rsa",
- "rust-embed",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "sqlparser",
- "sqlx",
- "subtle",
- "syn 2.0.117",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-test",
- "tonic",
- "tonic-build",
- "tower-http 0.5.2",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "walkdir"

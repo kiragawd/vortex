@@ -211,7 +211,7 @@ test.describe('05 - Swarm Page', () => {
 
   test('Workers table has correct columns or shows empty state', async ({ page }) => {
     const table = page.locator('table');
-    const emptyMsg = page.locator('text=/no.*worker|vortex worker/i');
+    const emptyMsg = page.locator('text=/no.*worker|ryuo worker/i');
     const hasTable = await table.isVisible().catch(() => false);
     const hasEmpty = await emptyMsg.isVisible().catch(() => false);
     expect(hasTable || hasEmpty).toBeTruthy();
@@ -466,7 +466,7 @@ test.describe('08 - API Integration', () => {
   test('API error handling - invalid endpoint returns error gracefully', async ({ page }) => {
     await page.goto('/');
     const res = await page.request.fetch('http://localhost:3000/api/nonexistent', {
-      headers: { Authorization: 'Bearer vortex_admin_key' },
+      headers: { Authorization: 'Bearer ryuo_admin_key' },
     });
     expect(res.status()).toBeGreaterThanOrEqual(400);
   });
@@ -558,9 +558,9 @@ test.describe('10 - Auth & Login', () => {
     await expect(page.locator('button:has-text("Sign in")')).toBeVisible();
   });
 
-  test('Login page shows Vortex branding', async ({ page }) => {
+  test('Login page shows Ryuo branding', async ({ page }) => {
     await page.goto('/login');
-    await expect(page.locator('text=Vortex')).toBeVisible();
+    await expect(page.locator('text=Ryuo')).toBeVisible();
   });
 
   test('Login page shows default credentials hint', async ({ page }) => {
@@ -666,7 +666,7 @@ test.describe('11 - Dark Mode & Routing', () => {
     await page.waitForLoadState('networkidle');
     const activeLink = page.locator('a[href="/dags"]');
     const classes = await activeLink.getAttribute('class');
-    expect(classes).toContain('vortex');
+    expect(classes).toContain('ryuo');
   });
 });
 """

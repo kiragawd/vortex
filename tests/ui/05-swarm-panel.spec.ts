@@ -22,7 +22,7 @@ test.describe('05 - Swarm Page', () => {
 
   test('Workers table has correct columns or shows empty state', async ({ page }) => {
     const table = page.locator('table');
-    const emptyMsg = page.locator('text=/no.*worker|vortex worker/i');
+    const emptyMsg = page.locator('text=/no.*worker|ryuo worker/i');
     const hasTable = await table.isVisible().catch(() => false);
     const hasEmpty = await emptyMsg.isVisible().catch(() => false);
     expect(hasTable || hasEmpty).toBeTruthy();

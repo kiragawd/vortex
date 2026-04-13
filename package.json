@@ -1,7 +1,7 @@
 {
-  "name": "vortex",
+  "name": "ryuo",
   "version": "1.0.0",
-  "description": "**VORTEX** is a high-performance, single-binary enterprise orchestration tool designed to replace Apache Airflow with disruptive speed and simplicity.",
+  "description": "**RYUO** is a high-performance, single-binary enterprise orchestration tool designed to replace Apache Airflow with disruptive speed and simplicity.",
   "main": "index.js",
   "directories": {
     "doc": "docs",

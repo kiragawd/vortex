@@ -1,5 +1,5 @@
 -- ============================================================================
--- Vortex Core Schema (Consolidated Migration #1)
+-- Ryuo Core Schema (Consolidated Migration #1)
 -- Covers: Core tables, teams, leader election, timestamp fixes, and indexes.
 -- ============================================================================
 

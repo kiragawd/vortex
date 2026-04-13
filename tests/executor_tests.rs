@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use vortex::executor::{TaskExecutor, ExecutionResult};
+use ryuo::executor::{TaskExecutor, ExecutionResult};
 
 #[tokio::test]
 async fn test_execute_bash_success() {
@@ -12,15 +12,15 @@ async fn test_execute_bash_success() {
 #[tokio::test]
 async fn test_execute_bash_env_vars() {
     let mut env_vars = HashMap::new();
-    env_vars.insert("VORTEX_VAR".to_string(), "power".to_string());
-    let result = TaskExecutor::execute_bash("test_bash_2", "echo $VORTEX_VAR", env_vars, None).await;
+    env_vars.insert("RYUO_VAR".to_string(), "power".to_string());
+    let result = TaskExecutor::execute_bash("test_bash_2", "echo $RYUO_VAR", env_vars, None).await;
     assert!(result.success);
     assert_eq!(result.stdout.trim(), "power");
 }
 
 #[tokio::test]
 async fn test_execute_bash_fail() {
-    let result = TaskExecutor::execute_bash("test_bash_3", "ls /non_existent_directory_vortex", HashMap::new(), None).await;
+    let result = TaskExecutor::execute_bash("test_bash_3", "ls /non_existent_directory_ryuo", HashMap::new(), None).await;
     assert!(!result.success);
     assert_ne!(result.exit_code, 0);
 }
@@ -64,10 +64,10 @@ async fn test_execute_python_success() {
 #[tokio::test]
 async fn test_execute_python_env_vars() {
     let mut env_vars = HashMap::new();
-    env_vars.insert("PY_VAR".to_string(), "vortex_python".to_string());
+    env_vars.insert("PY_VAR".to_string(), "ryuo_python".to_string());
     let result = TaskExecutor::execute_python("test_py_2", "import os; print(os.environ['PY_VAR'])", env_vars, None).await;
     assert!(result.success);
-    assert_eq!(result.stdout.trim(), "vortex_python");
+    assert_eq!(result.stdout.trim(), "ryuo_python");
 }
 
 #[tokio::test]

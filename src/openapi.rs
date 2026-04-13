@@ -2,7 +2,7 @@
 // OpenAPI Spec Generation, API Versioning & Rate Limiting
 //
 // Provides:
-// - Programmatic OpenAPI 3.1 spec generation for all Vortex API routes
+// - Programmatic OpenAPI 3.1 spec generation for all Ryuo API routes
 // - API version extraction middleware (header or path-based)
 // - Per-endpoint token-bucket rate limiter
 
@@ -273,12 +273,12 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
     OpenApiSpec {
         openapi: "3.1.0".to_string(),
         info: OpenApiInfo {
-            title: "Vortex Orchestration Platform API".to_string(),
+            title: "Ryuo Orchestration Platform API".to_string(),
             description: "Enterprise-grade workflow orchestration API".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             contact: OpenApiContact {
-                name: "Vortex Team".to_string(),
-                url: "https://github.com/vortex-orchestration/vortex".to_string(),
+                name: "Ryuo Team".to_string(),
+                url: "https://github.com/ryuo-orchestration/ryuo".to_string(),
             },
             license: OpenApiLicense {
                 name: "Apache-2.0".to_string(),

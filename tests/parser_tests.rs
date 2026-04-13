@@ -1,13 +1,13 @@
-/// Integration tests for the VORTEX regex-based Python DAG parser.
+/// Integration tests for the RYUO regex-based Python DAG parser.
 /// Run with: PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test --test parser_tests
 
-use vortex::python_parser::parse_python_dag;
+use ryuo::python_parser::parse_python_dag;
 
 // ─── 1. Simple DAG – single task, no dependencies ────────────────────────────
 #[test]
 fn test_parse_simple_dag_one_task_no_deps() {
     let src = r#"
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("simple_dag") as dag:
     t1 = BashOperator(
@@ -32,7 +32,7 @@ with DAG("simple_dag") as dag:
 #[test]
 fn test_parse_dag_chain_deps() {
     let src = r#"
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("chain_dag") as dag:
     t1 = BashOperator(task_id="step1", bash_command="echo 1")
@@ -58,7 +58,7 @@ with DAG("chain_dag") as dag:
 #[test]
 fn test_parse_bash_operator() {
     let src = r#"
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("bash_dag") as dag:
     cleanup = BashOperator(
@@ -81,7 +81,7 @@ with DAG("bash_dag") as dag:
 #[test]
 fn test_parse_python_operator() {
     let src = r#"
-from vortex import DAG, PythonOperator
+from ryuo import DAG, PythonOperator
 
 def my_func():
     pass
@@ -106,7 +106,7 @@ with DAG("py_dag") as dag:
 #[test]
 fn test_parse_dummy_operator() {
     let src = r#"
-from vortex import DAG, DummyOperator
+from ryuo import DAG, DummyOperator
 
 with DAG("dummy_dag") as dag:
     start = DummyOperator(task_id="start")
@@ -130,7 +130,7 @@ with DAG("dummy_dag") as dag:
 fn test_cyclic_dependency_extracted() {
     // A >> B >> A forms a cycle
     let src = r#"
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("cycle_dag") as dag:
     a = BashOperator(task_id="a", bash_command="echo a")
@@ -153,7 +153,7 @@ with DAG("cycle_dag") as dag:
 #[test]
 fn test_schedule_interval_extraction() {
     let daily_src = r#"
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("daily_dag", schedule_interval="@daily") as dag:
     t = BashOperator(task_id="t", bash_command="echo hi")
@@ -165,7 +165,7 @@ with DAG("daily_dag", schedule_interval="@daily") as dag:
     assert_eq!(dags[0].schedule_interval.as_deref(), Some("@daily"));
 
     let cron_src = r#"
-from vortex import DAG, BashOperator
+from ryuo import DAG, BashOperator
 
 with DAG("cron_dag", schedule_interval="0 6 * * *") as dag:
     t = BashOperator(task_id="t", bash_command="echo hi")

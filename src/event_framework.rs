@@ -877,7 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_watch_sensor() {
-        let path = "/tmp/vortex_event_test_file";
+        let path = "/tmp/ryuo_event_test_file";
         tokio::fs::write(path, b"test").await.unwrap();
         let sensor = FileWatchSensor::new("test", vec![path.to_string()]);
         let event = sensor.poll().await.unwrap();

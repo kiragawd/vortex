@@ -30,7 +30,7 @@ pub fn init_global_registry(registry: PluginRegistry) {
 }
 
 /// Look up a plugin by name. Thread-safe for concurrent reads.
-pub fn get_plugin(name: &str) -> Option<Arc<dyn VortexOperator>> {
+pub fn get_plugin(name: &str) -> Option<Arc<dyn RyuoOperator>> {
     if let Ok(lock) = PLUGIN_REGISTRY.read() {
         if let Some(reg) = lock.as_ref() {
             return reg.get(name);
@@ -48,12 +48,12 @@ pub struct TaskContext {
 }
 
 #[async_trait::async_trait]
-pub trait VortexOperator: Send + Sync {
+pub trait RyuoOperator: Send + Sync {
     async fn execute(&self, context: &TaskContext) -> Result<ExecutionResult>;
 }
 
 pub struct PluginRegistry {
-    plugins: HashMap<String, Arc<dyn VortexOperator>>,
+    plugins: HashMap<String, Arc<dyn RyuoOperator>>,
     /// Retains loaded shared libraries so their symbols remain valid for the
     /// lifetime of the registry. Dropping a `Library` would invalidate any
     /// trait-object pointers created from its exported symbols.
@@ -70,16 +70,16 @@ impl PluginRegistry {
         registry
     }
 
-    pub fn register<S: Into<String>, O: VortexOperator + 'static>(&mut self, name: S, operator: O) {
+    pub fn register<S: Into<String>, O: RyuoOperator + 'static>(&mut self, name: S, operator: O) {
         self.plugins.insert(name.into(), Arc::new(operator));
     }
 
-    pub fn get(&self, name: &str) -> Option<Arc<dyn VortexOperator>> {
+    pub fn get(&self, name: &str) -> Option<Arc<dyn RyuoOperator>> {
         self.plugins.get(name).cloned()
     }
 
     /// Dynamically loads a plugin from a shared library.
-    /// The library must export a `_vortex_plugin_create` C-ABI function.
+    /// The library must export a `_ryuo_plugin_create` C-ABI function.
     ///
     /// # Safety
     /// Bug 20 note: this function executes arbitrary native code from the loaded
@@ -88,7 +88,7 @@ impl PluginRegistry {
     /// Future work: run plugins in a separate process with restricted capabilities.
     pub unsafe fn load_plugin<S: Into<String>>(&mut self, path: &str, name: S) -> Result<()> {
         let lib = unsafe { Library::new(path)? };
-        let creator: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn VortexOperator> = unsafe { lib.get(b"_vortex_plugin_create\0")? };
+        let creator: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn RyuoOperator> = unsafe { lib.get(b"_ryuo_plugin_create\0")? };
         
         let ptr = unsafe { creator() };
         if ptr.is_null() {
@@ -123,10 +123,10 @@ fn truncate_log(s: String) -> String {
 macro_rules! declare_plugin {
     ($plugin_type:ty, $constructor:path) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn _vortex_plugin_create() -> *mut dyn $crate::executor::VortexOperator {
+        pub extern "C" fn _ryuo_plugin_create() -> *mut dyn $crate::executor::RyuoOperator {
             let constructor: fn() -> $plugin_type = $constructor;
             let object = constructor();
-            let boxed: Box<dyn $crate::executor::VortexOperator> = Box::new(object);
+            let boxed: Box<dyn $crate::executor::RyuoOperator> = Box::new(object);
             Box::into_raw(boxed)
         }
     };
@@ -135,7 +135,7 @@ macro_rules! declare_plugin {
 pub struct HttpOperator;
 
 #[async_trait::async_trait]
-impl VortexOperator for HttpOperator {
+impl RyuoOperator for HttpOperator {
     async fn execute(&self, context: &TaskContext) -> Result<ExecutionResult> {
         let start = Instant::now();
         let client = reqwest::Client::new();
@@ -207,20 +207,20 @@ pub struct ExecutionResult {
     pub duration_ms: u64,
 }
 
-/// Injects VORTEX context env vars (for XCom, etc.) into the command's environment.
-fn inject_vortex_env(cmd: &mut Command, env_vars: &HashMap<String, String>) {
+/// Injects RYUO context env vars (for XCom, etc.) into the command's environment.
+fn inject_ryuo_env(cmd: &mut Command, env_vars: &HashMap<String, String>) {
     cmd.envs(env_vars.iter());
-    // Always inject VORTEX_BASE_URL for XCom/pool helpers
-    if !env_vars.contains_key("VORTEX_BASE_URL") {
-        cmd.env("VORTEX_BASE_URL", std::env::var("VORTEX_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()));
+    // Always inject RYUO_BASE_URL for XCom/pool helpers
+    if !env_vars.contains_key("RYUO_BASE_URL") {
+        cmd.env("RYUO_BASE_URL", std::env::var("RYUO_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()));
     }
     // NOTE: We intentionally do NOT inject a default admin API key here.
     // Tasks should be given scoped, read-only tokens via their env_vars
     // if they need API access. Injecting the admin key is a security risk.
-    if !env_vars.contains_key("VORTEX_API_KEY") {
-        if let Ok(key) = std::env::var("VORTEX_TASK_API_KEY") {
+    if !env_vars.contains_key("RYUO_API_KEY") {
+        if let Ok(key) = std::env::var("RYUO_TASK_API_KEY") {
             // Use a dedicated task-scoped key if configured
-            cmd.env("VORTEX_API_KEY", key);
+            cmd.env("RYUO_API_KEY", key);
         }
         // If no task key is configured, tasks won't have API access — by design.
     }
@@ -244,7 +244,7 @@ impl TaskExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);  // BUG-2 FIX: kill child process if the future is dropped
-        inject_vortex_env(&mut cmd, &env_vars);
+        inject_ryuo_env(&mut cmd, &env_vars);
 
         let timeout_duration = timeout_secs.unwrap_or(300);
         let result = timeout(Duration::from_secs(timeout_duration), cmd.output()).await;
@@ -355,7 +355,7 @@ impl TaskExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);  // BUG-2 FIX: kill child process if the future is dropped
-        inject_vortex_env(&mut cmd, &env_vars);
+        inject_ryuo_env(&mut cmd, &env_vars);
 
         let timeout_duration = timeout_secs.unwrap_or(300);
         let result = timeout(Duration::from_secs(timeout_duration), cmd.output()).await;

@@ -4,7 +4,7 @@ import os
 import sys
 
 BASE_URL = "http://localhost:3000/api"
-API_KEY = "vortex_admin_key" # Will try to fetch or default
+API_KEY = "ryuo_admin_key" # Will try to fetch or default
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
 def wait_for_server(timeout=30):
@@ -33,7 +33,7 @@ def test_full_pipeline():
     
     # 2. Upload DAG
     print("Uploading complex DAG...")
-    dag_path = "/Users/ashwin/vortex/tests/fixtures/integration_test_dag.py"
+    dag_path = "/Users/ashwin/ryuo/tests/fixtures/integration_test_dag.py"
     with open(dag_path, "rb") as f:
         files = {"file": ("integration_test_dag.py", f)}
         resp = requests.post(f"{BASE_URL}/dags/upload", files=files, headers=HEADERS)
@@ -61,7 +61,7 @@ def test_full_pipeline():
     max_retries = 60
     run_completed = False
     for i in range(max_retries):
-        # We need task instances, not DAG runs (VORTEX CLI/UI logic differs)
+        # We need task instances, not DAG runs (RYUO CLI/UI logic differs)
         resp = requests.get(f"{BASE_URL}/dags/{dag_id}/tasks", headers=HEADERS)
         data = resp.json()
         
@@ -117,7 +117,7 @@ def test_error_handling_and_retries():
     
     # 1. Upload Failing DAG
     print("Uploading retry test DAG...")
-    dag_path = "/Users/ashwin/vortex/tests/fixtures/retry_test_dag.py"
+    dag_path = "/Users/ashwin/ryuo/tests/fixtures/retry_test_dag.py"
     with open(dag_path, "rb") as f:
         files = {"file": ("retry_test_dag.py", f)}
         resp = requests.post(f"{BASE_URL}/dags/upload", files=files, headers=HEADERS)
@@ -163,7 +163,7 @@ if __name__ == "__main__":
         HEADERS["Authorization"] = f"Bearer {API_KEY}"
 
     if not wait_for_server():
-        print("Error: VORTEX server not reachable.")
+        print("Error: RYUO server not reachable.")
         sys.exit(1)
         
     try:

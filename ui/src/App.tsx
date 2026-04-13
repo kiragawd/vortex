@@ -16,7 +16,7 @@ import { ConnectorsPage } from './pages/ConnectorsPage';
 import { EventsPage } from './pages/EventsPage';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const token = localStorage.getItem('vortex_token');
+  const token = localStorage.getItem('ryuo_token');
   return token ? <>{children}</> : <Navigate to="/login" replace />;
 }
 

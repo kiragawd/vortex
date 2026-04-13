@@ -96,7 +96,7 @@ export function RBACPage() {
               onClick={() => setTab(t.id)}
               className={`pb-3 text-sm font-medium transition-colors ${
                 tab === t.id
-                  ? 'border-b-2 border-vortex-600 text-vortex-600 dark:border-vortex-400 dark:text-vortex-400'
+                  ? 'border-b-2 border-ryuo-600 text-ryuo-600 dark:border-ryuo-400 dark:text-ryuo-400'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
               }`}
             >
@@ -111,7 +111,7 @@ export function RBACPage() {
         <div className="space-y-4">
           {rolesLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
             </div>
           ) : roles.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 p-12 text-center text-sm text-gray-400 dark:border-gray-700">
@@ -128,7 +128,7 @@ export function RBACPage() {
                         {role.description || 'No description'}
                       </p>
                     </div>
-                    <span className="rounded-full bg-vortex-50 px-2 py-0.5 text-xs font-medium text-vortex-700 dark:bg-vortex-950 dark:text-vortex-300">
+                    <span className="rounded-full bg-ryuo-50 px-2 py-0.5 text-xs font-medium text-ryuo-700 dark:bg-ryuo-950 dark:text-ryuo-300">
                       {role.is_system ? 'system' : 'custom'}
                     </span>
                   </div>
@@ -182,7 +182,7 @@ export function RBACPage() {
                                 : prev.filter((s) => s !== opt.value)
                             )
                           }
-                          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-vortex-600"
+                          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-ryuo-600"
                         />
                         <span>
                           <span className="block font-mono text-xs font-semibold text-gray-800 dark:text-gray-200">
@@ -198,7 +198,7 @@ export function RBACPage() {
                       <button
                         type="button"
                         onClick={() => setScopesOpen(false)}
-                        className="text-xs text-vortex-600 hover:underline dark:text-vortex-400"
+                        className="text-xs text-ryuo-600 hover:underline dark:text-ryuo-400"
                       >
                         Done
                       </button>
@@ -209,7 +209,7 @@ export function RBACPage() {
               <button
                 onClick={() => createTokenMutation.mutate()}
                 disabled={createTokenMutation.isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-vortex-700 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-ryuo-700 disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
                 Generate
@@ -236,7 +236,7 @@ export function RBACPage() {
           {/* Token list */}
           {tokensLoading ? (
             <div className="flex items-center justify-center py-8">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
             </div>
           ) : tokens.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center text-sm text-gray-400 dark:border-gray-700">
@@ -334,7 +334,7 @@ export function RBACPage() {
               <button
                 onClick={() => addIpMutation.mutate()}
                 disabled={addIpMutation.isPending || !newCidr}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-vortex-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-vortex-700 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-ryuo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-ryuo-700 disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
                 Add Rule
@@ -345,7 +345,7 @@ export function RBACPage() {
           {/* Rules list */}
           {ipLoading ? (
             <div className="flex items-center justify-center py-8">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-vortex-500 border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-ryuo-500 border-t-transparent" />
             </div>
           ) : ipRules.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center text-sm text-gray-400 dark:border-gray-700">

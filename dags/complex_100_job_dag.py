@@ -1,5 +1,5 @@
-from vortex import DAG
-from vortex.operators.bash import BashOperator
+from ryuo import DAG
+from ryuo.operators.bash import BashOperator
 import random
 
 # Use a fixed seed so the DAG structure remains consistent across parsing runs

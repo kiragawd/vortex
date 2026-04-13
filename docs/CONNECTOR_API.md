@@ -1,7 +1,7 @@
-# Vortex Connector API
+# Ryuo Connector API
 
 ## Purpose
-Vortex connectors provide a unified interface for databases, warehouses, APIs, and transformation systems.
+Ryuo connectors provide a unified interface for databases, warehouses, APIs, and transformation systems.
 
 Core trait: `EnterpriseConnector` in `src/enterprise_connector.rs`.
 Implementations: `src/connectors.rs`.
@@ -292,7 +292,7 @@ Connectors use `anyhow::Result` with structured error taxonomy:
 - Avoid embedding credentials in SQL/params.
 - Pass tokens via connector auth context.
 - Redact sensitive values in command output and logs for shell-based connectors.
-- Store all connector passwords/tokens in the Vortex Secrets Vault, referenced by key.
+- Store all connector passwords/tokens in the Ryuo Secrets Vault, referenced by key.
 
 ---
 
@@ -302,7 +302,7 @@ Connectors use `anyhow::Result` with structured error taxonomy:
 
 ```python
 # BigQuery connector example
-from vortex.connectors import BigQueryConnector
+from ryuo.connectors import BigQueryConnector
 
 conn = BigQueryConnector(
     project_id="my-gcp-project",
@@ -314,11 +314,11 @@ for row in result.rows:
     print(row)
 
 # Snowflake connector example
-from vortex.connectors import SnowflakeConnector
+from ryuo.connectors import SnowflakeConnector
 
 conn = SnowflakeConnector(
     account="myorg.east-us-2",
-    username="svc_vortex",
+    username="svc_ryuo",
     # Password stored in Vault — retrieved at runtime via password_secret_ref
     password_secret_ref="SNOWFLAKE_PASSWORD",
     warehouse="COMPUTE_WH",
@@ -331,7 +331,7 @@ result = conn.query("SELECT * FROM dim_customers LIMIT 10")
 # Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables,
 # or use an IAM instance role. The S3 connector is currently scaffolded —
 # full implementation is in progress.
-from vortex.connectors import S3Connector
+from ryuo.connectors import S3Connector
 
 conn = S3Connector(
     bucket="my-data-lake",
@@ -341,13 +341,13 @@ conn = S3Connector(
 )
 
 # PostgreSQL connector example
-from vortex.connectors import PostgresConnector
+from ryuo.connectors import PostgresConnector
 
 conn = PostgresConnector(
     host="pg.internal",
     port=5432,
     database="warehouse",
-    user="vortex_reader",
+    user="ryuo_reader",
     password_secret_ref="PG_WAREHOUSE_PASSWORD",
     ssl_mode="require",
 )
@@ -388,7 +388,7 @@ connectors:
   snowflake_prod:
     kind: Snowflake
     account: myorg.east-us-2
-    username: svc_vortex
+    username: svc_ryuo
     password_secret_ref: SNOWFLAKE_PASSWORD
     warehouse: COMPUTE_WH
     database: RAW
@@ -400,6 +400,6 @@ connectors:
 
   dbt_warehouse:
     kind: Dbt
-    project_path: /opt/vortex/dbt_project
-    profiles_path: /opt/vortex/dbt_profiles
+    project_path: /opt/ryuo/dbt_project
+    profiles_path: /opt/ryuo/dbt_profiles
 ```

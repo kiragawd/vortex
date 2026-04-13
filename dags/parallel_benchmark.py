@@ -1,10 +1,10 @@
-from vortex import DAG
-from vortex.operators.bash import BashOperator
+from ryuo import DAG
+from ryuo.operators.bash import BashOperator
 
 with DAG(dag_id="parallel_benchmark") as dag:
     t1 = BashOperator(
         task_id="t1",
-        bash_command="echo 'Vortex engine warm-up...'"
+        bash_command="echo 'Ryuo engine warm-up...'"
     )
 
     t2 = BashOperator(
@@ -28,7 +28,7 @@ with DAG(dag_id="parallel_benchmark") as dag:
 
     t5 = BashOperator(
         task_id="t5",
-        bash_command="echo 'All data processed. Vortex out.'"
+        bash_command="echo 'All data processed. Ryuo out.'"
     )
     
     t6 = BashOperator(

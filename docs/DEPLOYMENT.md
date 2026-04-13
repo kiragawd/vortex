@@ -14,8 +14,8 @@
 ## Build from Source
 
 ```bash
-git clone https://github.com/kiragawd/vortex.git
-cd vortex
+git clone https://github.com/kiragawd/ryuo.git
+cd ryuo
 
 # Required for Python 3.14+
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
@@ -33,20 +33,20 @@ cargo build --release
 
 ```bash
 # Production mode with PostgreSQL (required)
-./target/release/vortex server --swarm --database-url "postgres://user:pass@localhost/vortex"
+./target/release/ryuo server --swarm --database-url "postgres://user:pass@localhost/ryuo"
 
 # Custom web port (default: 3000)
-./target/release/vortex server --database-url "postgres://..." --port 3000
+./target/release/ryuo server --database-url "postgres://..." --port 3000
 
 # Custom gRPC port and bind address (default port: 50051, default bind: 0.0.0.0)
 # Use --grpc-bind 127.0.0.1 to restrict gRPC to localhost in single-host deployments
-./target/release/vortex server --swarm --database-url "postgres://..." --swarm-port 50052 --grpc-bind 127.0.0.1
+./target/release/ryuo server --swarm --database-url "postgres://..." --swarm-port 50052 --grpc-bind 127.0.0.1
 
 # Enable the built-in synthetic benchmark DAG (for scale testing)
-./target/release/vortex server --swarm --database-url "postgres://..." --benchmark
+./target/release/ryuo server --swarm --database-url "postgres://..." --benchmark
 
 # Enable Python DAG execution (SECURITY RISK — only in trusted environments)
-./target/release/vortex server --swarm --database-url "postgres://..." --allow-unsafe-dag-exec
+./target/release/ryuo server --swarm --database-url "postgres://..." --allow-unsafe-dag-exec
 ```
 
 The REST API and dashboard are served on **http://localhost:3000** (or the port specified by `--port`).
@@ -59,29 +59,29 @@ The REST API and dashboard are served on **http://localhost:3000** (or the port 
 
 ```bash
 # Connect to controller (plaintext gRPC)
-./target/release/vortex worker --controller http://localhost:50051 --capacity 4
+./target/release/ryuo worker --controller http://localhost:50051 --capacity 4
 
 # With custom ID and labels
-./target/release/vortex worker \
+./target/release/ryuo worker \
   --controller http://localhost:50051 \
   --capacity 8 \
   --id worker-gpu-01 \
   --labels gpu,high-memory
 ```
 
-### Official CLI (`vortex-cli`)
+### Official CLI (`ryuo-cli`)
 
-VORTEX includes a separate binary (`vortex-cli`) for administrative automation:
+RYUO includes a separate binary (`ryuo-cli`) for administrative automation:
 
 ```bash
 # Set environment variables
-export VORTEX_API_KEY="your_api_key_here"
-export VORTEX_BASE_URL="http://localhost:3000"
+export RYUO_API_KEY="your_api_key_here"
+export RYUO_BASE_URL="http://localhost:3000"
 
 # Use the CLI
-vortex-cli dags list
-vortex-cli dags trigger my_pipeline
-vortex-cli secrets set DB_PASS "password123"
+ryuo-cli dags list
+ryuo-cli dags trigger my_pipeline
+ryuo-cli secrets set DB_PASS "password123"
 ```
 
 ---
@@ -100,7 +100,7 @@ openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -node
 Run with TLS (both HTTP and gRPC):
 
 ```bash
-./target/release/vortex server --swarm --database-url "postgres://..." --tls-cert cert.pem --tls-key key.pem
+./target/release/ryuo server --swarm --database-url "postgres://..." --tls-cert cert.pem --tls-key key.pem
 ```
 
 For production, use certificates from Let's Encrypt or your organization's CA.
@@ -108,17 +108,17 @@ For production, use certificates from Let's Encrypt or your organization's CA.
 Workers connecting to a TLS-enabled controller:
 
 ```bash
-./target/release/vortex worker --controller https://localhost:50051 --capacity 4
+./target/release/ryuo worker --controller https://localhost:50051 --capacity 4
 ```
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `VORTEX_SECRET_KEY` | For Secrets Vault | 32-character string used as AES-256-GCM key |
-| `VORTEX_NODE_ID` | HA mode | Unique identifier for this controller node (auto-generated if unset) |
-| `VORTEX_TASK_API_KEY` | Optional | Scoped API key injected into task processes for API access |
-| `VORTEX_BASE_URL` | Optional | Base URL for task API access (default: `http://localhost:3000`) |
+| `RYUO_SECRET_KEY` | For Secrets Vault | 32-character string used as AES-256-GCM key |
+| `RYUO_NODE_ID` | HA mode | Unique identifier for this controller node (auto-generated if unset) |
+| `RYUO_TASK_API_KEY` | Optional | Scoped API key injected into task processes for API access |
+| `RYUO_BASE_URL` | Optional | Base URL for task API access (default: `http://localhost:3000`) |
 | `OPENAI_API_KEY` | Agentic migration (OpenAI) | API key for OpenAI LLM provider |
 | `OPENAI_ENDPOINT` | Optional | Custom OpenAI-compatible API endpoint |
 | `ANTHROPIC_API_KEY` | Agentic migration (Anthropic) | API key for Anthropic LLM provider |
@@ -129,21 +129,21 @@ Workers connecting to a TLS-enabled controller:
 
 ```bash
 # Generate a 32-character key (32 bytes = 256 bits for AES-256)
-export VORTEX_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
-echo "VORTEX_SECRET_KEY=$VORTEX_SECRET_KEY"
+export RYUO_SECRET_KEY=$(head -c 32 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 32)
+echo "RYUO_SECRET_KEY=$RYUO_SECRET_KEY"
 ```
 
 **Note:** The key must be exactly 32 characters (bytes). The raw string bytes are used directly as the AES-256 key (not hex-decoded). Without it, the Secrets Vault is disabled (non-fatal warning).
 
 ### Database
 
-VORTEX requires **PostgreSQL 14+** for production use.
+RYUO requires **PostgreSQL 14+** for production use.
 
 **Migrations:** Database schema is managed via SQLx. The server auto-migrates on startup when a `--database-url` is provided.
 
 ```bash
 # Migrations run automatically on server start
-./target/release/vortex server --database-url "postgres://user:pass@localhost/vortex"
+./target/release/ryuo server --database-url "postgres://user:pass@localhost/ryuo"
 ```
 
 **Connection string format:**
@@ -155,7 +155,7 @@ postgres://username:password@hostname:port/database_name
 
 ## Default User
 
-On first run, VORTEX seeds a default admin user:
+On first run, RYUO seeds a default admin user:
 
 | Username | Password | Role |
 |----------|----------|------|
@@ -169,10 +169,10 @@ The admin user's API key is generated on first run and returned from the login e
 
 ## DAG Files
 
-Place Python DAG files in the `dags/` directory. They are loaded automatically on server startup. VORTEX supports dynamic DAG generation and Task Groups.
+Place Python DAG files in the `dags/` directory. They are loaded automatically on server startup. RYUO supports dynamic DAG generation and Task Groups.
 
 ```python
-from vortex import DAG, BashOperator, TaskGroup
+from ryuo import DAG, BashOperator, TaskGroup
 
 with DAG("dynamic_pipeline", schedule_interval="@daily") as dag:
     with TaskGroup("processing") as tg:
@@ -196,16 +196,16 @@ Open **http://localhost:3000** for the built-in dashboard featuring:
 
 ### Prometheus Configuration
 
-Ensure your `prometheus.yml` scrape target points to the Vortex controller's HTTP port:
+Ensure your `prometheus.yml` scrape target points to the Ryuo controller's HTTP port:
 
 > **Port Reference:**
-> - **Port 3000** — Vortex REST API, web dashboard, and Prometheus `/metrics` endpoint (default; override with `--port`)
-> - **Port 9090** — Prometheus server (scrapes Vortex on port 3000)
+> - **Port 3000** — Ryuo REST API, web dashboard, and Prometheus `/metrics` endpoint (default; override with `--port`)
+> - **Port 9090** — Prometheus server (scrapes Ryuo on port 3000)
 > - **Port 50051** — gRPC swarm endpoint for worker-controller communication (override with `--swarm-port`)
 
 ```yaml
 scrape_configs:
-  - job_name: "vortex"
+  - job_name: "ryuo"
     static_configs:
       - targets: ["controller:3000"]  # Use hostname:port in Docker, localhost:3000 for local dev
 ```
@@ -214,7 +214,7 @@ scrape_configs:
 
 ```bash
 # Follow server output (Structured JSON or Text)
-tail -f logs/vortex.log
+tail -f logs/ryuo.log
 ```
 
 ### Database Queries
@@ -241,10 +241,10 @@ SELECT p.name, p.slots, COUNT(ps.id) AS occupied FROM pools p LEFT JOIN pool_slo
 
 ```bash
 # Backup
-pg_dump -h localhost -U vortex_user vortex > vortex_backup_$(date +%Y%m%d).sql
+pg_dump -h localhost -U ryuo_user ryuo > ryuo_backup_$(date +%Y%m%d).sql
 
 # Restore
-psql -h localhost -U vortex_user vortex < vortex_backup_20260225.sql
+psql -h localhost -U ryuo_user ryuo < ryuo_backup_20260225.sql
 ```
 
 For automated backups, consider `pg_dump` cron jobs or PostgreSQL continuous archiving (WAL).
@@ -260,7 +260,7 @@ For automated backups, consider `pg_dump` cron jobs or PostgreSQL continuous arc
 | **Worker can't connect** | Ensure controller is running with `--swarm`. Check port 50051 is open. For internal deployments, use `--grpc-bind 127.0.0.1`. |
 | **DAG not loading** | Check `dags/` directory exists. Look for parse errors in server log. |
 | **Invalid schedule rejected** | Schedule expressions are validated on upload. Use `@daily`, `@hourly`, or valid 5/6/7-field cron. |
-| **Secret Vault disabled** | Set `VORTEX_SECRET_KEY` env var (exactly 32 characters). |
+| **Secret Vault disabled** | Set `RYUO_SECRET_KEY` env var (exactly 32 characters). |
 | **"Unauthorized" errors** | Login via UI or pass API key with `Bearer` prefix in `Authorization` header. |
 | **"Too many login attempts"** | Rate limit is 10 attempts per 60 seconds per username. Wait and retry. |
 | **Tasks stuck in Running** | On restart, controller auto-marks interrupted tasks as Failed. |
@@ -278,20 +278,20 @@ python3 -c "import ast; ast.parse(open('dag.py').read()); print('Syntax OK')"
 # dag_id must match: [a-zA-Z0-9_-]+
 
 # Check for import errors — ensure all dependencies are installed
-python3 -c "from vortex import DAG; print('Import OK')"
+python3 -c "from ryuo import DAG; print('Import OK')"
 
 # View server-side parse errors in the controller log
-tail -f logs/vortex.log | grep -i "parse\|dag\|error"
+tail -f logs/ryuo.log | grep -i "parse\|dag\|error"
 ```
 
 ### Task Timeouts
 
 ```bash
 # Check the Python execution timeout (default: 30s)
-echo $VORTEX_PYTHON_TIMEOUT
+echo $RYUO_PYTHON_TIMEOUT
 
 # Override globally:
-export VORTEX_PYTHON_TIMEOUT=120
+export RYUO_PYTHON_TIMEOUT=120
 
 # For long-running tasks, set per-task timeout in the DAG definition:
 task = BashOperator(
@@ -301,41 +301,41 @@ task = BashOperator(
 )
 
 # View worker logs for timeout events:
-docker logs vortex-worker 2>&1 | grep -i "timeout\|killed"
+docker logs ryuo-worker 2>&1 | grep -i "timeout\|killed"
 ```
 
 ### Worker Crash Loops
 
 ```bash
-# Check VORTEX_GRPC_AUTH_TOKEN matches between controller and worker
+# Check RYUO_GRPC_AUTH_TOKEN matches between controller and worker
 # Controller must be started with --swarm and the same token
 
 # Verify gRPC address format (must use http:// for plaintext, https:// for TLS)
-./vortex worker --controller http://controller:50051 --capacity 4
+./ryuo worker --controller http://controller:50051 --capacity 4
 
-# Check mTLS configuration — if VORTEX_GRPC_TLS_CA is set, the CA cert must be valid
+# Check mTLS configuration — if RYUO_GRPC_TLS_CA is set, the CA cert must be valid
 openssl verify -CAfile ca.pem cert.pem
 
 # Verify controller is reachable on port 50051
 nc -zv controller 50051
 
 # View worker crash reason:
-docker logs vortex-worker --tail 50
-journalctl -u vortex-worker -n 50
+docker logs ryuo-worker --tail 50
+journalctl -u ryuo-worker -n 50
 ```
 
 ### Prometheus Not Scraping
 
 ```bash
-# Verify Vortex is exposing metrics on port 3000 (NOT 8080)
+# Verify Ryuo is exposing metrics on port 3000 (NOT 8080)
 curl http://localhost:3000/metrics | head -20
 
 # Check prometheus.yml scrape target — should point to port 3000
 grep targets prometheus.yml
 # Expected: targets: ["controller:3000"]
 
-# Test Prometheus connectivity to Vortex
-curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool | grep -A5 vortex
+# Test Prometheus connectivity to Ryuo
+curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool | grep -A5 ryuo
 ```
 
 ---
@@ -355,14 +355,14 @@ To use AI-assisted migration for converting Airflow DAGs or dbt projects to nati
 
 2. **Run agentic migration:**
    ```bash
-   vortex-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+   ryuo-cli migrate ./dags --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
    ```
 
 3. **Review generated code** — All LLM-generated Rust code is compile-checked and lint-validated automatically. Review outputs before promoting to production.
 
 4. **dbt project conversion:**
    ```bash
-   vortex-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
+   ryuo-cli migrate ./dbt_project --output-dir ./generated_dags --agentic --llm-provider openai --model gpt-4o-mini
    ```
 
 See the [Migration Guide](./MIGRATION_GUIDE.md) for full details on flags, validation, and cutover strategy.
@@ -377,20 +377,20 @@ See the [Migration Guide](./MIGRATION_GUIDE.md) for full details on flags, valid
 docker-compose up -d
 ```
 
-Runs: Vortex controller + worker + PostgreSQL + Prometheus — ideal for local development and testing.
+Runs: Ryuo controller + worker + PostgreSQL + Prometheus — ideal for local development and testing.
 
 ### Dockerfile
 
 Multi-stage production build with minimal runtime image:
 
-1. **Builder stage** — Compiles Vortex with optimized release profile
+1. **Builder stage** — Compiles Ryuo with optimized release profile
 2. **Runtime stage** — Minimal image with only the binary and required runtime libraries
 
 ```bash
-docker build -t vortex:latest .
+docker build -t ryuo:latest .
 docker run -p 3000:3000 -p 50051:50051 \
-  -e DATABASE_URL="postgres://user:pass@host/vortex" \
-  vortex:latest server --swarm
+  -e DATABASE_URL="postgres://user:pass@host/ryuo" \
+  ryuo:latest server --swarm
 ```
 
 ---
@@ -399,11 +399,11 @@ docker run -p 3000:3000 -p 50051:50051 \
 
 ### Helm Chart
 
-The Helm chart at `helm/vortex/` provides production-ready Kubernetes deployment:
+The Helm chart at `helm/ryuo/` provides production-ready Kubernetes deployment:
 
 ```bash
-helm install vortex ./helm/vortex \
-  --set database.url="postgres://user:pass@pg-service/vortex" \
+helm install ryuo ./helm/ryuo \
+  --set database.url="postgres://user:pass@pg-service/ryuo" \
   --set controller.replicas=1 \
   --set worker.replicas=3
 ```
@@ -436,7 +436,7 @@ kind: HorizontalPodAutoscaler
 spec:
   scaleTargetRef:
     kind: Deployment
-    name: vortex-worker
+    name: ryuo-worker
   minReplicas: 2
   maxReplicas: 20
   metrics:
@@ -460,7 +460,7 @@ Pod-per-task executor for Kubernetes-native task isolation:
 
 ## Graceful Shutdown
 
-VORTEX handles `SIGINT` (Ctrl+C) and `SIGTERM` gracefully:
+RYUO handles `SIGINT` (Ctrl+C) and `SIGTERM` gracefully:
 
 1. All task instances currently in `Running` state are marked `Failed` in the database.
 2. The HA leader lock is released (if running in `--ha-mode`).
@@ -487,7 +487,7 @@ Returns `200 OK` when healthy, `503 Service Unavailable` when the DB is unreacha
 
 ## Security Headers
 
-Every response from VORTEX includes:
+Every response from RYUO includes:
 
 | Header | Value |
 |--------|-------|
@@ -501,12 +501,12 @@ Every response from VORTEX includes:
 ## Security Limitations & Constraints
 
 ### 1. Python DAG Parsing (PyO3)
-By default, Python DAG execution is sandboxed/disabled in VORTEX. This is because VORTEX parses and executes Python DAG files natively using the PyO3 runtime, which executes actual Python code on the controller. 
+By default, Python DAG execution is sandboxed/disabled in RYUO. This is because RYUO parses and executes Python DAG files natively using the PyO3 runtime, which executes actual Python code on the controller. 
 To enable Python DAGs, the server must be explicitly booted with `--allow-unsafe-dag-exec`. 
 > ⚠️ **You must ensure that only trusted personnel have write access to the `dags/` folder.** Do not process untrusted DAG definitions.
 
 ### 2. Worker gRPC Connections (TLS)
-VORTEX workers currently connect to the controller's gRPC port over **plaintext HTTP/2**, even if the REST API frontend is behind a TLS reverse proxy.
+RYUO workers currently connect to the controller's gRPC port over **plaintext HTTP/2**, even if the REST API frontend is behind a TLS reverse proxy.
 > ⚠️ **Workers must run within a trusted private network (VPC).** Do not expose the Swarm gRPC port (`50051`) to the public internet.
 
 ---

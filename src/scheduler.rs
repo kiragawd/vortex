@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use crate::db_trait::DatabaseBackend;
-use crate::metrics::VortexMetrics;
+use crate::metrics::RyuoMetrics;
 use uuid::Uuid;
 use std::fs;
 use std::path::PathBuf;
@@ -253,7 +253,7 @@ pub fn normalize_schedule(expr: &str) -> Result<String, String> {
 pub struct Scheduler {
     pub dag: Arc<Dag>,
     pub db: Arc<dyn DatabaseBackend>,
-    pub metrics: Option<Arc<VortexMetrics>>,
+    pub metrics: Option<Arc<RyuoMetrics>>,
 }
 
 impl Scheduler {
@@ -265,7 +265,7 @@ impl Scheduler {
         }
     }
 
-    pub fn with_metrics(mut self, metrics: Arc<VortexMetrics>) -> Self {
+    pub fn with_metrics(mut self, metrics: Arc<RyuoMetrics>) -> Self {
         self.metrics = Some(metrics);
         self
     }
@@ -301,7 +301,7 @@ impl Scheduler {
             }
         }
 
-        info!("🚀 Starting DAG (VORTEX Parallel Mode): {}", self.dag.id);
+        info!("🚀 Starting DAG (RYUO Parallel Mode): {}", self.dag.id);
 
         // Create a DAG run
         let dag_run_id = Uuid::new_v4().to_string();
@@ -311,7 +311,7 @@ impl Scheduler {
         // Emit OpenLineage START event for the DAG run
         if let Err(e) = self.db.store_lineage_event(
             "START", &dag_run_id, &self.dag.id, None,
-            "vortex", &self.dag.id,
+            "ryuo", &self.dag.id,
             "[]", "[]", "{}",
         ).await {
             debug!("Lineage DAG START event error (non-fatal): {}", e);
@@ -464,7 +464,7 @@ impl Scheduler {
         let lineage_event_type = if all_success { "COMPLETE" } else { "FAIL" };
         if let Err(e) = self.db.store_lineage_event(
             lineage_event_type, &dag_run_id, &self.dag.id, None,
-            "vortex", &self.dag.id,
+            "ryuo", &self.dag.id,
             "[]", "[]", "{}",
         ).await {
             debug!("Lineage DAG {} event error (non-fatal): {}", lineage_event_type, e);
@@ -502,7 +502,7 @@ impl Scheduler {
     // Bug 10 fix: removed `#[async_recursion]` attribute. Retries now loop
     // inside this function, reusing the same `ti_id` instead of spawning a
     // recursive call that creates a fresh UUID (and thus retry_count = 0).
-    async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<VortexMetrics>>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
+    async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<RyuoMetrics>>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
         let task = match dag.tasks.get(&task_id) {
             Some(t) => t,
             None => {
@@ -550,7 +550,7 @@ impl Scheduler {
             // Emit OpenLineage START event
             if let Err(e) = db.store_lineage_event(
                 "START", &run_id, &dag.id, Some(&task_id),
-                "vortex", &format!("{}.{}", dag.id, task_id),
+                "ryuo", &format!("{}.{}", dag.id, task_id),
                 "[]", "[]", "{}",
             ).await {
                 debug!("Lineage START event error (non-fatal): {}", e);
@@ -558,9 +558,9 @@ impl Scheduler {
 
             // Prepare environment variables (secrets + XCom context)
             let mut env_vars = HashMap::new();
-            env_vars.insert("VORTEX_DAG_ID".to_string(), dag.id.clone());
-            env_vars.insert("VORTEX_TASK_ID".to_string(), task_id.clone());
-            env_vars.insert("VORTEX_RUN_ID".to_string(), run_id.clone());
+            env_vars.insert("RYUO_DAG_ID".to_string(), dag.id.clone());
+            env_vars.insert("RYUO_TASK_ID".to_string(), task_id.clone());
+            env_vars.insert("RYUO_RUN_ID".to_string(), run_id.clone());
 
             let ds = execution_date.format("%Y-%m-%d").to_string();
             let ts = execution_date.to_rfc3339();
@@ -704,7 +704,7 @@ impl Scheduler {
                 // Emit OpenLineage COMPLETE event
                 if let Err(e) = db.store_lineage_event(
                     "COMPLETE", &run_id, &dag.id, Some(&task_id),
-                    "vortex", &format!("{}.{}", dag.id, task_id),
+                    "ryuo", &format!("{}.{}", dag.id, task_id),
                     "[]", "[]", "{}",
                 ).await {
                     debug!("Lineage COMPLETE event error (non-fatal): {}", e);
@@ -745,7 +745,7 @@ impl Scheduler {
                 // Emit OpenLineage FAIL event
                 if let Err(e) = db.store_lineage_event(
                     "FAIL", &run_id, &dag.id, Some(&task_id),
-                    "vortex", &format!("{}.{}", dag.id, task_id),
+                    "ryuo", &format!("{}.{}", dag.id, task_id),
                     "[]", "[]", "{}",
                 ).await {
                     debug!("Lineage FAIL event error (non-fatal): {}", e);

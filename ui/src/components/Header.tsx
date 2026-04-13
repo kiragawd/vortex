@@ -29,11 +29,11 @@ export function Header() {
           aria-label="Notifications"
         >
           <Bell className="h-5 w-5" />
-          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-vortex-500" />
+          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-ryuo-500" />
         </button>
         {user && (
           <div className="ml-2 flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 dark:border-gray-700">
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-vortex-500 to-vortex-700">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-ryuo-500 to-ryuo-700">
               <span className="text-xs font-semibold text-white">
                 {user.username.charAt(0).toUpperCase()}
               </span>

@@ -9,7 +9,7 @@ mod vault_tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         unsafe {
-            std::env::set_var("VORTEX_SECRET_KEY", "a".repeat(32)); // 32 bytes for AES-256
+            std::env::set_var("RYUO_SECRET_KEY", "a".repeat(32)); // 32 bytes for AES-256
         }
         
         let plaintext = "sensitive-database-password";

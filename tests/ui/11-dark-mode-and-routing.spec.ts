@@ -75,6 +75,6 @@ test.describe('11 - Dark Mode & Routing', () => {
     await page.waitForLoadState('networkidle');
     const activeLink = page.locator('a[href="/dags"]');
     const classes = await activeLink.getAttribute('class');
-    expect(classes).toContain('vortex');
+    expect(classes).toContain('ryuo');
   });
 });

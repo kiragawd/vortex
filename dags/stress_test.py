@@ -1,7 +1,7 @@
-from vortex import DAG
-from vortex.operators.bash import BashOperator
+from ryuo import DAG
+from ryuo.operators.bash import BashOperator
 
-# A small stress-test DAG using the Airflow-compatible shim so VORTEX can parse it
+# A small stress-test DAG using the Airflow-compatible shim so RYUO can parse it
 with DAG(dag_id="stress_test_dag") as dag:
     # Secrets test — task will fail if env var not set
     t1 = BashOperator(task_id="secret_check", bash_command="if [ -z \"$STRESS_TEST_SECRET\" ]; then echo 'Secret missing'; exit 1; else echo 'Secret present'; fi")

@@ -16,7 +16,7 @@ export interface PaginatedResponse<T> {
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, headers = {} } = opts;
   const url = `${BASE_URL}${path}`;
-  const token = localStorage.getItem('vortex_token');
+  const token = localStorage.getItem('ryuo_token');
 
   const res = await fetch(url, {
     method,
@@ -29,7 +29,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   });
 
   if (res.status === 401) {
-    localStorage.removeItem('vortex_token');
+    localStorage.removeItem('ryuo_token');
     window.location.href = '/login';
     throw new Error('Unauthorized');
   }

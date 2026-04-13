@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
-use vortex::airflow_ast_parser::parse_airflow_file;
-use vortex::dag_codegen::{
+use ryuo::airflow_ast_parser::parse_airflow_file;
+use ryuo::dag_codegen::{
     assert_graph_equivalence, generate_rust_dag_source, validate_generated_rust_source,
 };
 

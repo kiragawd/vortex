@@ -1,4 +1,4 @@
-# Vortex Docker Compose — Local Development & Testing
+# Ryuo Docker Compose — Local Development & Testing
 # Usage: docker compose up -d
 # With build: docker compose up --build -d
 
@@ -7,8 +7,8 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: vortex
-      POSTGRES_USER: vortex
+      POSTGRES_DB: ryuo
+      POSTGRES_USER: ryuo
       # INFRA-2: Require explicit password — no insecure default
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     ports:
@@ -16,7 +16,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vortex"]
+      test: ["CMD-SHELL", "pg_isready -U ryuo"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -36,38 +36,38 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["vortex", "db", "--migrate"]
+    command: ["ryuo", "db", "--migrate"]
     environment:
-      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD}@postgres:5432/vortex
-      VORTEX_SECRET_KEY: ${VORTEX_SECRET_KEY:-change_me_32_char_secret_key_000}
-      RUST_LOG: vortex=info
+      DATABASE_URL: postgres://ryuo:${POSTGRES_PASSWORD}@postgres:5432/ryuo
+      RYUO_SECRET_KEY: ${RYUO_SECRET_KEY:-change_me_32_char_secret_key_000}
+      RUST_LOG: ryuo=info
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
-  # ─── Vortex Controller ──────────────────────────────────────────────────
+  # ─── Ryuo Controller ──────────────────────────────────────────────────
   controller:
     build:
       context: .
       dockerfile: Dockerfile
     # INFRA-3: Removed --allow-unsafe-dag-exec (unsafe flag must not run in any environment)
-    command: ["vortex", "--swarm"]
+    command: ["ryuo", "--swarm"]
     environment:
-      VORTEX_MODE: controller
+      RYUO_MODE: controller
       # INFRA-2: Use required variable — no insecure default password
-      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD}@postgres:5432/vortex
+      DATABASE_URL: postgres://ryuo:${POSTGRES_PASSWORD}@postgres:5432/ryuo
       # Vault encryption key (32 raw ASCII chars, 64 hex chars, or 44 base64 chars)
-      VORTEX_SECRET_KEY: ${VORTEX_SECRET_KEY:-change_me_32_char_secret_key_000}
-      VORTEX_LOG_LEVEL: info
-      VORTEX_LOG_FORMAT: json
-      RUST_LOG: vortex=info
+      RYUO_SECRET_KEY: ${RYUO_SECRET_KEY:-change_me_32_char_secret_key_000}
+      RYUO_LOG_LEVEL: info
+      RYUO_LOG_FORMAT: json
+      RUST_LOG: ryuo=info
       # Migrations already applied by the `migrate` init service above
-      VORTEX_SKIP_AUTO_MIGRATE: "true"
+      RYUO_SKIP_AUTO_MIGRATE: "true"
       # Allow Python DAG files to be loaded via PyO3.
       # These DAGs are trusted developer-owned files mounted read-only from ./dags.
       # Do NOT set this if dag files come from untrusted external sources.
-      VORTEX_ALLOW_PYTHON_DAGS: "true"
+      RYUO_ALLOW_PYTHON_DAGS: "true"
     ports:
       - "3000:3000"     # HTTP API & Web UI
       - "50051:50051"   # gRPC swarm
@@ -96,27 +96,27 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # ─── Vortex Worker (scalable) ───────────────────────────────────────────
+  # ─── Ryuo Worker (scalable) ───────────────────────────────────────────
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["vortex", "worker", "--controller", "http://controller:50051"]
+    command: ["ryuo", "worker", "--controller", "http://controller:50051"]
     environment:
-      VORTEX_MODE: worker
+      RYUO_MODE: worker
       # INFRA-2: Use required variable — no insecure default password
-      DATABASE_URL: postgres://vortex:${POSTGRES_PASSWORD}@postgres:5432/vortex
-      VORTEX_CONTROLLER_URL: http://controller:50051
-      VORTEX_LOG_LEVEL: info
-      VORTEX_LOG_FORMAT: json
-      RUST_LOG: vortex=info
+      DATABASE_URL: postgres://ryuo:${POSTGRES_PASSWORD}@postgres:5432/ryuo
+      RYUO_CONTROLLER_URL: http://controller:50051
+      RYUO_LOG_LEVEL: info
+      RYUO_LOG_FORMAT: json
+      RUST_LOG: ryuo=info
       # Migrations already applied by the `migrate` init service
-      VORTEX_SKIP_AUTO_MIGRATE: "true"
+      RYUO_SKIP_AUTO_MIGRATE: "true"
     depends_on:
       controller:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -x vortex || exit 1"]
+      test: ["CMD-SHELL", "pgrep -x ryuo || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3

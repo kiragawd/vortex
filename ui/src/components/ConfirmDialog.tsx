@@ -40,7 +40,7 @@ export function ConfirmDialog({
   const confirmColors =
     variant === 'danger'
       ? 'bg-red-600 hover:bg-red-700 active:bg-red-800 text-white'
-      : 'bg-vortex-600 hover:bg-vortex-700 active:bg-vortex-800 text-white';
+      : 'bg-ryuo-600 hover:bg-ryuo-700 active:bg-ryuo-800 text-white';
 
   return (
     <div

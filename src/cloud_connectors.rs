@@ -316,7 +316,7 @@ impl KafkaConnector {
     ///
     /// # Errors
     /// Always returns an error until `rdkafka` support is compiled in.
-    /// Set `VORTEX_KAFKA_BROKERS` and rebuild with the `rdkafka` feature.
+    /// Set `RYUO_KAFKA_BROKERS` and rebuild with the `rdkafka` feature.
     pub async fn produce_message(&self, topic: &str, payload: &[u8], key: Option<&str>) -> Result<()> {
         let brokers = self.brokers.join(",");
         tracing::warn!(
@@ -828,7 +828,7 @@ mod tests {
             vec!["broker1:9092".to_string(), "broker2:9092".to_string()],
             "events",
         )
-        .with_group_id("vortex-consumer")
+        .with_group_id("ryuo-consumer")
         .with_sasl("PLAIN", "user", "pass");
         assert_eq!(kafka.brokers.len(), 2);
         assert_eq!(kafka.topic, "events");
