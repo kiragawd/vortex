@@ -238,6 +238,38 @@ async fn execute_task_remote(task: &TaskAssignment, worker_id: &str) -> TaskResu
         "bash" => {
             TaskExecutor::execute_bash(&task.task_id, &task.command, task.secrets.clone(), timeout).await
         },
+        // "plugin" task type: command holds the registered plugin name.
+        "plugin" => {
+            let plugin_name = &task.command;
+            if let Some(plugin) = crate::executor::get_plugin(plugin_name) {
+                let ctx = crate::executor::TaskContext {
+                    task_id: task.task_id.clone(),
+                    command: task.command.clone(),
+                    config: serde_json::from_str(&task.config_json).unwrap_or(serde_json::json!({})),
+                    env_vars: task.secrets.clone(),
+                };
+                match plugin.execute(&ctx).await {
+                    Ok(res) => res,
+                    Err(e) => crate::executor::ExecutionResult {
+                        task_id: task.task_id.clone(),
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: format!("Plugin '{}' error: {}", plugin_name, e),
+                        duration_ms: 0,
+                    }
+                }
+            } else {
+                crate::executor::ExecutionResult {
+                    task_id: task.task_id.clone(),
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("Plugin '{}' not found in registry. Ensure it is loaded at server startup.", plugin_name),
+                    duration_ms: 0,
+                }
+            }
+        },
         other_type => {
             if let Some(plugin) = crate::executor::get_plugin(other_type) {
                 let ctx = crate::executor::TaskContext {

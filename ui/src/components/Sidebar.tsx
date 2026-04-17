@@ -38,9 +38,9 @@ export function Sidebar() {
   return (
     <aside className="flex w-64 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
       <div className="flex h-16 items-center gap-3 border-b border-gray-200 px-6 dark:border-gray-800">
-        <img src="/ryuo.svg" alt="Ryuo" className="h-12 w-12 rounded-lg" />
+          <img src="/ryuo.svg" alt="Ryuo" className="h-10 w-10 flex-shrink-0 rounded-xl" />
         <div>
-          <span className="text-lg font-bold text-gray-900 dark:text-white">Ryuo</span>
+          <span className="text-xl font-bold text-gray-900 dark:text-white">Ryuo</span>
           <p className="text-[10px] font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500">Enterprise</p>
         </div>
       </div>

@@ -40,7 +40,7 @@ export function LoginPage() {
       <div className="relative w-full max-w-md">
         {/* Logo */}
         <div className="mb-8 text-center">
-          <img src="/ryuo.svg" alt="Ryuo" className="mx-auto mb-4 h-24 w-24" />
+          <img src="/ryuo.svg" alt="Ryuo" className="mx-auto mb-3 h-20 w-20" />
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Ryuo</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Enterprise Orchestration Platform
