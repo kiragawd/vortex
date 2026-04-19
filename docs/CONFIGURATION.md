@@ -166,12 +166,19 @@ Complete reference for all supported environment variables.
 | `RYUO_RATE_LIMIT_MAX` | `100` | Maximum requests per rate-limit window per `(IP, username)` key |
 | `RYUO_RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |
 
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RYUO_SAML_ALLOW_UNVERIFIED` | `false` | Allow unverified SAML signatures. **Dev only** — do not enable in production. |
+
 ### Python Execution
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RYUO_PYTHON_TIMEOUT` | `30` | Python task execution timeout in seconds |
 | `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | none | Set to `1` when using Python 3.14+ for PyO3 ABI compatibility |
+| `RYUO_ALLOW_PYTHON_DAGS` | `false` | Allow Python DAG loading via PyO3. When disabled, only YAML/JSON DAGs are loaded. |
 
 ### Observability
 

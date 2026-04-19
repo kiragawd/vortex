@@ -14,6 +14,10 @@ use std::process::Stdio;
 use tokio::process::Command;
 use tokio::time::{Duration, sleep};
 
+use sqlparser::ast::Statement;
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser as SqlParser;
+
 async fn with_retry<T, F, Fut>(ctx: &ConnectorContext, mut op: F) -> Result<T>
 where
     F: FnMut() -> Fut,
@@ -61,6 +65,38 @@ fn auth_token(ctx: &ConnectorContext) -> Option<String> {
     }
     None
 }
+
+/// Validate that a SQL query is safe for connector execution.
+///
+/// Uses `sqlparser` to parse and verify:
+/// - The query parses successfully (rejects malformed SQL)
+/// - Exactly one statement is present (rejects multi-statement injection)
+/// - The statement is a SELECT (rejects INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, TRUNCATE, etc.)
+///
+/// Returns `Ok(())` if the query is a valid, single SELECT statement.
+pub fn validate_connector_sql(sql: &str) -> Result<(), String> {
+    let dialect = GenericDialect {};
+    let statements = SqlParser::parse_sql(&dialect, sql)
+        .map_err(|e| format!("SQL validation failed — parse error: {}", e))?;
+
+    if statements.len() != 1 {
+        return Err(format!(
+            "SQL validation failed — expected 1 statement, found {}",
+            statements.len()
+        ));
+    }
+
+    match &statements[0] {
+        Statement::Query(_) => Ok(()),
+        other => Err(format!(
+            "SQL validation failed — only SELECT allowed, got: {}",
+            other
+        )),
+    }
+}
+
+/// Maximum number of pagination pages to prevent unbounded loops.
+const MAX_PAGINATION_PAGES: usize = 100;
 
 pub struct PostgresEnterpriseConnector {
     pool: PgPool,
@@ -134,6 +170,10 @@ impl EnterpriseConnector for PostgresEnterpriseConnector {
 
     async fn execute(&self, ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
         let sql = req.sql.ok_or_else(|| anyhow!("Missing SQL in request"))?;
+
+        // BUG-005 FIX: Validate SQL before execution — only allow SELECT statements.
+        validate_connector_sql(&sql).map_err(|e| anyhow!("Postgres connector: {}", e))?;
+
         let rows = with_retry(ctx, || {
             let sql = sql.clone();
             async move { Ok(sqlx::query(&sql).fetch_all(&self.pool).await?) }
@@ -501,21 +541,29 @@ impl SnowflakeConnector {
         ];
 
         // Auth: keypair or password
+        let mut temp_key_path: Option<std::path::PathBuf> = None;
         match &self.auth_method {
             SnowflakeAuth::Keypair {
                 username,
                 private_key_pem,
                 passphrase: _,
             } => {
-                // Write key to a temp file for snowsql --private-key-path.
-                // Use tempfile crate for a secure, auto-cleaned temp path.
+                // BUG-027 FIX: Use unpredictable temp path instead of request_id.
                 let key_path = std::env::temp_dir().join(format!(
                     "ryuo_sf_key_{}.pem",
-                    ctx.request_id
+                    uuid::Uuid::new_v4()
                 ));
+                temp_key_path = Some(key_path.clone());
                 tokio::fs::write(&key_path, private_key_pem)
                     .await
                     .context("Failed to write temp keypair file")?;
+                // BUG-027 FIX: Set restrictive permissions on the temp key file.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                        .context("Failed to set permissions on temp keypair file")?;
+                }
                 args.extend_from_slice(&[
                     "--username".to_string(),
                     username.clone(),
@@ -584,13 +632,11 @@ impl SnowflakeConnector {
         .map_err(|_| anyhow!("SnowSQL query timed out after {}ms", ctx.timeout_ms))?
         .context("Failed to execute snowsql command")?;
 
-        // Clean up temp key file if created
-        if let SnowflakeAuth::Keypair { .. } = &self.auth_method {
-            let key_path = std::env::temp_dir().join(format!(
-                "ryuo_sf_key_{}.pem",
-                ctx.request_id
-            ));
-            let _ = tokio::fs::remove_file(&key_path).await;
+        // BUG-027 FIX: Clean up temp key file using tracked path; log errors instead of ignoring.
+        if let Some(ref kp) = temp_key_path {
+            if let Err(e) = tokio::fs::remove_file(kp).await {
+                tracing::warn!("Failed to remove temp Snowflake key file {:?}: {}", kp, e);
+            }
         }
 
         if !output.status.success() {
@@ -714,6 +760,14 @@ impl SnowflakeConnector {
         }
 
         while let Some(uri) = next_uri {
+            // BUG-085 FIX: Prevent unbounded pagination loops.
+            if pages >= MAX_PAGINATION_PAGES {
+                tracing::warn!(
+                    "Snowflake pagination exceeded {} pages, stopping",
+                    MAX_PAGINATION_PAGES
+                );
+                break;
+            }
             let page: SnowflakeResponse = with_retry(ctx, || {
                 let client = client.clone();
                 let headers = headers.clone();
@@ -1303,13 +1357,21 @@ impl EnterpriseConnector for MySqlConnector {
 
     async fn execute(&self, ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
         let mut sql = req.sql.ok_or_else(|| anyhow!("Missing SQL for MySQL connector"))?;
+
+        // BUG-007 FIX: Validate SQL before execution — only allow SELECT statements.
+        validate_connector_sql(&sql).map_err(|e| anyhow!("MySQL connector: {}", e))?;
+
         let offset = req
             .params
             .get("offset")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if let Some(limit) = req.limit {
-            sql = format!("{} LIMIT {} OFFSET {}", sql, limit, offset);
+            // BUG-007 FIX: Only append LIMIT if the SQL doesn't already contain one.
+            let sql_upper = sql.to_uppercase();
+            if !sql_upper.contains("LIMIT") {
+                sql = format!("{} LIMIT {} OFFSET {}", sql, limit, offset);
+            }
         }
 
         let user = ctx
@@ -1444,6 +1506,10 @@ impl EnterpriseConnector for MsSqlConnector {
 
     async fn execute(&self, ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
         let mut sql = req.sql.ok_or_else(|| anyhow!("Missing SQL for MSSQL connector"))?;
+
+        // BUG-008 FIX: Validate SQL before execution — only allow SELECT statements.
+        validate_connector_sql(&sql).map_err(|e| anyhow!("MSSQL connector: {}", e))?;
+
         let offset = req
             .params
             .get("offset")
@@ -1482,8 +1548,8 @@ impl EnterpriseConnector for MsSqlConnector {
                     .arg(database)
                     .arg("-U")
                     .arg(user)
-                    .arg("-P")
-                    .arg(pass)
+                    // SECURITY (H-2): Pass password via env var, not CLI arg (visible in ps)
+                    .env("SQLCMDPASSWORD", pass)
                     .arg("-s")
                     .arg("\t")
                     .arg("-W")

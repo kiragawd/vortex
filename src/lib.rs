@@ -36,3 +36,4 @@ pub mod devops;
 pub mod migration;
 pub mod disaster_recovery;
 pub mod config_ops;
+pub mod mcp_server;

@@ -120,7 +120,8 @@ pub trait DatabaseBackend: Send + Sync {
     ) -> Result<Option<(String, String, DateTime<Utc>)>>;
 
     /// Return all task instances currently in the 'Running' state (crash recovery).
-    async fn get_interrupted_tasks(&self) -> Result<Vec<(String, String, String)>>;
+    /// Returns (id, dag_id, task_id, run_id).
+    async fn get_interrupted_tasks(&self) -> Result<Vec<(String, String, String, String)>>;
 
     /// Append stdout/stderr logs to a task instance.
     async fn update_task_logs(&self, ti_id: &str, stdout: &str, stderr: &str) -> Result<()>;
@@ -203,6 +204,12 @@ pub trait DatabaseBackend: Send + Sync {
         role: &str,
         api_key: &str,
     ) -> Result<()>;
+
+    /// Set the `password_change_required` flag for a user (BUG-020).
+    ///
+    /// Used after auto-provisioning (OIDC/SAML) to ensure externally-created
+    /// users cannot use local password auth without first changing their password.
+    async fn set_password_change_required(&self, username: &str, required: bool) -> Result<()>;
 
     /// Delete a user by username.
     async fn delete_user(&self, username: &str) -> Result<()>;
@@ -385,6 +392,11 @@ pub trait DatabaseBackend: Send + Sync {
     async fn acquire_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<bool>;
     async fn release_pool_slot(&self, pool_name: &str, task_instance_id: &str) -> Result<()>;
 
+    // ── Workers ──────────────────────────────────────────────────────────────
+
+    /// Return all registered workers.
+    async fn get_all_workers(&self) -> Result<Vec<serde_json::Value>>;
+
     // ── Health ────────────────────────────────────────────────────────────────
 
     /// Improvement 42: Lightweight connectivity check — returns true if the
@@ -555,6 +567,8 @@ pub trait DatabaseBackend: Send + Sync {
     /// Dataset CRUD.
     async fn upsert_dataset(&self, id: &str, uri: &str, name: &str, description: Option<&str>, producer_dag_id: Option<&str>, metadata: &serde_json::Value) -> Result<()>;
     async fn get_datasets(&self, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>>;
+    /// Get or create a dataset by URI, returning its ID.
+    async fn get_or_create_dataset_by_uri(&self, uri: &str) -> Result<String>;
 
     /// Dataset events.
     async fn insert_dataset_event(&self, event: &crate::advanced_scheduler::DatasetEvent) -> Result<()>;
@@ -570,4 +584,93 @@ pub trait DatabaseBackend: Send + Sync {
     async fn get_cross_dag_dependencies(&self, dag_id: &str) -> Result<Vec<serde_json::Value>>;
     async fn check_upstream_completed(&self, upstream_dag: &str, upstream_task: Option<&str>, condition: &str) -> Result<bool>;
     async fn delete_cross_dag_dependency(&self, id: &str) -> Result<()>;
+
+    // ─── Event Triggers (T-011) ─────────────────────────────────────
+    async fn create_event_trigger(&self, id: &str, name: &str, event_type: &str, filter_json: &str, dag_id: &str, config_json: &str, team_id: Option<&str>) -> Result<()>;
+    async fn get_event_triggers(&self, limit: i64) -> Result<Vec<serde_json::Value>>;
+    async fn delete_event_trigger(&self, id: &str) -> Result<()>;
+
+    // ─── Sensor Tasks (T-012) ───────────────────────────────────────
+    async fn get_sensor_tasks(&self, limit: i64) -> Result<Vec<serde_json::Value>>;
+
+    // ─── Raw Query Execution (T-013) ────────────────────────────────
+    /// Execute a read-only SQL query and return results as JSON rows.
+    async fn execute_raw_query(&self, sql: &str, timeout_secs: u64, max_rows: i64) -> Result<Vec<serde_json::Value>>;
+
+    // ─── Task Queue & Reprioritization (T-014) ──────────────────────
+    /// Return queued/scheduled tasks ordered by priority.
+    async fn get_task_queue(&self, limit: i64) -> Result<Vec<serde_json::Value>>;
+    /// Change the priority of a queued task instance.
+    async fn reprioritize_task(&self, ti_id: &str, priority: i32) -> Result<()>;
+    /// Get a scheduler state value by key.
+    async fn get_scheduler_state(&self, key: &str) -> Result<Option<String>>;
+    /// Set (upsert) a scheduler state value.
+    async fn set_scheduler_state(&self, key: &str, value: &str) -> Result<()>;
+
+    // ─── Data Freshness (T-015) ─────────────────────────────────────
+    /// Get the freshness info for a specific dataset by URI.
+    async fn get_dataset_freshness(&self, uri: &str) -> Result<Option<serde_json::Value>>;
+    /// Get all stale datasets (not updated in the given number of seconds).
+    async fn get_stale_datasets(&self, stale_after_secs: i64) -> Result<Vec<serde_json::Value>>;
+
+    // ─── Dataset Schemas (T-016) ────────────────────────────────────
+    /// Store a new schema snapshot for a dataset.
+    async fn store_dataset_schema(&self, dataset_id: &str, schema_json: &str, source_run_id: Option<&str>) -> Result<()>;
+    /// Get the latest schema for a dataset.
+    async fn get_latest_dataset_schema(&self, dataset_id: &str) -> Result<Option<serde_json::Value>>;
+    /// Get the diff between the latest two schema versions for a dataset.
+    async fn get_dataset_schema_diff(&self, dataset_id: &str) -> Result<Option<serde_json::Value>>;
+
+    // ─── Data Volume / Stats (T-017) ────────────────────────────────
+    /// Get volume statistics for a dataset.
+    async fn get_dataset_stats(&self, dataset_id: &str) -> Result<Option<serde_json::Value>>;
+
+    // ─── Dynamic Task Mapping (T-018) ───────────────────────────────
+    /// Get tasks with map_values in config that are Queued for a DAG run.
+    async fn get_mappable_tasks(&self, dag_id: &str, run_id: &str) -> Result<Vec<serde_json::Value>>;
+    /// Create a mapped task instance from a parent task.
+    async fn create_mapped_task_instance(&self, parent_ti_id: &str, map_index: i32, dag_id: &str, task_id: &str, run_id: &str, execution_date: chrono::DateTime<chrono::Utc>) -> Result<String>;
+
+    // ─── Approval Gates CLI (T-020) ───────────────────────────────
+    // Uses existing approval_requests / approval_gates methods above.
+
+    // ─── Rate Limiting (T-021) ──────────────────────────────────────
+    /// Check whether an actor is within the rate limit for an action.
+    async fn check_rate_limit(&self, actor: &str, action: &str, max_per_minute: i32) -> Result<bool>;
+    /// Increment the rate limit counter for an actor+action in the current minute window.
+    async fn increment_rate_limit(&self, actor: &str, action: &str) -> Result<()>;
+    /// Get rate limit status for an actor (current counts per action).
+    async fn get_rate_limit_status(&self, actor: &str) -> Result<Vec<serde_json::Value>>;
+
+    // ─── Agent State (T-025) ────────────────────────────────────────
+    async fn agent_state_set(&self, agent_id: &str, key: &str, value: &str, ttl_secs: Option<i64>) -> Result<()>;
+    async fn agent_state_get(&self, agent_id: &str, key: &str) -> Result<Option<String>>;
+    async fn agent_state_list(&self, agent_id: &str, limit: i64) -> Result<Vec<serde_json::Value>>;
+    async fn agent_state_delete(&self, agent_id: &str, key: &str) -> Result<()>;
+
+    // ─── Agent Decision Log (T-026) ─────────────────────────────────
+    async fn agent_log_insert(&self, id: &str, agent_id: &str, message: &str, context: &str, level: &str) -> Result<()>;
+    async fn agent_log_query(&self, agent_id: &str, since_secs: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>>;
+
+    // ─── Event Watch & Custom Events (T-027/T-028) ──────────────────
+    /// Get recent events from dataset_events, optionally filtered by type and time.
+    async fn get_recent_events(&self, event_type: Option<&str>, since_secs: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>>;
+    /// Publish a custom event for inter-agent communication.
+    async fn publish_custom_event(&self, id: &str, event_type: &str, source: &str, payload: &str) -> Result<()>;
+    /// Get custom events, optionally filtered by type and time.
+    async fn get_custom_events(&self, event_type: Option<&str>, since_secs: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>>;
+
+    // ─── Scoped API Tokens (T-036) ──────────────────────────────────
+    /// Create a scoped API token with structured scope rules.
+    async fn create_scoped_token(
+        &self,
+        token_id: &str,
+        user: &str,
+        scope_rules: &str,
+        description: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<String>;
+
+    /// Get the scope rules for a token by ID prefix.
+    async fn get_token_scopes(&self, token_id: &str) -> Result<Option<serde_json::Value>>;
 }

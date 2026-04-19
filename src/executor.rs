@@ -108,9 +108,15 @@ impl PluginRegistry {
 const MAX_LOG_BYTES: usize = 1_048_576;
 
 /// Truncate a string to MAX_LOG_BYTES, appending a marker if truncated.
+/// BUG-057 FIX: Find the last valid UTF-8 char boundary instead of slicing
+/// at an arbitrary byte offset, which would panic on multi-byte characters.
 fn truncate_log(s: String) -> String {
     if s.len() > MAX_LOG_BYTES {
-        let mut truncated = s[..MAX_LOG_BYTES].to_string();
+        let mut end = MAX_LOG_BYTES;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut truncated = s[..end].to_string();
         truncated.push_str("\n... [TRUNCATED — output exceeded 1 MB] ...");
         truncated
     } else {
@@ -138,7 +144,11 @@ pub struct HttpOperator;
 impl RyuoOperator for HttpOperator {
     async fn execute(&self, context: &TaskContext) -> Result<ExecutionResult> {
         let start = Instant::now();
-        let client = reqwest::Client::new();
+        // BUG-058 FIX: Add a 30-second request timeout to prevent indefinite hangs.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
         
         let url = context.config.get("endpoint").and_then(|v| v.as_str()).unwrap_or(&context.command);
         if url.is_empty() {

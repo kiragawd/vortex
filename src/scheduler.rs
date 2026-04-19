@@ -174,6 +174,10 @@ pub enum RunType {
 
 /// ARCH-4: Centralized retry policy for consistent behavior across components.
 /// Use this instead of ad-hoc `retry_delay_secs` integers scattered through the codebase.
+///
+/// BUG-080: Currently defined but not yet wired into the scheduler's retry loop.
+/// Future work: replace ad-hoc `retry_delay_secs` / `max_retries` integers in `Task`
+/// with a `RetryPolicy` field and use `delay_for_attempt()` in `execute_task`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RetryPolicy {
     /// Fixed delay between retries.
@@ -277,6 +281,9 @@ impl Scheduler {
 
         // ── Team Quota Enforcement ──────────────────────────────────────────
         // Determine if the DAG belongs to a team and if that team has hit its limits.
+        // KNOWN ISSUE (BUG-048): Team quota check-and-create is not atomic.
+        // Two concurrent triggers can both pass the check and exceed the quota.
+        // Fix requires SELECT ... FOR UPDATE in a transaction or advisory locks.
         if let Ok(Some(dag_meta)) = self.db.get_dag_by_id(&self.dag.id).await {
             if let Some(team_id) = dag_meta.get("team_id").and_then(|t| t.as_str()) {
                 if let Ok(Some(team_meta)) = self.db.get_team(team_id).await {
@@ -317,11 +324,9 @@ impl Scheduler {
             debug!("Lineage DAG START event error (non-fatal): {}", e);
         }
 
-        // Persist DAG and tasks to DB
-        self.db.save_dag(&self.dag.id, self.dag.schedule_interval.as_deref()).await?;
-        for task in self.dag.tasks.values() {
-            self.db.save_task(&self.dag.id, &task.id, &task.name, &task.command, &task.task_type, &task.config.to_string(), task.max_retries, task.retry_delay_secs, &task.pool, task.task_group.as_deref(), task.execution_timeout).await?;
-        }
+        // BUG-049 FIX: Use register_dag which wraps save_dag + save_task in a
+        // single transaction, preventing partial writes if one step fails.
+        self.db.register_dag(&self.dag).await?;
 
         // BUG-7 FIX: Crash recovery runs once at startup in main.rs.
         // Calling it here on every trigger caused duplicate DB updates and potential races.
@@ -355,8 +360,12 @@ impl Scheduler {
         let dag = Arc::clone(&self.dag);
         let db = Arc::clone(&self.db);
         let metrics = self.metrics.clone();
+        // BUG-011 FIX: Create a pool manager so execute_task can enforce pool slot limits.
+        let pool_mgr = Arc::new(crate::pools::PoolManager::new(Arc::clone(&self.db)));
 
-        let (tx, mut rx) = mpsc::channel(100);
+        // BUG-010 FIX: Size channel to task count so skip propagation can never
+        // fill it and deadlock the loop (the sole consumer is this same loop).
+        let (tx, mut rx) = mpsc::channel(dag.tasks.len().max(100));
         let mut tasks_remaining = dag.tasks.len();
         let mut all_success = true;
         let mut active_tasks = 0; // BUG-10 FIX: Track active tasks
@@ -370,12 +379,13 @@ impl Scheduler {
                     let dag_clone = Arc::clone(&dag);
                     let db_clone = Arc::clone(&db);
                     let metrics_clone = metrics.clone();
+                    let pool_clone = Arc::clone(&pool_mgr);
                     let task_id_clone = task_id.clone();
                     let run_id = dag_run_id.clone();
                     
                     active_tasks += 1;
                     tokio::spawn(async move {
-                        Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
+                        Self::execute_task(dag_clone, db_clone, metrics_clone, pool_clone, task_id_clone, tx_clone, run_id).await;
                     });
                 }
             }
@@ -436,12 +446,13 @@ impl Scheduler {
                                 let dag_clone = Arc::clone(&dag);
                                 let db_clone = Arc::clone(&db);
                                 let metrics_clone = metrics.clone();
+                                let pool_clone = Arc::clone(&pool_mgr);
                                 let task_id_clone = down.clone();
                                 let run_id = dag_run_id.clone();
                                 
                                 active_tasks += 1;
                                 tokio::spawn(async move {
-                                    Self::execute_task(dag_clone, db_clone, metrics_clone, task_id_clone, tx_clone, run_id).await;
+                                    Self::execute_task(dag_clone, db_clone, metrics_clone, pool_clone, task_id_clone, tx_clone, run_id).await;
                                 });
                             }
                         }
@@ -502,7 +513,7 @@ impl Scheduler {
     // Bug 10 fix: removed `#[async_recursion]` attribute. Retries now loop
     // inside this function, reusing the same `ti_id` instead of spawning a
     // recursive call that creates a fresh UUID (and thus retry_count = 0).
-    async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<RyuoMetrics>>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
+    async fn execute_task(dag: Arc<Dag>, db: Arc<dyn DatabaseBackend>, metrics: Option<Arc<RyuoMetrics>>, pool_mgr: Arc<crate::pools::PoolManager>, task_id: String, tx: mpsc::Sender<(String, bool)>, run_id: String) {
         let task = match dag.tasks.get(&task_id) {
             Some(t) => t,
             None => {
@@ -524,6 +535,29 @@ impl Scheduler {
         }
 
         if let Some(m) = &metrics { m.record_task_queued(); }
+
+        // BUG-011 FIX: Acquire a pool slot before executing the task.
+        // If the pool is full, log and mark the task as failed rather than running unthrottled.
+        match pool_mgr.acquire_slot(&task.pool, &ti_id).await {
+            Ok(true) => { /* slot acquired */ }
+            Ok(false) => {
+                warn!(pool = %task.pool, task = %task_id, "Pool full — task cannot acquire slot");
+                if let Err(e) = db.update_task_state(&ti_id, "Failed").await {
+                    error!("DB error updating task state to Failed: {}", e);
+                }
+                if let Err(e) = db.log_task_event(&ti_id, &dag.id, &task_id, &run_id, "failed", Some("Pool slot unavailable"), None).await {
+                    error!("DB error logging failed event: {}", e);
+                }
+                if let Err(e) = tx.send((task_id.clone(), false)).await {
+                    tracing::error!(task = %task_id, "Failed to send task result on channel: {}", e);
+                }
+                return;
+            }
+            Err(e) => {
+                error!(pool = %task.pool, task = %task_id, "Pool slot acquisition error: {}", e);
+                // Non-fatal: proceed without pool enforcement rather than blocking the DAG
+            }
+        }
 
         // Bug 10 fix: retry loop — keeps the same ti_id across attempts.
         // The old code called execute_task recursively, generating a new UUID
@@ -755,7 +789,15 @@ impl Scheduler {
             }
         }
 
-        let _ = tx.send((task_id, final_success)).await;
+        // BUG-011 FIX: Release the pool slot after task completes (success or failure).
+        if let Err(e) = pool_mgr.release_slot(&task.pool, &ti_id).await {
+            error!(pool = %task.pool, task = %task_id, "Failed to release pool slot: {}", e);
+        }
+
+        // BUG-050 FIX: Log channel send errors instead of silently ignoring them.
+        if let Err(e) = tx.send((task_id.clone(), final_success)).await {
+            tracing::error!(task = %task_id, "Failed to send task result on channel: {}", e);
+        }
     }
 }
 

@@ -55,6 +55,10 @@ const NAMESPACE: &str = "ryuo";
 /// a stale value (missing one decrement under extreme contention) is far
 /// lower than the cost of publishing a negative count, which triggers false
 /// alerts.
+///
+/// Note: The check-then-dec has a TOCTOU race under extreme contention,
+/// briefly allowing a gauge to reach -1. This is acceptable for advisory
+/// telemetry metrics and avoids the complexity of atomic CAS loops.
 #[inline]
 pub fn safe_gauge_dec(gauge: &IntGauge) {
     if gauge.get() > 0 {

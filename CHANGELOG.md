@@ -1,5 +1,129 @@
 # Changelog
 
+## [0.8.1] - 2026-04-19 — Security & Bug Fix Release
+
+### Security Fixes
+- SAML authentication: signature validation now rejects unsigned assertions by default. Set `RYUO_SAML_ALLOW_UNVERIFIED=true` to allow (dev only).
+- OIDC auto-provisioned users now have `password_change_required=true` — must change password on first local login.
+- PKCE store now has 10-minute TTL with automatic pruning.
+- All RBAC, token, IP allowlist, pool, retention, incident, and compliance endpoints now require Admin role.
+- API token hashing upgraded from SipHash to SHA-256.
+- Webhook HMAC validation uses constant-time comparison (prevents timing attacks).
+- SQL injection prevention: all connector SQL is validated via `sqlparser` (SELECT-only whitelist).
+- SSRF protection: webhook/notification URLs validated against private IP ranges.
+- CI pipeline shell commands validated against dangerous patterns.
+- Secret masking in compliance module now always returns `****`.
+
+### Bug Fixes
+- Fixed scheduler deadlock when >100 downstream tasks need skipping (channel buffer sized to task count).
+- Fixed pool slot enforcement in local execution path.
+- Fixed `cross_dag_check_upstream_completed` querying wrong column (`status` → `state`).
+- Fixed `find_api_token_by_hash` to filter by token hash instead of scanning all tokens.
+- Fixed `truncate_log` panic on multi-byte UTF-8 characters.
+- Fixed `HttpOperator` missing 30s request timeout.
+- Fixed `mark_stale_workers_offline` TOCTOU with single `UPDATE RETURNING`.
+- Fixed schema version increment to use atomic operation.
+- Fixed N+1 query patterns in dataset checks.
+- Added LIMIT 1000 to unbounded queries.
+- Fixed disaster recovery stubs to return `Err("not implemented")`.
+- Fixed `export_environment` to walk full inheritance chain with cycle detection.
+- Fixed `FileWatchSensor` false positive on first poll.
+- Fixed notification dispatch to cap at 10 concurrent requests.
+- Fixed Redshift connector to cache connection pool via LRU.
+- Fixed incident provider HTTP clients to use 30s timeout.
+- Fixed lineage emitter to use 10s timeout and error on non-2xx responses.
+- Fixed Opsgenie dedup_key URL encoding.
+- Fixed Snowflake REST pagination bounded to 100 pages.
+- Fixed `pause_dag` to propagate DB errors.
+- Fixed rate limiter key to use username.
+- Added rate limiter HashMap pruning.
+
+### Database
+- Migration 019: Schema hardening — UNIQUE on `dag_versions(dag_id,version)`, FK constraints, CHECK constraints on state/role columns, indexes.
+- CHECK constraints include `Active` for `workers.state` and `Queued` for `dag_runs.state`.
+
+### CLI
+- Added `validate_identifier()` on key CLI commands.
+- Added audit logging on secret/user/team operations.
+- Exit code 1 for not-found results.
+
+### Breaking Changes
+- SAML auth rejected by default without `RYUO_SAML_ALLOW_UNVERIFIED=true`.
+- `get_interrupted_tasks` return type changed to 4-tuple (includes `run_id`).
+- `token_has_scope` wildcard matching tightened.
+- Snowflake `with_keypair_auth` now takes 3 args (user, key, passphrase: `Option<&str>`).
+
+---
+
+## [0.8.0] - Agentic Data-Aware Orchestration Release
+
+### Added
+
+#### Agentic CLI (38 new CLI command groups)
+- **XCom CLI** — `ryuo xcom push/pull/list` for inter-task data exchange
+- **Dataset Event CLI** — `ryuo dataset event emit` with downstream trigger reporting
+- **DAG Runs CLI** — `ryuo dag runs <id>` with `--state` filter
+- **DAG Create YAML** — `ryuo dag create --from-yaml` with `--dry-run` validation
+- **JSON Output Mode** — Global `--output json` flag on all commands
+- **Config Overrides** — `ryuo dag trigger <id> --config '{"key":"val"}'`
+- **DAG Backfill** — `ryuo dag backfill` with `--interval`, `--dry-run`, 10K safety cap
+- **Task Logs** — `ryuo task logs <id> --tail N`
+- **Event Trigger CRUD** — `ryuo event trigger create/list/delete`
+- **Sensor Status** — `ryuo sensor list` for sensor task instances
+- **Connector Query** — `ryuo connector query <name> --sql "..."` (SELECT-only via sqlparser)
+
+#### Data-Aware Operations
+- **Queue Management** — `ryuo queue list/reprioritize` for priority-based task scheduling
+- **Dataset Freshness** — `ryuo dataset freshness --uri/--stale-after`
+- **Schema Change Detection** — `ryuo dataset schema store/diff` with automatic diff
+- **Data Volume Stats** — `ryuo dataset stats --uri`
+- **Dynamic Task Mapping** — Fan-out scheduler with 1000-task safety cap
+- **Data Profiling** — `ryuo profile postgres --table <name>` (row count, null %, distinct, min/max)
+- **Anomaly Detection** — `ryuo sensor check-anomaly --sql --baseline --sigma`
+
+#### Safety & Governance
+- **DAG Validation** — `ryuo validate <file>` for YAML/JSON cycle+structure checks
+- **Approval Gates** — `ryuo approval request/list/approve/reject`
+- **Rate Limiting** — `ryuo rate-limit check/status` with sliding window
+- **Mutation Audit** — `--reason` flag on all state-changing commands
+- **DAG Versioning** — `ryuo dag versions/rollback` for version history
+- **Input Hardening** — Command injection prevention, identifier validation, path sanitization
+
+#### Agent Integration
+- **Agent State Store** — `ryuo agent state get/set/list/delete` with TTL
+- **Agent Decision Log** — `ryuo agent log insert/query` with structured context
+- **Event Watch** — `ryuo event recent/watch` with poll-based event stream
+- **Inter-Agent Events** — `ryuo event publish/custom` for agent-to-agent communication
+- **MCP Tool Server** — `ryuo mcp tools/describe` exposing 12 operations as LLM-callable tools
+- **Agent-Scoped Tokens** — `ryuo token create --scope-rule "dag:etl_*:trigger,read"`
+
+#### Infrastructure Connectors
+- **K8s Executor CLI** — `ryuo k8s status/pods/logs/config` via REST API
+- **Kafka Connector** — `ryuo kafka topics/produce/consume` via REST Proxy
+- **S3/GCS Storage** — `ryuo storage ls/stat/freshness` for object storage
+- **Delta Lake** — `ryuo delta-lake info/schema/history` via _delta_log parsing
+
+#### Production Hardening
+- **Health Endpoint** — `ryuo health` deep check (DB, workers, queue, datasets)
+- **DR Backup** — `ryuo backup create/list/info` with real pg_dump
+- **Swarm Status (real)** — `ryuo swarm status/workers` queries worker table
+- **Connector Health (real)** — `ryuo connector health <name>` tests connectivity
+
+### Database Migrations
+- `011_event_triggers.sql` — Event triggers table
+- `012_task_priority.sql` — Task priority + scheduler state
+- `013_dataset_schemas.sql` — Dataset schema tracking
+- `014_approval_gates.sql` — Approval request workflow
+- `015_rate_limits.sql` — Rate limit counters
+- `016_agent_state.sql` — Agent state + decision logs
+- `017_custom_events.sql` — Custom events for inter-agent communication
+- `018_token_scopes.sql` — Token scope rules + expiry
+
+### New Modules
+- `src/mcp_server.rs` — MCP tool definitions and server
+
+---
+
 ## [0.7.0] - Platform Release
 
 ### Added

@@ -41,6 +41,7 @@ use tokio::sync::mpsc;
 #[folder = "assets/"]
 struct Assets;
 
+use crate::auth::{AuthCredentials, AuthManager, AuthProvider, AuthProviderConfig, LdapAuthProvider, LdapConfig, OidcAuthProvider, OidcConfig, SamlAuthProvider, SamlConfig};
 use crate::db_trait::DatabaseBackend;
 use crate::scheduler::{ScheduleRequest, RunType};
 use crate::xcom::XComStore;
@@ -71,6 +72,7 @@ pub struct AppState {
     // Bug 31 fix: simple in-memory rate-limiter for the login endpoint.
     // Maps remote IP (or username as fallback) → (attempt_count, window_start).
     pub login_attempts: Arc<tokio::sync::Mutex<HashMap<String, (u32, std::time::Instant)>>>,
+    pub auth_manager: Option<Arc<tokio::sync::RwLock<AuthManager>>>,
 }
 
 pub struct WebServer {
@@ -80,11 +82,12 @@ pub struct WebServer {
     vault: Option<Arc<Vault>>,
     dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>,
     metrics: Arc<RyuoMetrics>,
+    auth_manager: Option<Arc<tokio::sync::RwLock<AuthManager>>>,
 }
 
 impl WebServer {
-    pub fn new(db: Arc<dyn DatabaseBackend>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>, metrics: Arc<RyuoMetrics>) -> Self {
-        Self { db, tx, swarm, vault, dags, metrics }
+    pub fn new(db: Arc<dyn DatabaseBackend>, tx: mpsc::Sender<ScheduleRequest>, swarm: Arc<SwarmState>, vault: Option<Arc<Vault>>, dags: Arc<tokio::sync::Mutex<HashMap<String, Arc<crate::scheduler::Dag>>>>, metrics: Arc<RyuoMetrics>, auth_manager: Option<Arc<tokio::sync::RwLock<AuthManager>>>) -> Self {
+        Self { db, tx, swarm, vault, dags, metrics, auth_manager }
     }
 
     pub async fn run(self, port: u16, tls_cert: Option<String>, tls_key: Option<String>) -> anyhow::Result<()> {
@@ -99,6 +102,7 @@ impl WebServer {
             metrics: self.metrics,
             backfill_progress: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             login_attempts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            auth_manager: self.auth_manager,
         });
 
         let api_routes = Router::new()
@@ -130,6 +134,8 @@ impl WebServer {
             .route("/api/secrets", get(get_secrets))
             .route("/api/secrets", post(store_secret))
             .route("/api/secrets/:key", delete(delete_secret))
+            // Admin: Secret Rotation (ENT-12)
+            .route("/api/v1/admin/secrets/rotate", post(rotate_secrets_handler))
             // RBAC: Users
             .route("/api/users", get(get_users))
             .route("/api/users", post(create_user))
@@ -229,6 +235,7 @@ impl WebServer {
         let app = Router::new()
             .merge(api_routes)
             .route("/api/login", post(login))
+            .route("/api/auth/logout", post(logout_handler))
             // OIDC/SAML Auth Flows (unauthenticated)
             .route("/api/auth/oidc/authorize", get(oidc_authorize_handler))
             .route("/api/auth/oidc/callback", get(oidc_callback_handler))
@@ -313,41 +320,62 @@ async fn auth_middleware(
         None => return Err(StatusCode::UNAUTHORIZED),
     };
 
-    match state.db.get_user_by_api_key(api_key).await {
-        Ok(Some((username, role, team_id))) => {
-            let path = req.uri().path();
-            
-            // RBAC Logic:
-            // Admin: Can do everything
-            // Operator: Can trigger, pause, manage DAGs. CANNOT manage Users or Secrets.
-            // Viewer: Read-only.
-            
-            let is_admin_route = path.contains("/api/users") || path.contains("/api/secrets") || path.contains("/api/teams");
-            let is_write_route = path.contains("/trigger") || path.contains("/pause") || 
-                               path.contains("/unpause") || path.contains("/schedule") || 
-                               path.contains("/backfill") || path.contains("/drain") ||
-                               path.contains("/api/users") || path.contains("/api/secrets") ||
-                               path.contains("/api/dags/upload") || path.contains("/api/teams");
-
-            if role == "Viewer" && is_write_route {
-                return Err(StatusCode::FORBIDDEN);
-            }
-            
-            if role == "Operator" && is_admin_route && !path.contains("/api/teams/") {
-                return Err(StatusCode::FORBIDDEN);
-            }
-
-            debug!("👤 Authenticated: {} (Role: {}, Team: {:?})", username, role, team_id);
-            // Inject caller identity for audit hooks and DAG isolation checks
-            req.extensions_mut().insert(AuthUser { username, role, team_id: team_id.clone() });
-            
-            // If the user has a team ID, we need to ensure they can only access DAGs belonging to their team.
-            // We accomplish this by checking path parameters in the handlers.
-            
-            Ok(next.run(req).await)
+    // Try AuthManager-based authentication (supports ApiKey, SessionToken)
+    let user_info = if let Some(ref am) = state.auth_manager {
+        let mgr = am.read().await;
+        let credentials = AuthCredentials::ApiKey { key: api_key.to_string() };
+        match mgr.authenticate(&credentials).await {
+            Ok(user) => Some((user.username, user.role, user.team_id)),
+            Err(_) => None,
         }
-        _ => Err(StatusCode::UNAUTHORIZED),
+    } else {
+        None
+    };
+
+    // Fall back to direct DB lookup
+    let (username, role, team_id) = match user_info {
+        Some(info) => info,
+        None => {
+            match state.db.get_user_by_api_key(api_key).await {
+                Ok(Some(info)) => info,
+                _ => return Err(StatusCode::UNAUTHORIZED),
+            }
+        }
+    };
+
+    let path = req.uri().path();
+    
+    // RBAC Logic:
+    // Admin: Can do everything
+    // Operator: Can trigger, pause, manage DAGs. CANNOT manage Users or Secrets.
+    // Viewer: Read-only.
+    
+    // KNOWN ISSUE (BUG-072): RBAC path matching uses substring contains() which can false-positive
+    // on DAG names containing keywords like "trigger", "users", etc.
+    // TODO: Replace with exact path prefix matching or method-based checks.
+    let is_admin_route = path.contains("/api/users") || path.contains("/api/secrets") || path.contains("/api/teams");
+    let is_write_route = path.contains("/trigger") || path.contains("/pause") || 
+                       path.contains("/unpause") || path.contains("/schedule") || 
+                       path.contains("/backfill") || path.contains("/drain") ||
+                       path.contains("/api/users") || path.contains("/api/secrets") ||
+                       path.contains("/api/dags/upload") || path.contains("/api/teams");
+
+    if role == "Viewer" && is_write_route {
+        return Err(StatusCode::FORBIDDEN);
     }
+    
+    if role == "Operator" && is_admin_route && !path.contains("/api/teams/") {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    debug!("👤 Authenticated: {} (Role: {}, Team: {:?})", username, role, team_id);
+    // Inject caller identity for audit hooks and DAG isolation checks
+    req.extensions_mut().insert(AuthUser { username, role, team_id: team_id.clone() });
+    
+    // If the user has a team ID, we need to ensure they can only access DAGs belonging to their team.
+    // We accomplish this by checking path parameters in the handlers.
+    
+    Ok(next.run(req).await)
 }
 
 // Additional Handlers
@@ -460,9 +488,25 @@ async fn validate_dag_id(Path(id): Path<String>, State(state): State<Arc<AppStat
 
 // RBAC: User Handlers
 
-async fn get_users(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_users(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
+    // BUG-036 FIX: Non-Admin callers only see users in their own team.
     match state.db.get_all_users().await {
-        Ok(users) => Json(users),
+        Ok(users) => {
+            if auth_user.role == "Admin" {
+                Json(users)
+            } else if let Some(ref user_team) = auth_user.team_id {
+                let filtered: Vec<_> = users.into_iter().filter(|u| {
+                    u.get("team_id").and_then(|v| v.as_str()) == Some(user_team.as_str())
+                }).collect();
+                Json(filtered)
+            } else {
+                // Non-admin with no team: only show teamless users
+                let filtered: Vec<_> = users.into_iter().filter(|u| {
+                    u.get("team_id").and_then(|v| v.as_str()).is_none()
+                }).collect();
+                Json(filtered)
+            }
+        }
         Err(_) => Json(vec![]),
     }
 }
@@ -481,9 +525,9 @@ struct LoginRequest {
 }
 
 async fn login(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<LoginRequest>) -> Response {
-    // BUG-H13 FIX: Rate limit key is (client_ip, username) to prevent
-    // username enumeration via per-user rate limit differences.
-    let client_ip = headers
+    // BUG-021 FIX: Rate limit primarily by username to prevent bypass via
+    // X-Forwarded-For header spoofing. Include IP as secondary factor.
+    let _client_ip = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
@@ -495,8 +539,9 @@ async fn login(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMa
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
-    let rate_key = format!("{}:{}", client_ip, body.username);
-    // Max 10 attempts per (IP, username) per 60 seconds.
+    // Key by username primarily; IP is secondary to prevent spoofing bypass.
+    let rate_key = format!("login:{}", body.username);
+    // Max 10 attempts per username per 60 seconds.
     {
         let mut attempts = state.login_attempts.lock().await;
         let now = std::time::Instant::now();
@@ -511,12 +556,63 @@ async fn login(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMa
                 "error": "Too many login attempts. Please wait 60 seconds."
             }))).into_response();
         }
+        // BUG-044 FIX: Prune stale entries to prevent unbounded HashMap growth.
+        // Remove entries whose window has fully expired (older than 60 seconds).
+        let stale_keys: Vec<String> = attempts
+            .iter()
+            .filter(|(k, (_, window_start))| *k != &rate_key && now.duration_since(*window_start).as_secs() >= 60)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale_keys {
+            attempts.remove(&k);
+        }
     }
 
     // SEC-11 FIX: Always compute a bcrypt verify to prevent timing-based
     // username enumeration. Without this, requests for non-existent users
     // return faster (no hash computation), leaking valid usernames.
     let dummy_hash = "$2b$12$LJ3m4ys3Lg/8Bf3qmaL04eFJCKYKLBRtR0O9/dF0FNcjMdWKrwQqC";
+
+    // Try AuthManager-based authentication (wires UsernamePassword through provider chain)
+    if let Some(ref am) = state.auth_manager {
+        let mgr = am.read().await;
+        let credentials = AuthCredentials::UsernamePassword {
+            username: body.username.clone(),
+            password: body.password.clone(),
+        };
+        match mgr.authenticate(&credentials).await {
+            Ok(auth_user) => {
+                // AuthManager validated credentials — now fetch api_key and
+                // password_change_required from DB for the login response.
+                state.login_attempts.lock().await.remove(&rate_key);
+                info!("🔑 User logged in: {} (Role: {})", auth_user.username, auth_user.role);
+                let _ = state.db.log_audit_event(
+                    &auth_user.username, "auth.login", "user", &auth_user.username, "{}",
+                ).await;
+                match state.db.validate_user(&body.username, &body.password).await {
+                    Ok(Some((api_key, role, password_change_required))) => {
+                        if password_change_required {
+                            return Json(json!({
+                                "password_change_required": true,
+                                "username": body.username,
+                                "message": "Password change required before proceeding"
+                            })).into_response();
+                        }
+                        return Json(json!({ "api_key": api_key, "role": role, "username": body.username })).into_response();
+                    }
+                    _ => {
+                        return Json(json!({ "username": auth_user.username, "role": auth_user.role })).into_response();
+                    }
+                }
+            }
+            Err(_) => {
+                let _ = bcrypt::verify(&body.password, dummy_hash);
+                return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response();
+            }
+        }
+    }
+
+    // Fallback: direct DB auth when auth_manager is not configured
     match state.db.validate_user(&body.username, &body.password).await {
         Ok(Some((api_key, role, password_change_required))) => {
             // Successful login — reset the counter
@@ -550,6 +646,11 @@ async fn login(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMa
 }
 
 async fn create_user(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>, Json(body): Json<CreateUserRequest>) -> Response {
+    // BUG-071 FIX: Validate role before creating user.
+    let valid_roles = ["Admin", "Operator", "Viewer"];
+    if !valid_roles.contains(&body.role.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid role '{}'. Must be one of: {:?}", body.role, valid_roles)}))).into_response();
+    }
     let api_key = format!("vx_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
     match state.db.create_user(&body.username, &body.password, &body.role, &api_key).await {
         Ok(_) => {
@@ -621,6 +722,16 @@ async fn store_secret(State(state): State<Arc<AppState>>, axum::extract::Extensi
 }
 
 async fn delete_secret(Path(key): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> Response {
+    // BUG-013 FIX: Verify the secret belongs to the caller's team before deleting.
+    if auth_user.role != "Admin" {
+        if let Some(ref user_team) = auth_user.team_id {
+            // Check the secret's team by listing team-scoped secrets and verifying membership
+            let team_secrets = state.db.get_all_secrets(Some(user_team)).await.unwrap_or_default();
+            if !team_secrets.contains(&key) {
+                return (StatusCode::FORBIDDEN, Json(json!({"error": "Secret does not belong to your team"}))).into_response();
+            }
+        }
+    }
     match state.db.delete_secret(&key, Some(&auth_user.username)).await {
         Ok(_) => {
             let _ = state.db.log_audit_event(
@@ -630,6 +741,87 @@ async fn delete_secret(Path(key): Path<String>, State(state): State<Arc<AppState
         },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
+}
+
+/// POST /api/v1/admin/secrets/rotate — re-encrypt all secrets under a new vault key.
+/// Requires Admin role. The new key must be set in RYUO_NEW_SECRET_KEY env var.
+async fn rotate_secrets_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
+) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Admin role required" }))).into_response();
+    }
+
+    let current_vault = match &state.vault {
+        Some(v) => v,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Secret Vault is not initialized" }))).into_response(),
+    };
+
+    // The new key is read from RYUO_NEW_SECRET_KEY env var
+    let new_key = match std::env::var("RYUO_NEW_SECRET_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": "RYUO_NEW_SECRET_KEY environment variable must be set to the new encryption key"
+        }))).into_response(),
+    };
+
+    // BUG-014 FIX: Construct the new vault directly from key bytes instead of
+    // using std::env::set_var (which is unsound in multi-threaded programs).
+    let new_vault = match Vault::from_key_bytes(new_key.as_bytes()) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("Invalid new key: {}", e) }))).into_response();
+        }
+    };
+
+    // Fetch all secret keys and their encrypted values
+    let keys = match state.db.get_all_secrets(None).await {
+        Ok(k) => k,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to list secrets: {}", e) }))).into_response(),
+    };
+
+    let mut ciphertexts: Vec<(String, String)> = Vec::new();
+    for key in &keys {
+        match state.db.get_secret(key).await {
+            Ok(Some(ct)) => ciphertexts.push((key.clone(), ct)),
+            Ok(None) => {}
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to read secret '{}': {}", key, e) }))).into_response(),
+        }
+    }
+
+    let rotated = match current_vault.rotate_all_secrets(&ciphertexts, &new_vault) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Rotation failed: {}", e) }))).into_response(),
+    };
+
+    // BUG-015 FIX: Persist all rotated secrets atomically. Collect all updates
+    // and persist them in a batch. If any single persist fails, the partial
+    // state is reported so an operator can recover.
+    // NOTE: True DB transaction wrapping requires trait-level support (e.g.
+    // a `store_secrets_batch` method). For now we persist sequentially but
+    // fail fast on the first error to minimise inconsistency.
+    let mut rotated_count = 0;
+    for (key, new_ct) in &rotated {
+        if let Err(e) = state.db.store_secret(key, new_ct, None, Some(&auth_user.username)).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": format!("Failed to store rotated secret '{}': {}. {} of {} secrets were rotated before failure.", key, e, rotated_count, rotated.len()),
+                "rotated_so_far": rotated_count,
+                "total": rotated.len(),
+            }))).into_response();
+        }
+        rotated_count += 1;
+    }
+
+    let _ = state.db.log_audit_event(
+        &auth_user.username, "secret.rotate_all", "vault", "all", &json!({ "count": rotated_count }).to_string(),
+    ).await;
+
+    info!("🔐 Secret rotation completed: {} secrets re-encrypted by {}", rotated_count, auth_user.username);
+    Json(json!({
+        "message": "Secret rotation completed",
+        "rotated_count": rotated_count,
+    })).into_response()
 }
 
 // Existing Handlers
@@ -1145,9 +1337,24 @@ async fn rollback_dag_version_handler(
 }
 
 async fn pause_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
-    let _ = state.db.pause_dag(&id).await;
+    // BUG-042 FIX: Verify team access before pausing.
+    if auth_user.role != "Admin" {
+        if let Ok(Some(dag)) = state.db.get_dag_by_id(&id).await {
+            if let Some(t) = dag.get("team_id").and_then(|v| v.as_str()) {
+                if auth_user.team_id.as_deref() != Some(t) {
+                    return (StatusCode::FORBIDDEN, Json(json!({"error": "DAG belongs to another team"}))).into_response();
+                }
+            }
+        } else {
+            return (StatusCode::NOT_FOUND, Json(json!({"error": "DAG not found"}))).into_response();
+        }
+    }
+    // BUG-041 FIX: Propagate DB errors instead of silently ignoring them.
+    if let Err(e) = state.db.pause_dag(&id).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to pause DAG: {}", e)}))).into_response();
+    }
     let _ = state.db.log_audit_event(&auth_user.username, "dag.pause", "dag", &id, "{}").await;
-    Json(json!({"message": "Paused"}))
+    Json(json!({"message": "Paused"})).into_response()
 }
 async fn unpause_dag(Path(id): Path<String>, State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>) -> impl IntoResponse {
     let dag_meta = state.db.get_dag_by_id(&id).await.unwrap_or(None);
@@ -1522,7 +1729,11 @@ struct CreatePoolRequest {
     description: String,
 }
 
-async fn create_pool_handler(State(state): State<Arc<AppState>>, Json(body): Json<CreatePoolRequest>) -> Response {
+async fn create_pool_handler(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>, Json(body): Json<CreatePoolRequest>) -> Response {
+    // BUG-018 FIX: Only Admin or Operator can manage pools.
+    if auth_user.role != "Admin" && auth_user.role != "Operator" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin or Operator role required"}))).into_response();
+    }
     match state.pool_manager.create_pool(&body.name, body.slots, &body.description).await {
         Ok(()) => Json(json!({"status": "created", "name": body.name})).into_response(),
         Err(e) => {
@@ -1550,7 +1761,11 @@ struct UpdatePoolRequest {
     description: String,
 }
 
-async fn update_pool_handler(State(state): State<Arc<AppState>>, Path(name): Path<String>, Json(body): Json<UpdatePoolRequest>) -> Response {
+async fn update_pool_handler(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>, Path(name): Path<String>, Json(body): Json<UpdatePoolRequest>) -> Response {
+    // BUG-018 FIX: Only Admin or Operator can manage pools.
+    if auth_user.role != "Admin" && auth_user.role != "Operator" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin or Operator role required"}))).into_response();
+    }
     match state.pool_manager.update_pool(&name, body.slots, &body.description).await {
         Ok(()) => Json(json!({"status": "updated", "name": name})).into_response(),
         Err(e) => {
@@ -1560,7 +1775,11 @@ async fn update_pool_handler(State(state): State<Arc<AppState>>, Path(name): Pat
     }
 }
 
-async fn delete_pool_handler(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+async fn delete_pool_handler(State(state): State<Arc<AppState>>, axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>, Path(name): Path<String>) -> Response {
+    // BUG-018 FIX: Only Admin or Operator can manage pools.
+    if auth_user.role != "Admin" && auth_user.role != "Operator" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin or Operator role required"}))).into_response();
+    }
     match state.pool_manager.delete_pool(&name).await {
         Ok(()) => Json(json!({"status": "deleted", "name": name})).into_response(),
         Err(e) => {
@@ -1626,8 +1845,13 @@ struct AuditQuery {
 
 async fn get_audit_logs_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Query(params): Query<AuditQuery>,
 ) -> Response {
+    // BUG-037 FIX: Only Admin can view audit logs.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     let limit = params.limit.unwrap_or(50).min(500);
     let offset = params.offset.unwrap_or(0);
     let actor = params.actor.as_deref();
@@ -1879,6 +2103,16 @@ async fn get_auth_providers_handler(
     if auth_user.role != "Admin" {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can manage auth providers"}))).into_response();
     }
+    // Include registered in-memory providers from AuthManager
+    let registered_providers: Vec<serde_json::Value> = if let Some(ref am) = state.auth_manager {
+        let mgr = am.read().await;
+        mgr.list_providers().iter().map(|(id, pt, _)| {
+            json!({"id": id, "type": pt.to_string()})
+        }).collect()
+    } else {
+        Vec::new()
+    };
+
     match state.db.get_auth_providers().await {
         Ok(providers) => {
             // SEC-3: Decrypt auth provider configs before returning to admin
@@ -1899,7 +2133,7 @@ async fn get_auth_providers_handler(
                 }
                 p
             }).collect();
-            Json(json!({"providers": decrypted})).into_response()
+            Json(json!({"providers": decrypted, "registered": registered_providers})).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
@@ -1927,6 +2161,47 @@ async fn create_auth_provider_handler(
     if !valid_types.contains(&body.provider_type.as_str()) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid provider type. Must be one of: {:?}", valid_types)}))).into_response();
     }
+
+    // Construct AuthProviderConfig for structured validation and logging
+    let provider_config = AuthProviderConfig {
+        id: body.id.clone(),
+        provider_type: match body.provider_type.as_str() {
+            "oidc" => crate::auth::ProviderType::Oidc,
+            "saml" => crate::auth::ProviderType::Saml,
+            "ldap" => crate::auth::ProviderType::Ldap,
+            _ => crate::auth::ProviderType::Local,
+        },
+        name: body.name.clone(),
+        config: body.config.clone(),
+        enabled: body.enabled.unwrap_or(true),
+        priority: body.priority.unwrap_or(0),
+    };
+    info!("Creating auth provider: {} (type: {})", provider_config.name, provider_config.provider_type);
+
+    // Validate config structure based on provider type
+    match body.provider_type.as_str() {
+        "ldap" => {
+            let ldap_config: LdapConfig = match serde_json::from_value(body.config.clone()) {
+                Ok(c) => c,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid LDAP config: {}", e)}))).into_response(),
+            };
+            // Construct provider for validation and attempt initial group sync
+            let ldap_provider = LdapAuthProvider::new(body.id.clone(), ldap_config, state.db.clone());
+            let _ = ldap_provider.sync_groups().await;
+        }
+        "oidc" => {
+            if let Err(e) = serde_json::from_value::<OidcConfig>(body.config.clone()) {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid OIDC config: {}", e)}))).into_response();
+            }
+        }
+        "saml" => {
+            if let Err(e) = serde_json::from_value::<SamlConfig>(body.config.clone()) {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid SAML config: {}", e)}))).into_response();
+            }
+        }
+        _ => {}
+    }
+
     let config_str = serde_json::to_string(&body.config).unwrap_or_else(|_| "{}".to_string());
     // SEC-3: Encrypt auth provider config before storing (contains client_secret, etc.)
     let config_to_store = if let Some(vault) = &state.vault {
@@ -1937,7 +2212,7 @@ async fn create_auth_provider_handler(
     } else {
         config_str
     };
-    match state.db.upsert_auth_provider(&body.id, &body.provider_type, &body.name, &config_to_store, body.enabled.unwrap_or(true), body.priority.unwrap_or(0)).await {
+    match state.db.upsert_auth_provider(&provider_config.id, &body.provider_type, &provider_config.name, &config_to_store, provider_config.enabled, provider_config.priority).await {
         Ok(()) => {
             let _ = state.db.log_audit_event(&auth_user.username, "auth_provider.create", "auth_provider", &body.id, "{}").await;
             (StatusCode::CREATED, Json(json!({"status": "created", "id": body.id}))).into_response()
@@ -1984,6 +2259,17 @@ async fn cleanup_sessions_handler(
     if auth_user.role != "Admin" {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "Only admins can cleanup sessions"}))).into_response();
     }
+    // Route through AuthManager when available
+    if let Some(ref am) = state.auth_manager {
+        let mgr = am.read().await;
+        match mgr.cleanup_expired_sessions().await {
+            Ok(count) => {
+                let _ = state.db.log_audit_event(&auth_user.username, "sessions.cleanup", "system", "sessions", &format!("{{\"deleted\": {}}}", count)).await;
+                return Json(json!({"status": "ok", "deleted_sessions": count})).into_response();
+            }
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        }
+    }
     match state.db.cleanup_expired_sessions().await {
         Ok(count) => {
             let _ = state.db.log_audit_event(&auth_user.username, "sessions.cleanup", "system", "sessions", &format!("{{\"deleted\": {}}}", count)).await;
@@ -1991,6 +2277,40 @@ async fn cleanup_sessions_handler(
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct LogoutRequest {
+    session_id: String,
+}
+
+async fn logout_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<LogoutRequest>,
+) -> Response {
+    if let Some(ref am) = state.auth_manager {
+        let mgr = am.read().await;
+        // Validate the session token before deleting
+        let credentials = AuthCredentials::SessionToken { token: body.session_id.clone() };
+        match mgr.authenticate(&credentials).await {
+            Ok(user) => {
+                if let Err(e) = mgr.delete_session(&body.session_id).await {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response();
+                }
+                info!("🔑 User logged out: {}", user.username);
+                let _ = state.db.log_audit_event(&user.username, "auth.logout", "user", &user.username, "{}").await;
+                return Json(json!({"status": "logged_out", "username": user.username})).into_response();
+            }
+            Err(_) => {
+                // Session may be invalid/expired — still try to delete it
+                let _ = mgr.delete_session(&body.session_id).await;
+                return Json(json!({"status": "logged_out"})).into_response();
+            }
+        }
+    }
+    // Fallback: direct DB delete when auth_manager is not configured
+    let _ = state.db.delete_session(&body.session_id).await;
+    Json(json!({"status": "logged_out"})).into_response()
 }
 
 /// Public endpoint: list enabled auth providers (no auth required) for login page.
@@ -2020,20 +2340,71 @@ struct OidcAuthorizeQuery {
 }
 
 async fn oidc_authorize_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(query): Query<OidcAuthorizeQuery>,
 ) -> Response {
-    let _provider_id = query.provider_id.unwrap_or_else(|| "oidc".to_string());
-    // In a full implementation, this would:
-    // 1. Look up the OIDC provider config from DB
-    // 2. Generate a state parameter and store it in session
-    // 3. Build the authorization URL with PKCE
-    // 4. Redirect the user to the IdP
-    Json(json!({
-        "status": "oidc_redirect",
-        "message": "OIDC authorization flow. Configure an OIDC provider to enable SSO.",
-        "docs": "POST /api/auth/providers with provider_type='oidc' to configure"
-    })).into_response()
+    let provider_id = query.provider_id.unwrap_or_else(|| "oidc".to_string());
+
+    // Look up OIDC provider config from DB
+    let providers = match state.db.get_auth_providers().await {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to load auth providers: {}", e)}))).into_response();
+        }
+    };
+
+    let oidc_config_val = providers.iter().find(|p| {
+        p.get("provider_type").and_then(|v| v.as_str()) == Some("oidc")
+            && p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false)
+            && p.get("id").and_then(|v| v.as_str()) == Some(&provider_id)
+    });
+
+    let config_json = match oidc_config_val {
+        Some(p) => match p.get("config") {
+            Some(c) => c.clone(),
+            None => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "OIDC provider config is missing"}))).into_response();
+            }
+        },
+        None => {
+            return (StatusCode::NOT_FOUND, Json(json!({
+                "error": "No enabled OIDC provider found",
+                "docs": "POST /api/auth/providers with provider_type='oidc' to configure"
+            }))).into_response();
+        }
+    };
+
+    let oidc_config: OidcConfig = match serde_json::from_value(config_json) {
+        Ok(c) => c,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Invalid OIDC config: {}", e)}))).into_response();
+        }
+    };
+
+    let oidc_provider = OidcAuthProvider::new(provider_id, oidc_config, state.db.clone());
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+
+    match oidc_provider.authorization_url(&oauth_state) {
+        Ok(Some(url)) => {
+            // Store the provider with its PKCE state in the auth_manager if available,
+            // otherwise store in a transient way via the response.
+            if let Some(ref am) = state.auth_manager {
+                let mut mgr = am.write().await;
+                let _ = mgr.register_provider(Arc::new(oidc_provider));
+            }
+            Json(json!({
+                "status": "oidc_redirect",
+                "authorization_url": url,
+                "state": oauth_state
+            })).into_response()
+        }
+        Ok(None) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "OIDC provider did not return an authorization URL"}))).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to generate authorization URL: {}", e)}))).into_response()
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -2044,24 +2415,55 @@ struct OidcCallbackQuery {
 }
 
 async fn oidc_callback_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(query): Query<OidcCallbackQuery>,
 ) -> Response {
     if let Some(error) = query.error {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("OIDC error: {}", error)}))).into_response();
     }
     match (&query.code, &query.state) {
-        (Some(_code), Some(_state)) => {
-            // In a full implementation:
-            // 1. Validate state parameter against stored session
-            // 2. Exchange authorization code for tokens
-            // 3. Fetch user info
-            // 4. Create/update user in DB
-            // 5. Create session
-            // 6. Return session token
+        (Some(code), Some(oauth_state)) => {
+            let am = match state.auth_manager {
+                Some(ref am) => am,
+                None => {
+                    return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Auth manager not initialized"}))).into_response();
+                }
+            };
+
+            let mgr = am.read().await;
+            let credentials = AuthCredentials::OidcCode {
+                code: code.clone(),
+                state: oauth_state.clone(),
+            };
+
+            let user = match mgr.authenticate(&credentials).await {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("OIDC authentication failed: {}", e);
+                    return (StatusCode::UNAUTHORIZED, Json(json!({"error": format!("OIDC authentication failed: {}", e)}))).into_response();
+                }
+            };
+
+            let session = match mgr.create_session(
+                &user,
+                None, // access_token stored inside provider
+                None, // refresh_token
+                None, // id_token
+                None, // ip_address — could extract from request headers
+                None, // user_agent
+                24,   // fallback TTL hours
+            ).await {
+                Ok(s) => s,
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to create session: {}", e)}))).into_response();
+                }
+            };
+
             Json(json!({
-                "status": "callback_received",
-                "message": "OIDC callback received. Configure an OIDC provider for full SSO flow."
+                "status": "authenticated",
+                "session_id": session.session_id,
+                "username": session.username,
+                "expires_at": session.expires_at.to_rfc3339()
             })).into_response()
         }
         _ => (StatusCode::BAD_REQUEST, Json(json!({"error": "Missing code or state parameter"}))).into_response(),
@@ -2077,20 +2479,113 @@ struct SamlAcsRequest {
 }
 
 async fn saml_acs_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     axum::extract::Form(form): axum::extract::Form<SamlAcsRequest>,
 ) -> Response {
     match form.saml_response {
-        Some(_response) => {
-            // In a full implementation:
-            // 1. Decode base64 SAML response
-            // 2. Validate XML signature
-            // 3. Extract assertions (NameID, attributes)
-            // 4. Map to Ryuo user/role/team
-            // 5. Create session
+        Some(saml_response) => {
+            let am = match state.auth_manager {
+                Some(ref am) => am,
+                None => {
+                    // No auth_manager — try to build a SAML provider from DB config
+                    let providers = match state.db.get_auth_providers().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to load auth providers: {}", e)}))).into_response();
+                        }
+                    };
+
+                    let saml_cfg_val = providers.iter().find(|p| {
+                        p.get("provider_type").and_then(|v| v.as_str()) == Some("saml")
+                            && p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false)
+                    });
+
+                    let (provider_id, config_json) = match saml_cfg_val {
+                        Some(p) => (
+                            p.get("id").and_then(|v| v.as_str()).unwrap_or("saml").to_string(),
+                            match p.get("config") {
+                                Some(c) => c.clone(),
+                                None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "SAML provider config missing"}))).into_response(),
+                            },
+                        ),
+                        None => {
+                            return (StatusCode::NOT_FOUND, Json(json!({"error": "No enabled SAML provider found"}))).into_response();
+                        }
+                    };
+
+                    let saml_config: SamlConfig = match serde_json::from_value(config_json) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Invalid SAML config: {}", e)}))).into_response();
+                        }
+                    };
+
+                    let saml_provider = SamlAuthProvider::new(provider_id, saml_config, state.db.clone());
+                    let credentials = AuthCredentials::SamlAssertion {
+                        saml_response: saml_response.clone(),
+                        relay_state: form.relay_state.clone(),
+                    };
+
+                    let user = match saml_provider.authenticate(&credentials).await {
+                        Ok(u) => u,
+                        Err(e) => {
+                            warn!("SAML authentication failed: {}", e);
+                            return (StatusCode::UNAUTHORIZED, Json(json!({"error": format!("SAML authentication failed: {}", e)}))).into_response();
+                        }
+                    };
+
+                    // Create session using a temporary AuthManager
+                    let temp_mgr = AuthManager::new(state.db.clone());
+                    let session = match temp_mgr.create_session(&user, None, None, None, None, None, 24).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to create session: {}", e)}))).into_response();
+                        }
+                    };
+
+                    return Json(json!({
+                        "status": "authenticated",
+                        "session_id": session.session_id,
+                        "username": session.username,
+                        "expires_at": session.expires_at.to_rfc3339()
+                    })).into_response();
+                }
+            };
+
+            let mgr = am.read().await;
+            let credentials = AuthCredentials::SamlAssertion {
+                saml_response: saml_response.clone(),
+                relay_state: form.relay_state.clone(),
+            };
+
+            let user = match mgr.authenticate(&credentials).await {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("SAML authentication failed: {}", e);
+                    return (StatusCode::UNAUTHORIZED, Json(json!({"error": format!("SAML authentication failed: {}", e)}))).into_response();
+                }
+            };
+
+            let session = match mgr.create_session(
+                &user,
+                None,
+                None,
+                None,
+                None,
+                None,
+                24,
+            ).await {
+                Ok(s) => s,
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to create session: {}", e)}))).into_response();
+                }
+            };
+
             Json(json!({
-                "status": "saml_received",
-                "message": "SAML assertion received. Configure a SAML provider for full SSO flow."
+                "status": "authenticated",
+                "session_id": session.session_id,
+                "username": session.username,
+                "expires_at": session.expires_at.to_rfc3339()
             })).into_response()
         }
         None => (StatusCode::BAD_REQUEST, Json(json!({"error": "Missing SAMLResponse"}))).into_response(),
@@ -2158,8 +2653,13 @@ struct IncidentConfigRequest {
 
 async fn create_incident_config_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Json(body): Json<IncidentConfigRequest>,
 ) -> Response {
+    // BUG-017 FIX: Only Admin can manage incident configs.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     let enabled = body.enabled.unwrap_or(true);
     let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let team_id_ref = body.team_id.as_deref();
@@ -2171,8 +2671,13 @@ async fn create_incident_config_handler(
 
 async fn delete_incident_config_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
+    // BUG-017 FIX: Only Admin can manage incident configs.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.delete_incident_config(&id).await {
         Ok(()) => Json(json!({"status": "deleted", "id": id})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -2354,7 +2859,9 @@ async fn get_approval_request_status_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    // Retrieve all requests and find the one matching `id`.
+    // BUG-067: Ideally use a get_approval_request_by_id(id) DB method to avoid
+    // a full table scan. The current trait only exposes get_approval_requests()
+    // which fetches all rows. This should be replaced once the DB trait is extended.
     match state.db.get_approval_requests(None, 1000).await {
         Ok(requests) => {
             match requests.into_iter().find(|r| {
@@ -2389,8 +2896,13 @@ struct RetentionPolicyRequest {
 
 async fn create_retention_policy_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Json(body): Json<RetentionPolicyRequest>,
 ) -> Response {
+    // BUG-016 FIX: Only Admin can manage retention policies.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let batch = body.delete_batch_size.unwrap_or(1000);
     let enabled = body.enabled.unwrap_or(true);
@@ -2429,6 +2941,10 @@ async fn upsert_compliance_control_handler(
     axum::Extension(user): axum::Extension<AuthUser>,
     Json(body): Json<UpsertComplianceControlRequest>,
 ) -> Response {
+    // BUG-019 FIX: Only Admin can manage compliance controls.
+    if user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     let description = body.description.as_deref().unwrap_or("");
     let evidence = body.evidence.unwrap_or(serde_json::json!({}));
     match state.db.upsert_compliance_control(&body.framework, &body.control_id, description, &body.status, &evidence, &user.username).await {
@@ -2485,8 +3001,12 @@ async fn get_role_permissions_handler(
 
 async fn get_user_roles_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path(user_id): Path<String>,
 ) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.get_user_roles(&user_id).await {
         Ok(roles) => Json(json!({ "user_id": user_id, "roles": roles })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -2505,6 +3025,9 @@ async fn assign_user_role_handler(
     Path(user_id): Path<String>,
     Json(body): Json<AssignRoleRequest>,
 ) -> Response {
+    if caller.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.assign_user_role(&user_id, &body.role_id, body.team_id.as_deref(), &caller.username).await {
         Ok(()) => (StatusCode::CREATED, Json(json!({"status": "assigned", "user_id": user_id, "role_id": body.role_id}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -2518,9 +3041,13 @@ struct RevokeRoleQuery {
 
 async fn revoke_user_role_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path((user_id, role_id)): Path<(String, String)>,
     Query(params): Query<RevokeRoleQuery>,
 ) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.revoke_user_role(&user_id, &role_id, params.team_id.as_deref()).await {
         Ok(()) => Json(json!({"status": "revoked", "user_id": user_id, "role_id": role_id})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -2534,9 +3061,13 @@ struct UserPermQuery {
 
 async fn get_user_permissions_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path(user_id): Path<String>,
     Query(params): Query<UserPermQuery>,
 ) -> Response {
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.get_user_effective_permissions(&user_id, params.team_id.as_deref()).await {
         Ok(perms) => Json(json!({ "user_id": user_id, "permissions": perms })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -2579,8 +3110,13 @@ async fn create_api_token_handler(
 
 async fn revoke_api_token_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
+    // BUG-003 FIX: Only Admin can revoke any token.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.revoke_api_token(&id).await {
         Ok(()) => Json(json!({"status": "revoked", "id": id})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -2606,8 +3142,13 @@ struct IpAllowlistRequest {
 
 async fn create_ip_allowlist_rule_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Json(body): Json<IpAllowlistRequest>,
 ) -> Response {
+    // BUG-004 FIX: Only Admin can manage IP allowlist.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     let id = body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let desc = body.description.as_deref().unwrap_or("");
     let enabled = body.enabled.unwrap_or(true);
@@ -2619,8 +3160,13 @@ async fn create_ip_allowlist_rule_handler(
 
 async fn delete_ip_allowlist_rule_handler(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(auth_user): axum::extract::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
+    // BUG-004 FIX: Only Admin can manage IP allowlist.
+    if auth_user.role != "Admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Admin role required"}))).into_response();
+    }
     match state.db.delete_ip_allowlist_rule(&id).await {
         Ok(()) => Json(json!({"status": "deleted", "id": id})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),

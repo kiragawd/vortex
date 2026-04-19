@@ -8,7 +8,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -138,26 +138,32 @@ impl ConfigManager {
     /// Export environment as a flat key-value map (with inheritance resolved).
     pub async fn export_environment(&self, env_name: &str) -> Result<HashMap<String, Value>> {
         let envs = self.environments.read().await;
-        let env = envs.get(env_name)
-            .ok_or_else(|| anyhow!("Environment '{}' not found", env_name))?;
+        if !envs.contains_key(env_name) {
+            return Err(anyhow!("Environment '{}' not found", env_name));
+        }
 
+        // BUG-060 & BUG-063: Walk full inheritance chain with cycle detection.
+        let mut chain = Vec::new();
+        let mut visited = HashSet::new();
+        let mut current = Some(env_name.to_string());
+
+        while let Some(ref name) = current {
+            if !visited.insert(name.clone()) {
+                return Err(anyhow!("Circular inheritance detected at environment '{}'", name));
+            }
+            chain.push(name.clone());
+            current = envs.get(name.as_str()).and_then(|e| e.inherits_from.clone());
+        }
+
+        // Merge from most-ancestral to most-specific (last in chain = most ancestral).
         let mut result = HashMap::new();
-
-        // First, collect parent values
-        if let Some(ref parent) = env.inherits_from {
-            if let Some(parent_env) = envs.get(parent) {
-                for (k, v) in &parent_env.variables {
+        for name in chain.iter().rev() {
+            if let Some(env) = envs.get(name.as_str()) {
+                for (k, v) in &env.variables {
                     if !v.secret {
                         result.insert(k.clone(), v.value.clone());
                     }
                 }
-            }
-        }
-
-        // Override with own values
-        for (k, v) in &env.variables {
-            if !v.secret {
-                result.insert(k.clone(), v.value.clone());
             }
         }
 

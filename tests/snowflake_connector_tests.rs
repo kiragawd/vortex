@@ -46,7 +46,7 @@ fn test_snowflake_connector_with_password_auth() {
 #[test]
 fn test_snowflake_connector_with_keypair_auth() {
     let conn = SnowflakeConnector::new("acct")
-        .with_keypair_auth("user", "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----");
+        .with_keypair_auth("user", "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----", None);
     assert!(!conn.capabilities().is_empty());
 }
 
@@ -64,7 +64,7 @@ fn test_snowflake_connector_chained_builder() {
         .with_database("analytics")
         .with_schema("raw")
         .with_role("LOADER")
-        .with_keypair_auth("svc_user", "fake_key")
+        .with_keypair_auth("svc_user", "fake_key", None)
         .with_snowsql_transport();
     assert_eq!(conn.account, "acct");
     assert_eq!(conn.warehouse, Some("big_wh".to_string()));

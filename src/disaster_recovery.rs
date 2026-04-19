@@ -93,33 +93,8 @@ impl BackupManager {
 
     /// Create a new backup.
     // STUB(backup): Placeholder — no actual backup I/O is performed yet.
-    pub async fn create_backup(&self, target: BackupTarget) -> Result<BackupRecord> {
-        warn!("BackupManager::create_backup() is a stub — no actual backup performed");
-        let id = format!("bk_{}", Utc::now().format("%Y%m%d_%H%M%S"));
-        let location = format!("{}/{}_{:?}.tar.gz", self.config.storage_path, id, target);
-
-        let record = BackupRecord {
-            id: id.clone(),
-            target: target.clone(),
-            status: BackupStatus::Completed,
-            location,
-            size_bytes: 0, // Would be filled by actual backup implementation
-            created_at: Utc::now(),
-            completed_at: Some(Utc::now()),
-            retention_days: self.config.retention_days,
-            metadata: HashMap::new(),
-        };
-
-        let mut backups = self.backups.write().await;
-        backups.push(record.clone());
-
-        // Enforce max_backups
-        while backups.len() > self.config.max_backups {
-            backups.remove(0);
-        }
-
-        info!(backup_id = %id, target = ?target, "Backup created");
-        Ok(record)
+    pub async fn create_backup(&self, _target: BackupTarget) -> Result<BackupRecord> {
+        Err(anyhow!("Backup not yet implemented — use pg_dump via CLI"))
     }
 
     /// List all backups, optionally filtered by target.
@@ -132,17 +107,8 @@ impl BackupManager {
     }
 
     /// Restore from a specific backup.
-    pub async fn restore(&self, backup_id: &str) -> Result<()> {
-        let backups = self.backups.read().await;
-        let backup = backups.iter().find(|b| b.id == backup_id)
-            .ok_or_else(|| anyhow!("Backup not found: {}", backup_id))?;
-
-        if backup.status != BackupStatus::Completed {
-            return Err(anyhow!("Cannot restore from backup with status {:?}", backup.status));
-        }
-
-        info!(backup_id = %backup_id, target = ?backup.target, "Restore initiated");
-        Ok(())
+    pub async fn restore(&self, _backup_id: &str) -> Result<()> {
+        Err(anyhow!("Restore not yet implemented — use pg_restore via CLI"))
     }
 
     /// Purge expired backups.
@@ -538,32 +504,28 @@ mod tests {
     #[tokio::test]
     async fn test_backup_create_and_list() {
         let mgr = BackupManager::new(BackupConfig::default());
-        let record = mgr.create_backup(BackupTarget::Database).await.unwrap();
-        assert_eq!(record.target, BackupTarget::Database);
-        assert_eq!(record.status, BackupStatus::Completed);
+        let result = mgr.create_backup(BackupTarget::Database).await;
+        assert!(result.is_err(), "Stub create_backup should return Err");
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
 
         let all = mgr.list_backups(None).await;
-        assert_eq!(all.len(), 1);
-
-        let filtered = mgr.list_backups(Some(BackupTarget::Logs)).await;
-        assert_eq!(filtered.len(), 0);
+        assert_eq!(all.len(), 0);
     }
 
     #[tokio::test]
     async fn test_backup_restore() {
         let mgr = BackupManager::new(BackupConfig::default());
-        let record = mgr.create_backup(BackupTarget::Full).await.unwrap();
-        mgr.restore(&record.id).await.unwrap();
+        let result = mgr.restore("nonexistent").await;
+        assert!(result.is_err(), "Stub restore should return Err");
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
     }
 
     #[tokio::test]
     async fn test_backup_max_enforcement() {
-        let config = BackupConfig { max_backups: 3, ..Default::default() };
-        let mgr = BackupManager::new(config);
-        for _ in 0..5 {
-            mgr.create_backup(BackupTarget::Database).await.unwrap();
-        }
-        assert_eq!(mgr.list_backups(None).await.len(), 3);
+        let mgr = BackupManager::new(BackupConfig { max_backups: 3, ..Default::default() });
+        // Stub always returns error, so max enforcement is moot.
+        let result = mgr.create_backup(BackupTarget::Database).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

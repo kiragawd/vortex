@@ -48,6 +48,10 @@ ryuo-cli auth-provider create \
 
 Configuration types and session management are defined. Provider implementations are pending.
 
+> **⚠ v0.8.1 Security Change:** SAML signature validation now **rejects unsigned assertions by default**. To allow unverified signatures during development, set `RYUO_SAML_ALLOW_UNVERIFIED=true` in your environment. This is **NOT recommended for production**.
+
+> **Note:** OIDC auto-provisioned users now have `password_change_required=true` set automatically. Users must change their password on first local login.
+
 ```bash
 # List configured auth providers
 ryuo-cli auth-provider list

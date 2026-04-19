@@ -100,7 +100,10 @@ impl PagerDutyProvider {
     pub fn new(config: PagerDutyConfig) -> Self {
         Self {
             config,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
@@ -202,7 +205,10 @@ impl OpsgenieProvider {
     pub fn new(config: OpsgenieConfig) -> Self {
         Self {
             config,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
@@ -253,8 +259,9 @@ impl IncidentProvider for OpsgenieProvider {
 
     async fn acknowledge(&self, dedup_key: &str) -> Result<()> {
         let api_url = self.config.api_url.as_deref().unwrap_or("https://api.opsgenie.com");
+        let safe_key = sanitize_url_segment(dedup_key);
         self.http_client
-            .post(format!("{}/v2/alerts/{}/acknowledge", api_url, dedup_key))
+            .post(format!("{}/v2/alerts/{}/acknowledge", api_url, safe_key))
             .header("Authorization", format!("GenieKey {}", self.config.api_key))
             .json(&serde_json::json!({}))
             .send()
@@ -265,8 +272,9 @@ impl IncidentProvider for OpsgenieProvider {
 
     async fn resolve(&self, dedup_key: &str) -> Result<()> {
         let api_url = self.config.api_url.as_deref().unwrap_or("https://api.opsgenie.com");
+        let safe_key = sanitize_url_segment(dedup_key);
         self.http_client
-            .post(format!("{}/v2/alerts/{}/close", api_url, dedup_key))
+            .post(format!("{}/v2/alerts/{}/close", api_url, safe_key))
             .header("Authorization", format!("GenieKey {}", self.config.api_key))
             .json(&serde_json::json!({}))
             .send()
@@ -298,7 +306,10 @@ impl DatadogProvider {
     pub fn new(config: DatadogConfig) -> Self {
         Self {
             config,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
@@ -379,6 +390,17 @@ impl IncidentProvider for DatadogProvider {
 }
 
 // ── Incident Manager ───────────────────────────────────────────────
+
+/// Sanitize a string for safe use in URL path segments.
+/// Replaces characters that could cause path traversal or query injection.
+fn sanitize_url_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '/' | '?' | '#' | '%' | '&' | '=' => '_',
+            _ => c,
+        })
+        .collect()
+}
 
 /// Manages configured incident providers and dispatches alerts.
 pub struct IncidentManager {

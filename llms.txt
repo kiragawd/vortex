@@ -1,0 +1,150 @@
+# Ryuo
+
+> Data-aware agentic orchestration engine. Single Rust binary. Agents and humans build, trigger, monitor, and evolve data pipelines in real time.
+
+Ryuo is an enterprise-grade orchestration platform built in Rust that replaces traditional schedulers (Apache Airflow, IBM TWS, Autosys) with a data-aware, agent-native engine. It is designed so that LLM agents can autonomously create data pipelines, monitor data freshness, detect schema drift, trigger workflows, and adapt pipelines — all through CLI commands, REST APIs, and MCP (Model Context Protocol) tools.
+
+## Key Concepts
+
+- **Data-aware scheduling**: DAGs trigger on dataset events (not just cron). When upstream data updates, downstream pipelines fire automatically.
+- **Agent-native**: Every capability is a CLI command (`--output json`), a REST endpoint, and an MCP tool. Agents sense → decide → act → observe in a tight loop.
+- **Single binary**: Controller, scheduler, API server, web dashboard, and gRPC swarm coordinator compile into one ~15MB Rust binary.
+- **Multi-authoring**: DAGs can be written in Python (Airflow-compatible), YAML/JSON, or native Rust.
+- **Enterprise security**: RBAC, team isolation, scoped API tokens, approval gates, audit logging, AES-256-GCM vault, SQL injection prevention.
+
+## How Agents Use Ryuo
+
+Agents interact with Ryuo via CLI or MCP tools:
+
+```
+# Query data freshness
+ryuo dataset freshness s3://data-lake/events/ --output json
+
+# Detect schema changes
+ryuo dataset schema-diff s3://data-lake/events/ --output json
+
+# Create a pipeline from generated YAML
+ryuo dag create --from-yaml pipeline.yaml --dry-run --output json
+ryuo dag create --from-yaml pipeline.yaml --output json
+
+# Trigger with runtime parameters
+ryuo dag trigger etl_pipeline --config '{"partition": "2026-04-19"}' --output json
+
+# Monitor execution
+ryuo dag runs etl_pipeline --limit 5 --output json
+
+# Read task results
+ryuo xcom pull --dag etl_pipeline --task transform --run <run_id> --key result --output json
+
+# Persist agent memory across runs
+ryuo agent state set last_processed_partition --value "2026-04-19" --output json
+
+# Log reasoning for audit
+ryuo agent log "Triggered retraining: data drift detected in features table" --context '{"dag": "ml_retrain"}'
+```
+
+MCP tools expose the same capabilities for LLM tool-calling: `dag_list`, `dag_trigger`, `dag_get`, `dataset_freshness`, `lineage_query`, `xcom_pull`, `connector_query`, `pool_list`, `audit_recent`.
+
+## Repository Structure
+
+- `src/` — Rust source (40+ modules). Key files:
+  - `main.rs` — CLI entry point, server startup, all subcommands
+  - `scheduler.rs` — DAG/Task structs, dependency-aware scheduling
+  - `advanced_scheduler.rs` — Dataset triggers, cross-DAG deps, dynamic task mapping, freshness queries
+  - `web.rs` — Axum REST API (100+ endpoints) + static asset serving
+  - `db_postgres.rs` — PostgreSQL implementation of all database operations
+  - `db_trait.rs` — Database abstraction trait
+  - `executor.rs` — Task execution (bash, python, http, sensor, plugin)
+  - `event_framework.rs` — Event bus, webhook receiver, event-triggered DAGs, sensors
+  - `sensors.rs` — File, HTTP, SQL, metric anomaly sensors
+  - `agentic.rs` — LLM provider abstraction (OpenAI/Anthropic), Python-to-Rust and dbt-to-Rust agents
+  - `mcp_server.rs` — MCP tool definitions (12 tools), JSON-RPC dispatch
+  - `auth.rs` — SSO/OIDC/SAML/LDAP authentication
+  - `rbac.rs` — RBAC, API token scoping, IP allowlisting
+  - `vault.rs` — AES-256-GCM secret encryption with Argon2id KDF
+  - `connectors.rs` — PostgreSQL, Snowflake, Databricks, MySQL, MSSQL, dbt connectors
+  - `cloud_connectors.rs` — BigQuery, Redshift, Kafka, S3, GCS, Delta Lake connectors
+  - `lineage.rs` — OpenLineage data lineage emission
+  - `compliance.rs` — Audit logging, approval workflows, retention policies
+  - `swarm.rs` — gRPC distributed worker protocol
+  - `dag_factory.rs` — YAML/JSON DAG parsing
+  - `airflow_ast_parser.rs` — Static Python AST parser for Airflow migration
+  - `dag_codegen.rs` — Rust DAG code generator from parsed AST
+  - `migration.rs` — TWS/Autosys JIL parsers
+- `ui/` — React 18 + TypeScript + Vite 5 SPA (Dashboard, DAGs, Runs, Events, Connectors, Lineage, Swarm, Compliance, RBAC, Monitoring, Settings)
+- `python/ryuo/` — Python Airflow-compatibility shim (`from ryuo import DAG, BashOperator`)
+- `migrations/` — PostgreSQL schema migrations (001–019)
+- `dags/` — Example DAG files (auto-loaded on startup)
+- `proto/swarm.proto` — gRPC Protobuf definitions for worker protocol
+- `helm/ryuo/` — Helm chart for Kubernetes deployment
+- `plugins/` — Dynamic .so/.dylib operator plugins
+- `docs/` — Full documentation (architecture, API, CLI, security, scheduling, observability, compliance, connectors, agentic orchestration)
+
+## Tech Stack
+
+- **Language**: Rust 2021 edition
+- **Async runtime**: Tokio
+- **HTTP**: Axum
+- **Database**: PostgreSQL via sqlx
+- **gRPC**: Tonic + Protobuf
+- **Python integration**: PyO3
+- **Serialization**: serde + serde_json
+- **Encryption**: AES-256-GCM (aes-gcm crate), Argon2id KDF
+- **Auth**: bcrypt, SHA-256 token hashing, OIDC/SAML
+- **SQL safety**: sqlparser for query validation
+- **Frontend**: React 18, TypeScript, Vite 5, Tailwind CSS, Zustand, TanStack Query, Recharts
+- **Observability**: Prometheus metrics, OpenLineage, OpenTelemetry spans
+- **Deployment**: Docker, Docker Compose, Helm, Kubernetes
+
+## Documentation
+
+- [docs/AGENTIC_DATA_ORCHESTRATION.md](docs/AGENTIC_DATA_ORCHESTRATION.md) — Agent integration, MCP tools, data-aware triggers
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System design and data flow
+- [docs/API_REFERENCE.md](docs/API_REFERENCE.md) — Complete REST API reference
+- [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) — All CLI commands and flags
+- [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) — IAM, RBAC, secrets, security
+- [docs/SCHEDULING.md](docs/SCHEDULING.md) — Cron, dataset triggers, cross-DAG deps
+- [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) — Lineage, tracing, metrics
+- [docs/EVENTS_SENSORS.md](docs/EVENTS_SENSORS.md) — Event bus, webhooks, sensors
+- [docs/CONNECTOR_API.md](docs/CONNECTOR_API.md) — Connector trait and implementations
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Docker, Kubernetes, Helm deployment
+- [docs/MIGRATION_GUIDE.md](docs/MIGRATION_GUIDE.md) — Airflow/TWS/Autosys migration
+- [docs/PLUGINS.md](docs/PLUGINS.md) — Plugin SDK and custom operators
+- [docs/COMPLIANCE.md](docs/COMPLIANCE.md) — Audit, approval workflows, governance
+
+## Quick Start
+
+```bash
+# Build
+export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+cargo build --release
+
+# Start controller with PostgreSQL
+./target/release/ryuo server --swarm --database-url "postgres://user:pass@localhost/ryuo" --allow-unsafe-dag-exec
+
+# Start worker
+./target/release/ryuo worker --controller http://localhost:50051 --capacity 4
+
+# Or use Docker Compose
+docker compose up -d
+```
+
+Default web UI at http://localhost:3000 — login: `admin` / `admin`
+
+## API Patterns
+
+All endpoints require authentication via `Authorization: Bearer <token>` header. All mutating endpoints return audit log entries. Team isolation is enforced — non-admin users see only their team's resources.
+
+Key REST endpoints:
+- `GET /api/dags` — List DAGs
+- `POST /api/dags/:id/trigger` — Trigger a DAG run
+- `GET /api/datasets/:uri/freshness` — Dataset freshness
+- `GET /api/queue` — Live task queue
+- `PATCH /api/queue/:id/priority` — Reprioritize task
+- `GET /api/lineage/datasets` — Lineage graph
+- `GET /api/events/stream` — SSE event stream
+- `GET /health` — Health check
+
+## License
+
+Dual-licensed: MIT for personal/open-source use, commercial license for enterprise.

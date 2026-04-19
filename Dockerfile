@@ -26,8 +26,8 @@ RUN mkdir -p src/bin && \
 
 ENV PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 
-# Build dependencies only (cached layer)
-RUN cargo build --release 2>/dev/null || true
+# Build dependencies only (cached layer — errors expected for stub sources)
+RUN cargo build --release || true
 RUN rm -rf src/
 
 # Copy actual source code

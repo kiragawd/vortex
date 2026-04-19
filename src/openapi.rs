@@ -5,6 +5,11 @@
 // - Programmatic OpenAPI 3.1 spec generation for all Ryuo API routes
 // - API version extraction middleware (header or path-based)
 // - Per-endpoint token-bucket rate limiter
+//
+// NOTE (BUG-077): This spec is hand-maintained and does not cover all endpoints.
+// Missing: /api/v1/admin/secrets/rotate, /api/runs, /api/dags/:id/backfill/progress,
+// /api/dags/:id/validate, /api/auth/logout, approval v1 aliases.
+// TODO: Auto-generate from route definitions.
 
 use axum::{
     extract::{Request, State},

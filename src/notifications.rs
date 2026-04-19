@@ -7,6 +7,12 @@ use tracing::{error, info, warn};
 
 use crate::db_trait::DatabaseBackend;
 
+use tokio::sync::Semaphore;
+use once_cell::sync::Lazy;
+
+/// Limit concurrent notification dispatches to prevent resource exhaustion.
+static NOTIFICATION_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(10));
+
 
 
 // ---------------------------------------------------------------------------
@@ -30,6 +36,7 @@ pub enum NotificationTarget {
         smtp_port: u16,
         from: String,
         to: Vec<String>,
+        // TODO (BUG-083): Wrap credentials in `secrecy::Secret<String>` for zeroize-on-drop.
         username: Option<String>,
         password: Option<String>,
     },
@@ -125,6 +132,65 @@ impl NotificationManager {
 
 
 // ---------------------------------------------------------------------------
+// SSRF Protection
+// ---------------------------------------------------------------------------
+
+/// Validate a webhook URL to prevent SSRF attacks.
+/// Rejects non-HTTP(S) schemes, private/link-local IPs, and localhost.
+fn validate_webhook_url(url_str: &str) -> Result<(), String> {
+    // Basic scheme check
+    if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
+        return Err("Only http and https URL schemes are allowed".into());
+    }
+
+    // Extract host portion: skip scheme, take up to first '/' or ':' after host
+    let after_scheme = url_str
+        .strip_prefix("https://")
+        .or_else(|| url_str.strip_prefix("http://"))
+        .unwrap_or("");
+
+    let host = after_scheme
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+
+    if host.is_empty() {
+        return Err("URL has no host".into());
+    }
+
+    let host_lower = host.to_lowercase();
+    if host_lower == "localhost" {
+        return Err("Webhook URLs targeting localhost are not allowed".into());
+    }
+
+    // Check for private/link-local IP addresses
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()                                // 127.x
+                || v4.octets()[0] == 10                         // 10.x
+                || (v4.octets()[0] == 172 && (16..=31).contains(&v4.octets()[1])) // 172.16-31.x
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 168) // 192.168.x
+                || (v4.octets()[0] == 169 && v4.octets()[1] == 254) // 169.254.x (link-local)
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()                                // ::1
+                || v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd // fc00::/7 (ULA)
+                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xc0) == 0x80) // fe80::/10 (link-local)
+            }
+        };
+        if is_private {
+            return Err(format!("Webhook URLs targeting private/link-local IP {} are not allowed", ip));
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Notification dispatch
 // ---------------------------------------------------------------------------
 
@@ -135,6 +201,7 @@ pub async fn send_notification(
 ) -> Result<()> {
     match target {
         NotificationTarget::Webhook { url, headers } => {
+            validate_webhook_url(url).map_err(|e| anyhow!("SSRF protection: {}", e))?;
             let body = serde_json::to_string(payload)?;
 
             let client = reqwest::Client::builder()
@@ -178,6 +245,7 @@ pub async fn send_notification(
             webhook_url,
             channel,
         } => {
+            validate_webhook_url(webhook_url).map_err(|e| anyhow!("SSRF protection: {}", e))?;
             // Format a minimal Slack-compatible payload.
             let text = format!(
                 "*[RYUO]* `{}` — DAG `{}` run `{}` → *{}*\n{}",
@@ -344,13 +412,17 @@ pub async fn fire_callbacks(
         "firing notifications"
     );
 
-    // Spawn one task per target and collect.
+    // Spawn one task per target and collect, with rate limiting.
     let futures: Vec<_> = targets
         .iter()
         .map(|t| {
             let target = t.clone();
             let p = payload.clone();
-            tokio::spawn(async move { send_notification(&target, &p).await })
+            tokio::spawn(async move {
+                let _permit = NOTIFICATION_SEMAPHORE.acquire().await
+                    .map_err(|e| anyhow!("semaphore error: {}", e))?;
+                send_notification(&target, &p).await
+            })
         })
         .collect();
 

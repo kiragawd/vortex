@@ -156,15 +156,19 @@ impl PostgresDb {
 
         if !admin_exists {
             let hashed = hash("admin", DEFAULT_COST).context("bcrypt hash failed")?;
+            // SECURITY (H-3): Generate a random API key instead of hardcoded value
+            let admin_api_key = uuid::Uuid::new_v4().to_string();
             sqlx::query(
                 "INSERT INTO users (username, password_hash, role, api_key, password_change_required)
-                 VALUES ('admin', $1, 'Admin', 'ryuo_admin_key', TRUE)
+                 VALUES ('admin', $1, 'Admin', $2, TRUE)
                  ON CONFLICT (username) DO NOTHING",
             )
             .bind(&hashed)
+            .bind(&admin_api_key)
             .execute(&self.pool)
             .await
             .context("Failed to seed admin user")?;
+            tracing::warn!("Admin user seeded with default password 'admin' — change immediately. API key: {}", &admin_api_key[..8]);
         }
 
         // Seed RBAC permissions (idempotent — safety net for existing DBs that
@@ -661,6 +665,10 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn update_task_state(&self, id: &str, state: &str) -> Result<()> {
+        // BUG-056 fix: Validate state before updating
+        if !matches!(state, "Queued" | "Running" | "Success" | "Failed" | "Upstream_Failed" | "Skipped" | "Removed" | "Scheduled" | "UpForRetry") {
+            anyhow::bail!("Invalid task state: '{}'", state);
+        }
         let now = Utc::now();
         match state {
             "Running" => {
@@ -811,9 +819,9 @@ impl DatabaseBackend for PostgresDb {
         }).collect())
     }
 
-    async fn get_interrupted_tasks(&self) -> Result<Vec<(String, String, String)>> {
+    async fn get_interrupted_tasks(&self) -> Result<Vec<(String, String, String, String)>> {
         let rows = sqlx::query(
-            "SELECT id, dag_id, task_id FROM task_instances WHERE state = 'Running'",
+            "SELECT id, dag_id, task_id, run_id FROM task_instances WHERE state = 'Running'",
         )
         .fetch_all(&self.pool)
         .await
@@ -827,6 +835,7 @@ impl DatabaseBackend for PostgresDb {
                     r.get::<String, _>("id"),
                     r.get::<String, _>("dag_id"),
                     r.get::<String, _>("task_id"),
+                    r.get::<String, _>("run_id"),
                 )
             })
             .collect())
@@ -1142,6 +1151,18 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
+    async fn set_password_change_required(&self, username: &str, required: bool) -> Result<()> {
+        sqlx::query(
+            "UPDATE users SET password_change_required = $1 WHERE username = $2",
+        )
+        .bind(required)
+        .bind(username)
+        .execute(&self.pool)
+        .await
+        .context("set_password_change_required")?;
+        Ok(())
+    }
+
     async fn delete_user(&self, username: &str) -> Result<()> {
         sqlx::query("DELETE FROM users WHERE username = $1")
             .bind(username)
@@ -1152,7 +1173,8 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn get_all_users(&self) -> Result<Vec<serde_json::Value>> {
-        let rows = sqlx::query("SELECT username, role, api_key FROM users")
+        // SECURITY (H-4): Do not leak full api_key values — mask them
+        let rows = sqlx::query("SELECT username, role, api_key FROM users LIMIT 10000")
             .fetch_all(&self.pool)
             .await
             .context("get_all_users")?;
@@ -1161,10 +1183,16 @@ impl DatabaseBackend for PostgresDb {
         Ok(rows
             .iter()
             .map(|r| {
+                let api_key_raw: String = r.get::<String, _>("api_key");
+                let masked = if api_key_raw.len() > 4 {
+                    format!("{}***", &api_key_raw[..4])
+                } else {
+                    "***".to_string()
+                };
                 serde_json::json!({
                     "username": r.get::<String, _>("username"),
                     "role":     r.get::<String, _>("role"),
-                    "api_key":  r.get::<String, _>("api_key"),
+                    "api_key":  masked,
                 })
             })
             .collect())
@@ -1348,27 +1376,18 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn mark_stale_workers_offline(&self, timeout_seconds: i64) -> Result<Vec<String>> {
+        // BUG-052 fix: Combine SELECT+UPDATE into single atomic query to eliminate TOCTOU
         let cutoff = Utc::now() - chrono::Duration::seconds(timeout_seconds);
 
-        // Collect stale worker IDs first
         let stale_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM workers WHERE last_heartbeat < $1 AND state <> 'Offline'",
+            "UPDATE workers SET state = 'Offline'
+             WHERE state <> 'Offline' AND last_heartbeat < $1
+             RETURNING id",
         )
         .bind(cutoff)
         .fetch_all(&self.pool)
         .await
-        .context("mark_stale_workers_offline: select")?;
-
-        if !stale_ids.is_empty() {
-            sqlx::query(
-                "UPDATE workers SET state = 'Offline'
-                 WHERE last_heartbeat < $1 AND state <> 'Offline'",
-            )
-            .bind(cutoff)
-            .execute(&self.pool)
-            .await
-            .context("mark_stale_workers_offline: update")?;
-        }
+        .context("mark_stale_workers_offline")?;
 
         Ok(stale_ids)
     }
@@ -1476,7 +1495,8 @@ impl DatabaseBackend for PostgresDb {
             "SELECT id, dag_id, version, file_path, created_at
              FROM dag_versions
              WHERE dag_id = $1
-             ORDER BY version DESC",
+             ORDER BY version DESC
+             LIMIT 1000",
         )
         .bind(dag_id)
         .fetch_all(&self.pool)
@@ -1547,7 +1567,7 @@ impl DatabaseBackend for PostgresDb {
         .bind(run_id)
         .bind(key)
         .bind(value)
-        .bind(Utc::now().to_rfc3339())
+        .bind(Utc::now())
         .execute(&self.pool)
         .await
         .context("xcom_push")?;
@@ -1572,7 +1592,7 @@ impl DatabaseBackend for PostgresDb {
             "run_id": r.get::<String, _>(2),
             "key": r.get::<String, _>(3),
             "value": r.get::<String, _>(4),
-            "timestamp": r.get::<String, _>(5)
+            "timestamp": r.get::<chrono::DateTime<chrono::Utc>, _>(5).to_rfc3339()
         })).collect();
         Ok((data, total))
     }
@@ -1791,7 +1811,7 @@ impl DatabaseBackend for PostgresDb {
 
     async fn get_all_teams(&self) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
-            "SELECT id, name, description, max_concurrent_tasks, max_dags FROM teams",
+            "SELECT id, name, description, max_concurrent_tasks, max_dags FROM teams LIMIT 1000",
         )
         .fetch_all(&self.pool)
         .await
@@ -1864,13 +1884,24 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn delete_team(&self, id: &str) -> Result<()> {
-        // Must unassign all users and DAGs first to not violate FK, or cascade delete.
-        // Depending on product specifics. We'll simply issue DELETE.
+        // BUG-055 fix: Unassign users and DAGs before deleting to avoid FK violations
+        let mut tx = self.pool.begin().await.context("delete_team: begin tx")?;
+        sqlx::query("UPDATE users SET team_id = NULL WHERE team_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .context("delete_team: unassign users")?;
+        sqlx::query("UPDATE dags SET team_id = NULL WHERE team_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .context("delete_team: unassign dags")?;
         sqlx::query("DELETE FROM teams WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
-            .context("delete_team")?;
+            .context("delete_team: delete")?;
+        tx.commit().await.context("delete_team: commit")?;
         Ok(())
     }
 
@@ -2023,6 +2054,26 @@ impl DatabaseBackend for PostgresDb {
         ti_id: &str,
     ) -> Result<Option<(String, String, String, String, String, String, i32, i32, i32)>> {
         self.get_task_instance_details(ti_id).await
+    }
+
+    async fn get_all_workers(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, String, i32, i32, DateTime<Utc>, String, Option<String>)>(
+            "SELECT id, hostname, capacity, active_tasks, last_heartbeat, state, labels FROM workers ORDER BY last_heartbeat DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id, hostname, capacity, active_tasks, last_heartbeat, state, labels)| {
+            serde_json::json!({
+                "id": id,
+                "hostname": hostname,
+                "capacity": capacity,
+                "active_tasks": active_tasks,
+                "last_heartbeat": last_heartbeat.to_rfc3339(),
+                "state": state,
+                "labels": labels,
+            })
+        }).collect())
     }
 
     /// Improvement 42: lightweight DB connectivity check used by GET /health.
@@ -2608,13 +2659,16 @@ impl DatabaseBackend for PostgresDb {
         }
         // PERF-3: use stable `id` column (not `ctid` which changes after VACUUM).
         // Loop until no rows remain to delete, processing in batches to bound memory usage.
+        // SECURITY (H-1): Use bind parameter for interval and batch size
         let query = format!(
-            "DELETE FROM {} WHERE id IN (SELECT id FROM {} WHERE created_at < NOW() - INTERVAL '{} days' LIMIT {})",
-            table, table, retention_days, batch_size
+            "DELETE FROM {} WHERE id IN (SELECT id FROM {} WHERE created_at < NOW() - INTERVAL '1 day' * $1 LIMIT $2)",
+            table, table
         );
         let mut total_deleted: i64 = 0;
         loop {
             let result = sqlx::query(&query)
+                .bind(retention_days)
+                .bind(batch_size)
                 .execute(&self.pool)
                 .await
                 .context("execute_retention_delete")?;
@@ -2823,22 +2877,20 @@ impl DatabaseBackend for PostgresDb {
         Ok(())
     }
 
-    async fn find_api_token_by_hash(&self, _token_prefix: &str) -> Result<Option<serde_json::Value>> {
-        // For token lookup, we need to check all non-revoked, non-expired tokens
-        // In production, store a prefix index for faster lookup
+    async fn find_api_token_by_hash(&self, token_hash: &str) -> Result<Option<serde_json::Value>> {
+        // BUG-023 fix: Query directly by token_hash instead of fetching all tokens
         let row = sqlx::query_as::<_, (serde_json::Value,)>(
             "SELECT row_to_json(t) FROM (
-                SELECT * FROM api_tokens
-                WHERE revoked = FALSE AND (expires_at IS NULL OR expires_at > NOW())
-                ORDER BY created_at DESC LIMIT 100
+                SELECT id, name, user_id, scopes, team_id, expires_at, last_used_at, created_at, revoked, scope_rules, description
+                FROM api_tokens
+                WHERE token_hash = $1 AND revoked = FALSE AND (expires_at IS NULL OR expires_at > NOW())
             ) t"
         )
-        .fetch_all(&self.pool)
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
         .await
         .context("find_api_token_by_hash")?;
-        // Caller will verify bcrypt hash against each candidate
-        // Return first match or None; actual matching done in rbac module
-        Ok(row.into_iter().map(|r| r.0).next())
+        Ok(row.map(|r| r.0))
     }
 
     async fn update_token_last_used(&self, token_id: &str) -> Result<()> {
@@ -2887,33 +2939,54 @@ impl DatabaseBackend for PostgresDb {
 
     // ── Advanced Scheduling & Data-Aware Orchestration ──────────
 
-    async fn upsert_dataset(&self, id: &str, uri: &str, name: &str, description: Option<&str>, producer_dag_id: Option<&str>, metadata: &serde_json::Value) -> Result<()> {
+    async fn upsert_dataset(&self, id: &str, uri: &str, _name: &str, _description: Option<&str>, _producer_dag_id: Option<&str>, metadata: &serde_json::Value) -> Result<()> {
         sqlx::query(
-            "INSERT INTO datasets (id, uri, name, description, producer_dag_id, metadata, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())
-             ON CONFLICT (id) DO UPDATE SET uri = EXCLUDED.uri, name = EXCLUDED.name,
-               description = EXCLUDED.description, producer_dag_id = EXCLUDED.producer_dag_id,
-               metadata = EXCLUDED.metadata, updated_at = NOW()"
+            "INSERT INTO datasets (id, uri, extra, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (id) DO UPDATE SET uri = EXCLUDED.uri,
+               extra = EXCLUDED.extra, updated_at = NOW()"
         )
-        .bind(id).bind(uri).bind(name).bind(description).bind(producer_dag_id).bind(metadata)
+        .bind(id).bind(uri).bind(metadata)
         .execute(&self.pool).await.context("upsert_dataset")?;
         Ok(())
     }
 
+    /// Get a dataset by URI, creating it if it doesn't exist. Returns the dataset ID.
+    async fn get_or_create_dataset_by_uri(&self, uri: &str) -> Result<String> {
+        // Try to fetch existing
+        let existing: Option<String> = sqlx::query_scalar("SELECT id FROM datasets WHERE uri = $1")
+            .bind(uri).fetch_optional(&self.pool).await.context("get_dataset_by_uri")?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        // Create new
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO datasets (id, uri, extra, updated_at) VALUES ($1, $2, '{}'::jsonb, NOW()) ON CONFLICT (uri) DO UPDATE SET updated_at = NOW()")
+            .bind(&id).bind(uri)
+            .execute(&self.pool).await.context("create_dataset")?;
+        // Re-fetch in case ON CONFLICT resolved to existing row
+        let final_id: String = sqlx::query_scalar("SELECT id FROM datasets WHERE uri = $1")
+            .bind(uri).fetch_one(&self.pool).await.context("get_dataset_after_upsert")?;
+        Ok(final_id)
+    }
+
     async fn get_datasets(&self, limit: i64, offset: i64) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query_as::<_, (serde_json::Value,)>(
-            "SELECT row_to_json(t) FROM (SELECT * FROM datasets ORDER BY name LIMIT $1 OFFSET $2) t"
+            "SELECT row_to_json(t) FROM (SELECT * FROM datasets ORDER BY created_at LIMIT $1 OFFSET $2) t"
         ).bind(limit).bind(offset).fetch_all(&self.pool).await.context("get_datasets")?;
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
     async fn insert_dataset_event(&self, event: &crate::advanced_scheduler::DatasetEvent) -> Result<()> {
         sqlx::query(
-            "INSERT INTO dataset_events (dataset_id, source_dag_id, source_task_id, source_run_id, event_type, metadata)
-             VALUES ($1, $2, $3, $4, $5, $6)"
+            "INSERT INTO dataset_events (dataset_id, source_dag_id, source_task_id, source_run_id, extra)
+             VALUES ($1, $2, $3, $4, $5::jsonb)"
         )
-        .bind(&event.dataset_id).bind(&event.source_dag_id).bind(&event.source_task_id)
-        .bind(&event.source_run_id).bind(&event.event_type).bind(&event.metadata)
+        .bind(&event.dataset_id)
+        .bind(event.source_dag_id.as_deref().unwrap_or(""))
+        .bind(event.source_task_id.as_deref())
+        .bind(event.source_run_id.as_deref().unwrap_or("cli"))
+        .bind(serde_json::json!({"event_type": &event.event_type, "metadata": &event.metadata}).to_string())
         .execute(&self.pool).await.context("insert_dataset_event")?;
         Ok(())
     }
@@ -2921,44 +2994,65 @@ impl DatabaseBackend for PostgresDb {
     async fn get_dataset_events(&self, dataset_id: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query_as::<_, (serde_json::Value,)>(
             "SELECT row_to_json(t) FROM (
-                SELECT * FROM dataset_events WHERE dataset_id = $1 ORDER BY created_at DESC LIMIT $2
+                SELECT * FROM dataset_events WHERE dataset_id = $1 ORDER BY timestamp DESC LIMIT $2
             ) t"
         ).bind(dataset_id).bind(limit).fetch_all(&self.pool).await.context("get_dataset_events")?;
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
-    async fn upsert_dataset_trigger(&self, id: &str, dag_id: &str, dataset_ids: &[String], condition: &str, min_interval: Option<i32>, enabled: bool) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO dataset_triggers (id, dag_id, dataset_ids, condition, min_interval_seconds, enabled)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (id) DO UPDATE SET dag_id = EXCLUDED.dag_id, dataset_ids = EXCLUDED.dataset_ids,
-               condition = EXCLUDED.condition, min_interval_seconds = EXCLUDED.min_interval_seconds, enabled = EXCLUDED.enabled"
-        )
-        .bind(id).bind(dag_id).bind(dataset_ids).bind(condition).bind(min_interval).bind(enabled)
-        .execute(&self.pool).await.context("upsert_dataset_trigger")?;
+    async fn upsert_dataset_trigger(&self, id: &str, dag_id: &str, dataset_ids: &[String], condition: &str, _min_interval: Option<i32>, _enabled: bool) -> Result<()> {
+        // The dataset_triggers table has one row per (dag_id, dataset_id) pair.
+        // BUG-025 fix: Generate unique ID per dataset to avoid PK conflicts
+        for dataset_id in dataset_ids {
+            let trigger_id = format!("{}-{}", id, dataset_id);
+            sqlx::query(
+                "INSERT INTO dataset_triggers (id, dag_id, dataset_id, condition)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (dag_id, dataset_id) DO UPDATE SET condition = EXCLUDED.condition"
+            )
+            .bind(&trigger_id).bind(dag_id).bind(dataset_id).bind(condition)
+            .execute(&self.pool).await.context("upsert_dataset_trigger")?;
+        }
         Ok(())
     }
 
     async fn get_dataset_triggers_for_dataset(&self, dataset_id: &str) -> Result<Vec<serde_json::Value>> {
-        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
-            "SELECT row_to_json(t) FROM (
-                SELECT * FROM dataset_triggers WHERE enabled = TRUE AND $1 = ANY(dataset_ids)
-            ) t"
+        // BUG-026 fix: Aggregate all dataset_ids per (dag_id, condition) so the caller
+        // receives a `dataset_ids` array for each trigger, matching the expected schema.
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT dt.dag_id, dt.condition, array_agg(dt.dataset_id) as dataset_ids, 
+                    min(dt.id) as id, min(dt.created_at) as created_at
+             FROM dataset_triggers dt
+             WHERE dt.dag_id IN (SELECT dag_id FROM dataset_triggers WHERE dataset_id = $1)
+             GROUP BY dt.dag_id, dt.condition"
         ).bind(dataset_id).fetch_all(&self.pool).await.context("get_dataset_triggers_for_dataset")?;
-        Ok(rows.into_iter().map(|r| r.0).collect())
+        Ok(rows.iter().map(|r| {
+            let dataset_ids: Vec<String> = r.get("dataset_ids");
+            serde_json::json!({
+                "id": r.get::<String, _>("id"),
+                "dag_id": r.get::<String, _>("dag_id"),
+                "condition": r.get::<String, _>("condition"),
+                "dataset_ids": dataset_ids,
+                "created_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at"),
+            })
+        }).collect())
     }
 
     async fn check_all_datasets_updated(&self, dataset_ids: &[String], _trigger_id: &str) -> Result<bool> {
-        // Check that each dataset has at least one recent event
-        for ds_id in dataset_ids {
-            let row = sqlx::query_as::<_, (bool,)>(
-                "SELECT EXISTS(SELECT 1 FROM dataset_events WHERE dataset_id = $1 AND created_at > NOW() - INTERVAL '24 hours')"
-            ).bind(ds_id).fetch_one(&self.pool).await.context("check_dataset_updated")?;
-            if !row.0 {
-                return Ok(false);
-            }
+        // BUG-054 fix: Replace N+1 loop with a single query
+        if dataset_ids.is_empty() {
+            return Ok(true);
         }
-        Ok(true)
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT dataset_id) FROM dataset_events
+             WHERE dataset_id = ANY($1) AND timestamp > NOW() - INTERVAL '24 hours'"
+        )
+        .bind(dataset_ids)
+        .fetch_one(&self.pool)
+        .await
+        .context("check_all_datasets_updated")?;
+        Ok(count >= dataset_ids.len() as i64)
     }
 
     async fn upsert_cross_dag_dependency(&self, id: &str, downstream: &str, upstream: &str, upstream_task: Option<&str>, condition: &str) -> Result<()> {
@@ -2983,28 +3077,35 @@ impl DatabaseBackend for PostgresDb {
     }
 
     async fn check_upstream_completed(&self, upstream_dag: &str, upstream_task: Option<&str>, condition: &str) -> Result<bool> {
-        let status_check = match condition {
-            "success" => "'success'",
-            "complete" => "'success', 'failed'",
-            _ => "'success', 'failed', 'running'",
+        // SECURITY (H-5): Use controlled string literals only (no user input in state_check)
+        // BUG-022 fix: Column is `state` not `status`, and `end_time` not `updated_at`
+        let state_check = match condition {
+            "success" => "'Success'",
+            "complete" => "'Success', 'Failed'",
+            _ => "'Success', 'Failed', 'Running'",
         };
-        let query = if upstream_task.is_some() {
-            format!(
-                "SELECT EXISTS(SELECT 1 FROM task_instances WHERE dag_id = $1 AND task_id = $2 AND status IN ({}) AND updated_at > NOW() - INTERVAL '24 hours')",
-                status_check
-            )
+        let row = if let Some(task) = upstream_task {
+            let query = format!(
+                "SELECT EXISTS(SELECT 1 FROM task_instances WHERE dag_id = $1 AND task_id = $2 AND state IN ({}) AND end_time > NOW() - INTERVAL '24 hours')",
+                state_check
+            );
+            sqlx::query_as::<_, (bool,)>(&query)
+                .bind(upstream_dag)
+                .bind(task)
+                .fetch_one(&self.pool)
+                .await
+                .context("check_upstream_completed")?
         } else {
-            format!(
-                "SELECT EXISTS(SELECT 1 FROM dag_runs WHERE dag_id = $1 AND status IN ({}) AND updated_at > NOW() - INTERVAL '24 hours')",
-                status_check
-            )
+            let query = format!(
+                "SELECT EXISTS(SELECT 1 FROM dag_runs WHERE dag_id = $1 AND state IN ({}) AND end_time > NOW() - INTERVAL '24 hours')",
+                state_check
+            );
+            sqlx::query_as::<_, (bool,)>(&query)
+                .bind(upstream_dag)
+                .fetch_one(&self.pool)
+                .await
+                .context("check_upstream_completed")?
         };
-        let row = sqlx::query_as::<_, (bool,)>(&query)
-            .bind(upstream_dag)
-            .bind(upstream_task.unwrap_or(""))
-            .fetch_one(&self.pool)
-            .await
-            .context("check_upstream_completed")?;
         Ok(row.0)
     }
 
@@ -3012,5 +3113,763 @@ impl DatabaseBackend for PostgresDb {
         sqlx::query("DELETE FROM cross_dag_dependencies WHERE id = $1")
             .bind(id).execute(&self.pool).await.context("delete_cross_dag_dependency")?;
         Ok(())
+    }
+
+    // ─── Event Triggers (T-011) ─────────────────────────────────────
+
+    async fn create_event_trigger(
+        &self, id: &str, name: &str, event_type: &str, filter_json: &str,
+        dag_id: &str, config_json: &str, team_id: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO event_triggers (id, name, event_type, filter_json, dag_id, config_json, team_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        )
+        .bind(id).bind(name).bind(event_type).bind(filter_json)
+        .bind(dag_id).bind(config_json).bind(team_id)
+        .execute(&self.pool).await.context("create_event_trigger")?;
+        Ok(())
+    }
+
+    async fn get_event_triggers(&self, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            "SELECT id, name, event_type, filter_json, dag_id, config_json, enabled, created_at, team_id
+             FROM event_triggers ORDER BY created_at DESC LIMIT $1"
+        )
+        .bind(limit)
+        .fetch_all(&self.pool).await.context("get_event_triggers")?;
+        use sqlx::Row;
+        Ok(rows.iter().map(|r| serde_json::json!({
+            "id": r.get::<String, _>("id"),
+            "name": r.get::<String, _>("name"),
+            "event_type": r.get::<String, _>("event_type"),
+            "filter_json": r.get::<String, _>("filter_json"),
+            "dag_id": r.get::<String, _>("dag_id"),
+            "config_json": r.get::<String, _>("config_json"),
+            "enabled": r.get::<bool, _>("enabled"),
+            "created_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at").map(|d| d.to_rfc3339()),
+            "team_id": r.get::<Option<String>, _>("team_id"),
+        })).collect())
+    }
+
+    async fn delete_event_trigger(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM event_triggers WHERE id = $1")
+            .bind(id).execute(&self.pool).await.context("delete_event_trigger")?;
+        Ok(())
+    }
+
+    // ─── Sensor Tasks (T-012) ───────────────────────────────────────
+
+    async fn get_sensor_tasks(&self, limit: i64) -> Result<Vec<serde_json::Value>> {
+        // Sensor tasks are identified by task_id prefix convention.
+        // task_instances doesn't have a sensor-specific column; filter by naming convention.
+        let rows = sqlx::query(
+            "SELECT id, dag_id, task_id, state, execution_date::TEXT
+             FROM task_instances
+             WHERE task_id ILIKE '%sensor%'
+             ORDER BY execution_date DESC
+             LIMIT $1"
+        )
+        .bind(limit)
+        .fetch_all(&self.pool).await.context("get_sensor_tasks")?;
+        use sqlx::Row;
+        Ok(rows.iter().map(|r| {
+            serde_json::json!({
+                "id": r.get::<String, _>("id"),
+                "dag_id": r.get::<String, _>("dag_id"),
+                "task_id": r.get::<String, _>("task_id"),
+                "state": r.get::<String, _>("state"),
+                "sensor_type": "unknown",
+                "execution_date": r.get::<Option<String>, _>("execution_date"),
+            })
+        }).collect())
+    }
+
+    // ─── Raw Query Execution (T-013) ────────────────────────────────
+
+    async fn execute_raw_query(&self, sql: &str, timeout_secs: u64, max_rows: i64) -> Result<Vec<serde_json::Value>> {
+        // SECURITY (C-1): Validate SQL is SELECT-only inside the DB layer (defense-in-depth)
+        let dialect = sqlparser::dialect::GenericDialect {};
+        let parsed = sqlparser::parser::Parser::parse_sql(&dialect, sql);
+        match &parsed {
+            Ok(stmts) if !stmts.is_empty() => {
+                for stmt in stmts {
+                    if !matches!(stmt, sqlparser::ast::Statement::Query(_)) {
+                        anyhow::bail!("Only SELECT queries are allowed in execute_raw_query");
+                    }
+                }
+            }
+            _ => anyhow::bail!("Invalid SQL in execute_raw_query"),
+        }
+        // SECURITY: Use bind parameter for LIMIT
+        let limited_sql = format!("SELECT * FROM ({}) AS _q LIMIT $1", sql);
+        let rows = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            sqlx::query(&limited_sql).bind(max_rows).fetch_all(&self.pool),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Query timed out after {}s", timeout_secs))?
+        .context("execute_raw_query")?;
+
+        use sqlx::Row;
+        use sqlx::Column;
+        let mut results = Vec::new();
+        for row in &rows {
+            let mut obj = serde_json::Map::new();
+            for (i, col) in row.columns().iter().enumerate() {
+                let name = col.name().to_string();
+                let val: serde_json::Value = if let Ok(v) = row.try_get::<String, _>(i) {
+                    serde_json::Value::String(v)
+                } else if let Ok(v) = row.try_get::<i64, _>(i) {
+                    serde_json::json!(v)
+                } else if let Ok(v) = row.try_get::<i32, _>(i) {
+                    serde_json::json!(v)
+                } else if let Ok(v) = row.try_get::<f64, _>(i) {
+                    serde_json::json!(v)
+                } else if let Ok(v) = row.try_get::<bool, _>(i) {
+                    serde_json::json!(v)
+                } else {
+                    serde_json::Value::Null
+                };
+                obj.insert(name, val);
+            }
+            results.push(serde_json::Value::Object(obj));
+        }
+        Ok(results)
+    }
+
+    // ─── Task Queue & Reprioritization (T-014) ──────────────────────
+
+    async fn get_task_queue(&self, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, i32, Option<String>)>(
+            "SELECT id, dag_id, task_id, state, COALESCE(priority, 0), execution_date::TEXT
+             FROM task_instances
+             WHERE state IN ('Queued', 'Scheduled', 'UpForRetry')
+             ORDER BY COALESCE(priority, 0) DESC, execution_date ASC
+             LIMIT $1"
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_task_queue")?;
+
+        Ok(rows.iter().map(|(id, dag_id, task_id, state, priority, exec_date)| {
+            serde_json::json!({
+                "id": id,
+                "dag_id": dag_id,
+                "task_id": task_id,
+                "state": state,
+                "priority": priority,
+                "pool": null,
+                "execution_date": exec_date,
+            })
+        }).collect())
+    }
+
+    async fn reprioritize_task(&self, ti_id: &str, priority: i32) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE task_instances SET priority = $1 WHERE id = $2 AND state IN ('Queued', 'Scheduled', 'UpForRetry')"
+        )
+        .bind(priority)
+        .bind(ti_id)
+        .execute(&self.pool)
+        .await
+        .context("reprioritize_task")?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("Task '{}' not found or not in queueable state", ti_id);
+        }
+        Ok(())
+    }
+
+    async fn get_scheduler_state(&self, key: &str) -> Result<Option<String>> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM scheduler_state WHERE key = $1"
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_scheduler_state")?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    async fn set_scheduler_state(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO scheduler_state (key, value, updated_at) VALUES ($1, $2, NOW())
+             ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()"
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .context("set_scheduler_state")?;
+        Ok(())
+    }
+
+    // ─── Data Freshness (T-015) ─────────────────────────────────────
+
+    async fn get_dataset_freshness(&self, uri: &str) -> Result<Option<serde_json::Value>> {
+        let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>)>(
+            "SELECT d.id, d.uri,
+                    de.source_dag_id, de.source_task_id,
+                    de.timestamp::TEXT
+             FROM datasets d
+             LEFT JOIN LATERAL (
+                 SELECT source_dag_id, source_task_id, timestamp
+                 FROM dataset_events
+                 WHERE dataset_id = d.id
+                 ORDER BY timestamp DESC
+                 LIMIT 1
+             ) de ON TRUE
+             WHERE d.uri = $1"
+        )
+        .bind(uri)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_dataset_freshness")?;
+
+        Ok(row.map(|(id, uri, source_dag, source_task, last_event)| {
+            let age_secs = last_event.as_ref()
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_seconds())
+                .unwrap_or(-1);
+            serde_json::json!({
+                "id": id,
+                "uri": uri,
+                "last_event": last_event,
+                "age_seconds": age_secs,
+                "source_dag": source_dag,
+                "source_task": source_task,
+            })
+        }))
+    }
+
+    async fn get_stale_datasets(&self, stale_after_secs: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, String, Option<String>)>(
+            "SELECT d.id, d.uri,
+                    (SELECT MAX(timestamp)::TEXT FROM dataset_events WHERE dataset_id = d.id) AS last_event
+             FROM datasets d
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM dataset_events de
+                 WHERE de.dataset_id = d.id
+                 AND de.timestamp > NOW() - make_interval(secs => $1)
+             )
+             ORDER BY d.uri"
+        )
+        .bind(stale_after_secs as f64)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_stale_datasets")?;
+
+        Ok(rows.iter().map(|(id, uri, last_event)| {
+            let age_secs = last_event.as_ref()
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_seconds())
+                .unwrap_or(-1);
+            serde_json::json!({
+                "id": id,
+                "uri": uri,
+                "last_event": last_event,
+                "age_seconds": age_secs,
+            })
+        }).collect())
+    }
+
+    // ─── Dataset Schemas (T-016) ────────────────────────────────────
+
+    async fn store_dataset_schema(&self, dataset_id: &str, schema_json: &str, source_run_id: Option<&str>) -> Result<()> {
+        // BUG-051 fix: Use atomic INSERT ... SELECT to prevent concurrent version conflicts
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO dataset_schemas (id, dataset_id, schema_json, version, captured_at, source_run_id)
+             SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, NOW(), $4
+             FROM dataset_schemas WHERE dataset_id = $2"
+        )
+        .bind(&id)
+        .bind(dataset_id)
+        .bind(schema_json)
+        .bind(source_run_id)
+        .execute(&self.pool)
+        .await
+        .context("store_dataset_schema")?;
+        Ok(())
+    }
+
+    async fn get_latest_dataset_schema(&self, dataset_id: &str) -> Result<Option<serde_json::Value>> {
+        let row = sqlx::query_as::<_, (String, String, i32, String, Option<String>)>(
+            "SELECT id, schema_json, version, captured_at::TEXT, source_run_id
+             FROM dataset_schemas
+             WHERE dataset_id = $1
+             ORDER BY version DESC
+             LIMIT 1"
+        )
+        .bind(dataset_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_latest_dataset_schema")?;
+
+        Ok(row.map(|(id, schema_json, version, captured_at, source_run_id)| {
+            serde_json::json!({
+                "id": id,
+                "dataset_id": dataset_id,
+                "schema_json": serde_json::from_str::<serde_json::Value>(&schema_json).unwrap_or(serde_json::json!([])),
+                "version": version,
+                "captured_at": captured_at,
+                "source_run_id": source_run_id,
+            })
+        }))
+    }
+
+    async fn get_dataset_schema_diff(&self, dataset_id: &str) -> Result<Option<serde_json::Value>> {
+        // Fetch the latest two schema versions
+        let rows = sqlx::query_as::<_, (i32, String)>(
+            "SELECT version, schema_json
+             FROM dataset_schemas
+             WHERE dataset_id = $1
+             ORDER BY version DESC
+             LIMIT 2"
+        )
+        .bind(dataset_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_dataset_schema_diff")?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        // Only one version — no diff possible
+        if rows.len() < 2 {
+            return Ok(Some(serde_json::json!({
+                "dataset_id": dataset_id,
+                "current_version": rows[0].0,
+                "previous_version": null,
+                "added": [],
+                "removed": [],
+                "changed": [],
+                "message": "Only one schema version exists; no diff available",
+            })));
+        }
+
+        let current_version = rows[0].0;
+        let previous_version = rows[1].0;
+
+        #[derive(serde::Deserialize, PartialEq)]
+        struct Col {
+            name: String,
+            data_type: String,
+        }
+
+        let current_cols: Vec<Col> = serde_json::from_str(&rows[0].1).unwrap_or_default();
+        let previous_cols: Vec<Col> = serde_json::from_str(&rows[1].1).unwrap_or_default();
+
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut changed = Vec::new();
+
+        // Build lookup maps by column name
+        let prev_map: std::collections::HashMap<&str, &str> = previous_cols.iter()
+            .map(|c| (c.name.as_str(), c.data_type.as_str()))
+            .collect();
+        let curr_map: std::collections::HashMap<&str, &str> = current_cols.iter()
+            .map(|c| (c.name.as_str(), c.data_type.as_str()))
+            .collect();
+
+        // Added & changed
+        for col in &current_cols {
+            match prev_map.get(col.name.as_str()) {
+                None => added.push(serde_json::json!({"name": col.name, "data_type": col.data_type})),
+                Some(&old_type) if old_type != col.data_type => {
+                    changed.push(serde_json::json!({"name": col.name, "old_type": old_type, "new_type": col.data_type}));
+                }
+                _ => {}
+            }
+        }
+
+        // Removed
+        for col in &previous_cols {
+            if !curr_map.contains_key(col.name.as_str()) {
+                removed.push(serde_json::json!({"name": col.name, "data_type": col.data_type}));
+            }
+        }
+
+        Ok(Some(serde_json::json!({
+            "dataset_id": dataset_id,
+            "current_version": current_version,
+            "previous_version": previous_version,
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+        })))
+    }
+
+    // ─── Data Volume / Stats (T-017) ────────────────────────────────
+
+    async fn get_dataset_stats(&self, dataset_id: &str) -> Result<Option<serde_json::Value>> {
+        let row = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT COUNT(*), MAX(timestamp)::TEXT
+             FROM dataset_events WHERE dataset_id = $1"
+        )
+        .bind(dataset_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("get_dataset_stats count")?;
+
+        if row.0 == 0 {
+            return Ok(None);
+        }
+
+        let latest = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT COALESCE(extra::TEXT, '{}'), timestamp::TEXT
+             FROM dataset_events
+             WHERE dataset_id = $1
+             ORDER BY timestamp DESC
+             LIMIT 1"
+        )
+        .bind(dataset_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_dataset_stats latest")?;
+
+        let (extra_str, last_event) = latest.unwrap_or(("{}".to_string(), None));
+        let extra: serde_json::Value = serde_json::from_str(&extra_str).unwrap_or(serde_json::json!({}));
+
+        Ok(Some(serde_json::json!({
+            "dataset_id": dataset_id,
+            "total_events": row.0,
+            "last_event": last_event.unwrap_or_default(),
+            "last_row_count": extra.get("row_count"),
+            "last_byte_size": extra.get("byte_size"),
+            "last_partition_key": extra.get("partition_key"),
+        })))
+    }
+
+    // ─── Dynamic Task Mapping (T-018) ───────────────────────────────
+
+    async fn get_mappable_tasks(&self, dag_id: &str, run_id: &str) -> Result<Vec<serde_json::Value>> {
+        // BUG-024 fix: task_instances doesn't have a `config` column — join with `tasks` table
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT ti.id, ti.dag_id, ti.task_id, t.config, ti.state
+             FROM task_instances ti
+             JOIN tasks t ON ti.task_id = t.id AND ti.dag_id = t.dag_id
+             WHERE ti.dag_id = $1 AND ti.run_id = $2 AND t.config LIKE '%map\\_values%' AND ti.state = 'Queued'
+             LIMIT 100"
+        )
+        .bind(dag_id)
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_mappable_tasks")?;
+
+        Ok(rows.iter().map(|(id, dag_id, task_id, config, state)| {
+            serde_json::json!({
+                "id": id,
+                "dag_id": dag_id,
+                "task_id": task_id,
+                "config": config,
+                "state": state,
+            })
+        }).collect())
+    }
+
+    async fn create_mapped_task_instance(&self, parent_ti_id: &str, map_index: i32, dag_id: &str, task_id: &str, run_id: &str, execution_date: chrono::DateTime<chrono::Utc>) -> Result<String> {
+        let mapped_id = format!("{}__map_{}", parent_ti_id, map_index);
+        let mapped_task_id = format!("{}__map_{}", task_id, map_index);
+        sqlx::query(
+            "INSERT INTO task_instances (id, dag_id, task_id, state, execution_date, run_id)
+             VALUES ($1, $2, $3, 'Queued', $4, $5)
+             ON CONFLICT (id) DO NOTHING"
+        )
+        .bind(&mapped_id)
+        .bind(dag_id)
+        .bind(&mapped_task_id)
+        .bind(execution_date)
+        .bind(run_id)
+        .execute(&self.pool)
+        .await
+        .context("create_mapped_task_instance")?;
+        Ok(mapped_id)
+    }
+
+    // ─── Rate Limiting (T-021) ──────────────────────────────────────
+
+    async fn check_rate_limit(&self, actor: &str, action: &str, max_per_minute: i32) -> Result<bool> {
+        let window = chrono::Utc::now().format("%Y-%m-%d %H:%M:00").to_string();
+        let row = sqlx::query_as::<_, (i64,)>(
+            "SELECT COALESCE(SUM(count), 0) FROM rate_limit_counters
+             WHERE actor = $1 AND action = $2 AND \"window\" >= $3::TIMESTAMPTZ"
+        )
+        .bind(actor)
+        .bind(action)
+        .bind(&window)
+        .fetch_one(&self.pool)
+        .await
+        .context("check_rate_limit")?;
+        Ok(row.0 < max_per_minute as i64)
+    }
+
+    async fn increment_rate_limit(&self, actor: &str, action: &str) -> Result<()> {
+        let window = chrono::Utc::now().format("%Y-%m-%d %H:%M:00").to_string();
+        sqlx::query(
+            "INSERT INTO rate_limit_counters (actor, action, \"window\", count) VALUES ($1, $2, $3::TIMESTAMPTZ, 1)
+             ON CONFLICT (actor, action, \"window\") DO UPDATE SET count = rate_limit_counters.count + 1"
+        )
+        .bind(actor)
+        .bind(action)
+        .bind(&window)
+        .execute(&self.pool)
+        .await
+        .context("increment_rate_limit")?;
+        Ok(())
+    }
+
+    async fn get_rate_limit_status(&self, actor: &str) -> Result<Vec<serde_json::Value>> {
+        let window = chrono::Utc::now().format("%Y-%m-%d %H:%M:00").to_string();
+        let rows = sqlx::query_as::<_, (String, i32)>(
+            "SELECT action, count FROM rate_limit_counters
+             WHERE actor = $1 AND \"window\" >= $2::TIMESTAMPTZ
+             ORDER BY action
+             LIMIT 100"
+        )
+        .bind(actor)
+        .bind(&window)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_rate_limit_status")?;
+
+        Ok(rows.iter().map(|(action, count)| {
+            serde_json::json!({
+                "action": action,
+                "count": count,
+            })
+        }).collect())
+    }
+
+    // ─── Agent State (T-025) ────────────────────────────────────────
+
+    async fn agent_state_set(&self, agent_id: &str, key: &str, value: &str, ttl_secs: Option<i64>) -> Result<()> {
+        let ttl_expires = ttl_secs.map(|secs| chrono::Utc::now() + chrono::Duration::seconds(secs));
+        sqlx::query(
+            "INSERT INTO agent_state (agent_id, key, value, ttl_expires, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (agent_id, key) DO UPDATE SET value = $3, ttl_expires = $4, updated_at = NOW()"
+        )
+        .bind(agent_id)
+        .bind(key)
+        .bind(value)
+        .bind(ttl_expires)
+        .execute(&self.pool)
+        .await
+        .context("agent_state_set")?;
+        Ok(())
+    }
+
+    async fn agent_state_get(&self, agent_id: &str, key: &str) -> Result<Option<String>> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM agent_state
+             WHERE agent_id = $1 AND key = $2
+             AND (ttl_expires IS NULL OR ttl_expires > NOW())"
+        )
+        .bind(agent_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("agent_state_get")?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    async fn agent_state_list(&self, agent_id: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+            "SELECT key, value, ttl_expires::TEXT, updated_at::TEXT
+             FROM agent_state
+             WHERE agent_id = $1
+             AND (ttl_expires IS NULL OR ttl_expires > NOW())
+             ORDER BY key
+             LIMIT $2"
+        )
+        .bind(agent_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("agent_state_list")?;
+
+        Ok(rows.iter().map(|(key, value, ttl, updated)| {
+            serde_json::json!({
+                "key": key,
+                "value": value,
+                "ttl_expires": ttl,
+                "updated_at": updated,
+            })
+        }).collect())
+    }
+
+    async fn agent_state_delete(&self, agent_id: &str, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM agent_state WHERE agent_id = $1 AND key = $2")
+            .bind(agent_id)
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .context("agent_state_delete")?;
+        Ok(())
+    }
+
+    // ─── Agent Decision Log (T-026) ─────────────────────────────────
+
+    async fn agent_log_insert(&self, id: &str, agent_id: &str, message: &str, context: &str, level: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO agent_logs (id, agent_id, message, context, level) VALUES ($1, $2, $3, $4, $5)"
+        )
+        .bind(id)
+        .bind(agent_id)
+        .bind(message)
+        .bind(context)
+        .bind(level)
+        .execute(&self.pool)
+        .await
+        .context("agent_log_insert")?;
+        Ok(())
+    }
+
+    async fn agent_log_query(&self, agent_id: &str, since_secs: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let since = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s));
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
+            "SELECT id, agent_id, message, context, level, created_at::TEXT
+             FROM agent_logs
+             WHERE agent_id = $1
+             AND ($2::TIMESTAMPTZ IS NULL OR created_at >= $2)
+             ORDER BY created_at DESC
+             LIMIT $3"
+        )
+        .bind(agent_id)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("agent_log_query")?;
+
+        Ok(rows.iter().map(|(id, agent_id, message, context, level, created_at)| {
+            serde_json::json!({
+                "id": id,
+                "agent_id": agent_id,
+                "message": message,
+                "context": context,
+                "level": level,
+                "created_at": created_at,
+            })
+        }).collect())
+    }
+
+    // ─── Event Watch & Custom Events (T-027/T-028) ──────────────────
+
+    async fn get_recent_events(&self, event_type: Option<&str>, since_secs: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let since = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s));
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT id, dataset_id, source_dag_id, source_task_id, source_run_id,
+                       event_type, created_at
+                FROM dataset_events
+                WHERE ($1::TEXT IS NULL OR event_type = $1)
+                AND ($2::TIMESTAMPTZ IS NULL OR created_at >= $2)
+                ORDER BY created_at DESC
+                LIMIT $3
+            ) t"
+        )
+        .bind(event_type)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_recent_events")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn publish_custom_event(&self, id: &str, event_type: &str, source: &str, payload: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO custom_events (id, event_type, source, payload) VALUES ($1, $2, $3, $4)"
+        )
+        .bind(id)
+        .bind(event_type)
+        .bind(source)
+        .bind(payload)
+        .execute(&self.pool)
+        .await
+        .context("publish_custom_event")?;
+        Ok(())
+    }
+
+    async fn get_custom_events(&self, event_type: Option<&str>, since_secs: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let since = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s));
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT id, event_type, source, payload, created_at
+                FROM custom_events
+                WHERE ($1::TEXT IS NULL OR event_type = $1)
+                AND ($2::TIMESTAMPTZ IS NULL OR created_at >= $2)
+                ORDER BY created_at DESC
+                LIMIT $3
+            ) t"
+        )
+        .bind(event_type)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("get_custom_events")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    // ─── Scoped API Tokens (T-036) ──────────────────────────────────
+
+    async fn create_scoped_token(
+        &self,
+        token_id: &str,
+        user: &str,
+        scope_rules: &str,
+        description: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<String> {
+        let raw_token = format!("vx-{}-{}", &user.chars().take(8).collect::<String>(), &uuid::Uuid::new_v4().to_string()[..16]);
+        let token_hash = {
+            use sha2::{Sha256, Digest};
+            format!("{:x}", Sha256::digest(raw_token.as_bytes()))
+        };
+        let scope_list: Vec<String> = Vec::new();
+        let expires_str = expires_at.map(|dt| dt.to_rfc3339());
+        let _id = sqlx::query_as::<_, (String,)>(
+            "INSERT INTO api_tokens (id, name, token_hash, user_id, scopes, team_id, expires_at, scope_rules, description)
+             VALUES ($1, $2, $3, $4, $5, NULL, $6::timestamptz, $7, $8)
+             RETURNING id"
+        )
+        .bind(token_id)
+        .bind(format!("scoped-{}", &token_id[..8.min(token_id.len())]))
+        .bind(&token_hash)
+        .bind(user)
+        .bind(&scope_list)
+        .bind(expires_str.as_deref())
+        .bind(scope_rules)
+        .bind(description)
+        .fetch_one(&self.pool)
+        .await
+        .context("create_scoped_token")?;
+        Ok(raw_token)
+    }
+
+    async fn get_token_scopes(&self, token_id: &str) -> Result<Option<serde_json::Value>> {
+        // SECURITY (M-2): Escape LIKE metacharacters in token_id
+        let pattern = format!("{}%", escape_like_pattern(token_id));
+        let row = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT row_to_json(t) FROM (
+                SELECT id, name, user_id, scopes, scope_rules, description, expires_at, last_used_at, created_at, revoked
+                FROM api_tokens
+                WHERE id LIKE $1
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) t"
+        )
+        .bind(&pattern)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_token_scopes")?;
+        Ok(row.map(|r| r.0))
     }
 }

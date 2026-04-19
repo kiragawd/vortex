@@ -326,6 +326,23 @@ pub struct StepResult {
 }
 
 /// CI/CD pipeline manager.
+///
+/// Validates shell commands against an allowlist of dangerous patterns
+/// before execution.
+fn validate_ci_command(cmd: &str) -> Result<(), String> {
+    let dangerous = [
+        "rm -rf", "mkfs", "dd if=", "> /dev/", "chmod 777",
+        "curl | sh", "wget | sh", "eval ",
+    ];
+    let lower = cmd.to_lowercase();
+    for d in &dangerous {
+        if lower.contains(d) {
+            return Err(format!("Command rejected — contains dangerous pattern: {}", d));
+        }
+    }
+    Ok(())
+}
+
 pub struct CiPipelineManager {
     pipelines: Arc<RwLock<HashMap<String, CiPipeline>>>,
     runs: Arc<RwLock<Vec<PipelineRun>>>,
@@ -456,6 +473,10 @@ impl CiPipelineManager {
                 }
             }
             CiCommand::Shell { command } => {
+                // BUG-035: Validate command against dangerous patterns before execution.
+                if let Err(e) = validate_ci_command(command) {
+                    return (false, e);
+                }
                 debug!(step = %step.name, command = %command, "Executing shell step");
                 match tokio::process::Command::new("sh")
                     .arg("-c")

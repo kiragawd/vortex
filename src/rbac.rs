@@ -58,6 +58,15 @@ pub fn verify_token(token: &str, hash: &str) -> bool {
 }
 
 /// Validate that a token's scopes include the required permission.
+///
+/// # Scope matching semantics
+/// 1. `"*"` — global wildcard, grants all permissions unconditionally.
+/// 2. **Direct match** — exact string equality (e.g. scope `"dag.read"` matches required `"dag.read"`).
+/// 3. **Category wildcard** — `"<category>.*"` matches any `"<category>.<action>"`.
+///    Only applies when the required permission contains a `.` separator, so
+///    `"dag.*"` matches `"dag.read"` but would NOT match a bare `"dag"` permission.
+///    (BUG-068: added the `.` check to prevent over-permissive matching on
+///    single-segment permissions.)
 pub fn token_has_scope(token_scopes: &[String], required: &str) -> bool {
     // Wildcard scope grants everything
     if token_scopes.iter().any(|s| s == "*") {
@@ -67,11 +76,14 @@ pub fn token_has_scope(token_scopes: &[String], required: &str) -> bool {
     if token_scopes.iter().any(|s| s == required) {
         return true;
     }
-    // Category wildcard: "dag.*" matches "dag.read"
-    if let Some(category) = required.split('.').next() {
-        let wildcard = format!("{}.*", category);
-        if token_scopes.iter().any(|s| s == &wildcard) {
-            return true;
+    // Category wildcard: "dag.*" matches "dag.read" but NOT "dag" (no sub-permission).
+    // BUG-068: Only check category wildcard when required has a dotted sub-permission.
+    if required.contains('.') {
+        if let Some(category) = required.split('.').next() {
+            let wildcard = format!("{}.*", category);
+            if token_scopes.iter().any(|s| s == &wildcard) {
+                return true;
+            }
         }
     }
     false

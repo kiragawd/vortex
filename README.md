@@ -1,47 +1,67 @@
 # RYUO 🌪️
 
-**RYUO** is a high-performance, single-binary enterprise orchestration engine designed to replace Apache Airflow with disruptive speed and simplicity.
+**RYUO** is a data-aware agentic orchestration engine — a single Rust binary that lets both humans and AI agents build, trigger, monitor, and evolve data pipelines in real time.
 
-Built in **Rust** with native **Python** DAG support via PyO3, RYUO delivers sub-second scheduling, visual DAG monitoring, encrypted secret management, and distributed task execution — all from a single binary.
+Where traditional schedulers run DAGs on cron timers and wait for humans to intervene, Ryuo exposes every capability — DAG creation, data freshness queries, schema drift detection, task re-prioritization, lineage traversal — as **CLI commands, REST endpoints, and MCP tools** that LLM agents can call autonomously. Agents sense data state, reason about lineage, create pipelines from YAML, and operate safely in production behind approval gates, scoped tokens, and rate limits.
+
+Built in **Rust** with native **Python** DAG support via PyO3, Ryuo delivers sub-second scheduling, data-aware triggers, encrypted secret management, and distributed task execution — all from a ~15 MB binary.
 
 ## Why RYUO?
 
-Because your data pipelines shouldn't spend more time scheduling tasks than executing them.
+Because orchestration should be **data-aware**, **agent-native**, and **fast by default**.
 
-| Feature | Airflow | RYUO |
-|---------|---------|--------|
+| Capability | Legacy Schedulers | RYUO |
+|------------|-------------------|------|
+| **Trigger model** | Cron-only or basic sensors | Data-aware (dataset events, schema drift, freshness) + cron + event-driven |
+| **Agent integration** | None — human-operated GUIs | First-class: CLI + REST + MCP tools for LLM agents |
+| **Pipeline creation** | Manual Python files | Agents create YAML DAGs via CLI, validated with dry-run |
 | **Startup** | Minutes (webserver + scheduler + workers + Redis + DB) | Seconds (single binary) |
 | **Scheduling** | Python-based, GIL-bound | Lock-free Rust async (Tokio) |
 | **Dependencies** | Python, Redis, Celery, PostgreSQL | Rust + Python runtime + PostgreSQL |
-| **Binary Size** | ~500MB+ installed | ~15MB single binary |
-| **DAG Compatibility** | Native | Airflow-compatible shim layer |
-| **DAG Authoring** | Python only | Python, YAML/JSON, or native Rust |
+| **Binary size** | ~500 MB+ installed | ~15 MB single binary |
+| **DAG authoring** | Python only | Python, YAML/JSON, native Rust, or agent-generated |
+| **Safety guardrails** | Manual code review | Approval gates, scoped tokens, rate limits, SQL validation, injection blocking |
+| **Airflow compat** | N/A | Shim layer + AST transpiler + LLM-assisted migration |
 
 ## Architecture
 
 ```mermaid
 graph TB
+    subgraph Agents["AI Agents & LLM Pipelines"]
+        MCP["MCP Tool Server<br/>(JSON-RPC)"]
+        CLI["CLI<br/>(ryuo / ryuo-cli)"]
+    end
+
     subgraph Controller["RYUO Controller"]
         API["REST API<br/>(Axum :3000)"]
-        SCHED["Scheduler<br/>(Tokio async)"]
-        PARSER["DAG Parser<br/>(PyO3)"]
+        SCHED["Data-Aware Scheduler<br/>(Tokio async)"]
+        EVENTS["Event Bus<br/>(Sensors, Datasets)"]
+        PARSER["DAG Parser<br/>(PyO3 + YAML)"]
         API --- DB
         SCHED --- DB
+        EVENTS --- DB
         PARSER --- DB
         DB["PostgreSQL<br/>(Primary DB)"]
         DB --- GRPC["gRPC Swarm Controller<br/>(Tonic :50051)"]
     end
 
+    MCP --> API
+    CLI --> API
     GRPC -- "gRPC" --> W1["Worker 1<br/>(Rust)"]
     GRPC -- "gRPC" --> W2["Worker 2<br/>(Rust)"]
     GRPC -- "gRPC" --> WN["Worker N<br/>(Rust)"]
 
     UI["React SPA<br/>(embedded via rust-embed)"] --> API
     PROM["Prometheus"] --> API
+    EXT["External Events<br/>(S3, Kafka, Webhooks)"] --> EVENTS
 
+    style Agents fill:#2d1b4e,stroke:#a855f7,color:#fff
+    style MCP fill:#533483,stroke:#a855f7,color:#fff
+    style CLI fill:#533483,stroke:#a855f7,color:#fff
     style Controller fill:#1a1a2e,stroke:#e94560,color:#fff
     style API fill:#0f3460,stroke:#e94560,color:#fff
     style SCHED fill:#0f3460,stroke:#e94560,color:#fff
+    style EVENTS fill:#0f3460,stroke:#e94560,color:#fff
     style PARSER fill:#0f3460,stroke:#e94560,color:#fff
     style DB fill:#16213e,stroke:#e94560,color:#fff
     style GRPC fill:#16213e,stroke:#e94560,color:#fff
@@ -50,9 +70,49 @@ graph TB
     style WN fill:#533483,stroke:#e94560,color:#fff
     style UI fill:#0f3460,stroke:#e94560,color:#fff
     style PROM fill:#16213e,stroke:#e94560,color:#fff
+    style EXT fill:#16213e,stroke:#a855f7,color:#fff
 ```
 
+### The Agent Loop
+
+Ryuo is designed around a tight feedback loop for autonomous agents:
+
+```
+Agent senses data state (freshness, schema, volume)
+  → Agent decides action (trigger, create, reprioritize)
+    → Agent executes via CLI/MCP (with validation + dry-run)
+      → Ryuo schedules, executes, emits events
+        → Agent observes results (XCom, lineage, logs)
+          → Agent adapts (rollback, re-trigger, escalate)
+```
+
+Every step in this loop is available as a sub-millisecond CLI command with `--output json` for deterministic parsing.
+
 ## Features
+
+### Agentic Orchestration (Agent-Native)
+- **MCP Tool Server** — 12 LLM-callable tools (dag_list, dag_trigger, dataset_freshness, lineage_query, connector_query, etc.) via Model Context Protocol
+- **CLI-first design** — Every capability is a CLI command with `--output json` for agent consumption; sub-millisecond overhead on metadata queries
+- **Agent state store** — Persistent key-value memory across DAG runs with TTL-based expiry (`ryuo agent state get/set`)
+- **Agent decision log** — Structured audit trail of agent reasoning with context JSON
+- **Data freshness queries** — `ryuo dataset freshness <uri>` answers "how fresh is this dataset?" without manual lineage scanning
+- **Schema drift detection** — `ryuo dataset schema-diff <uri>` detects upstream schema changes so agents can adapt pipelines
+- **Dynamic DAG creation** — Agents generate YAML, validate with `--dry-run`, and register via `ryuo dag create --from-yaml`
+- **Approval gates** — Agent-initiated mutations to production DAGs require human approval (configurable)
+- **Scoped API tokens** — `ryuo token create --scope "dag:etl_*:trigger,read"` enforces least-privilege per agent
+- **Rate limiting** — Per-token rate limits prevent runaway agents from flooding the system
+- **Rollback support** — `ryuo dag rollback <id>` reverts agent mutations instantly
+- **Inter-agent coordination** — Agents communicate through the event bus, not direct coupling
+- **LLM-assisted migration** — AI agents translate Airflow Python DAGs and dbt manifests to native Rust
+
+### Data-Aware Scheduling
+- **Dataset-triggered DAGs** — DAGs fire when upstream datasets update (All or Any condition), not just on cron
+- **Cross-DAG dependencies** — Downstream DAGs wait for upstream DAG completion across the dependency graph
+- **Dynamic task mapping** — Runtime fan-out based on data volume (e.g., 1 task per 100K rows)
+- **Data volume awareness** — Dataset events carry row_count, byte_size, partition_key metadata
+- **Real-time queue exposure** — `ryuo queue list` and `ryuo queue reprioritize` for live task queue manipulation
+- **Event-driven triggers** — External events (S3, Kafka, webhooks) trigger DAGs via the event bus
+- **Sensor framework** — File, HTTP, SQL, and metric anomaly sensors with poke/reschedule modes
 
 ### Core Engine
 - **Async-first scheduler** — Tokio-based, lock-free parallel task execution
@@ -161,22 +221,19 @@ graph TB
 
 ## ⚠️ Production Considerations
 
-By default, RYUO runs as a single-node controller, which introduces a Single Point of Failure (SPOF). For production environments, it is strongly recommended to run RYUO behind a supervisor (like `systemd` or Kubernetes deployments) configured to automatically restart the process on failure.
+By default, RYUO runs as a single-node controller. For production environments, run RYUO behind a supervisor (like `systemd` or Kubernetes deployments) configured to automatically restart on failure.
 
-For true active-standby High Availability (HA) across multiple machines, RYUO supports a leader election mode using PostgreSQL advisory locks.
+For active-standby High Availability (HA), RYUO supports leader election via PostgreSQL advisory locks. See the [High Availability Guide](./docs/high-availability.md).
 
-See the [High Availability Guide](./docs/high-availability.md) for full setup instructions and architectural details.
+## Current Limitations
 
-## Current Limitations & Future Enhancements
+While RYUO provides a comprehensive orchestration platform, some features are in progress:
 
-While RYUO provides a comprehensive orchestration platform, some features are scaffolded for future completion:
-
-- **Kubernetes Executor:** Kubernetes Executor: pod spec generation and namespace validation implemented. Pod API submission requires the `kube` crate feature (TODO: ENT-16). RYUO scales horizontally via its built-in gRPC Swarm in the meantime.
-- **SSO (SAML/LDAP):** Local and OIDC authentication are functional. SAML and LDAP providers have configuration types defined but lack full provider implementations.
+- **Kubernetes Executor:** Pod spec generation and namespace validation implemented. Pod API submission requires `kube` crate feature. Scales horizontally via gRPC Swarm in the meantime.
+- **SSO (SAML/LDAP):** Local and OIDC authentication are functional. SAML and LDAP have configuration types defined but lack full provider implementations. SAML signature validation rejects unsigned assertions by default.
 - **Disaster Recovery:** Backup metadata tracking and failover types exist, but end-to-end backup I/O and automated restore are not yet operational.
-- **OpenTelemetry Export:** W3C TraceContext propagation and span types are complete but the OTLP exporter (HTTP/gRPC sender) is not yet wired.
-- **Dynamic Task Mapping:** Runtime task fan-out (e.g., `task.expand()`) has expand/reduce logic but is not fully integrated with the scheduler loop.
-- **Connection UI:** Connection management is scoped to the Secrets Vault; named connections with a UI builder are not implemented.
+- **OpenTelemetry Export:** W3C TraceContext propagation and span types are complete but the OTLP exporter is not yet wired.
+- **MCP Server:** 12 tool definitions with JSON schemas exist. Dispatch stubs return placeholder messages — live runtime integration is in progress.
 - **Custom Timetables:** Schedules rely on cron and standard presets rather than custom timetable classes.
 
 ## Getting Started
@@ -191,7 +248,7 @@ While RYUO provides a comprehensive orchestration platform, some features are sc
 ### Build
 
 ```bash
-git clone https://github.com/kiragawd/ryuo.git
+git clone https://github.com/saiashwinvasireddy/ryuo.git
 cd ryuo
 
 # Python 3.14+ requires this env var
@@ -611,6 +668,7 @@ ryuo/
 
 ## Documentation
 
+- **[Agentic Orchestration](./docs/AGENTIC_DATA_ORCHESTRATION.md)** — Agent integration, MCP tools, data-aware triggers, LLM pipelines
 - **[Architecture](./docs/ARCHITECTURE.md)** — System design and data flow
 - **[Authentication & Security](./docs/AUTHENTICATION.md)** — IAM, RBAC, secrets, and security model
 - **[Scheduling](./docs/SCHEDULING.md)** — Cron, dataset triggers, cross-DAG deps, dynamic mapping
@@ -627,7 +685,7 @@ ryuo/
 - **[Resilience](./docs/RESILIENCE.md)** — Auto-recovery, health monitoring, and disaster recovery
 - **[Plugins](./docs/PLUGINS.md)** — Custom operator development and SDK
 - **[High Availability](./docs/high-availability.md)** — HA deployment with leader election
-- **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow-to-Ryuo DAG migration
+- **[Migration Guide](./docs/MIGRATION_GUIDE.md)** — Airflow/TWS/Autosys DAG migration
 - **[Connector API](./docs/CONNECTOR_API.md)** — Connector trait and implementations
 
 ## Testing

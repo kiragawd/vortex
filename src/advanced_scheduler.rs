@@ -213,22 +213,69 @@ impl DynamicTaskScheduler {
 
     /// Expand mapped tasks for a DAG run and persist the resulting instances.
     /// Returns the number of mapped task instances created.
-    pub async fn schedule_dynamic_tasks(&self, dag_id: &str, _run_id: &str) -> anyhow::Result<usize> {
-        // TODO(ENT-9): implement when DatabaseBackend gains:
-        //   get_mappable_tasks(dag_id) and create_mapped_task_instance(...)
-        //
-        // Pseudocode:
-        //   let mapped_tasks = self.db.get_mappable_tasks(dag_id).await?;
-        //   for task in mapped_tasks {
-        //       if let Some(config) = &task.expand_kwargs {
-        //           let expanded = expand_mapped_task(&template, &values);
-        //           for (idx, cfg) in expanded.iter().enumerate() {
-        //               self.db.create_mapped_task_instance(dag_id, &task.task_id, run_id, idx, cfg).await?;
-        //           }
-        //       }
-        //   }
-        warn!(dag_id = %dag_id, "ENT-9: schedule_dynamic_tasks is a stub — DB methods not yet implemented");
-        Ok(0)
+    pub async fn schedule_dynamic_tasks(&self, dag_id: &str, run_id: &str) -> anyhow::Result<usize> {
+        let mappable = self.db.get_mappable_tasks(dag_id, run_id).await?;
+        if mappable.is_empty() {
+            return Ok(0);
+        }
+
+        let mut total_created = 0usize;
+        const MAX_FAN_OUT: usize = 1000;
+
+        for task in &mappable {
+            let ti_id = task["id"].as_str().unwrap_or("");
+            let task_id = task["task_id"].as_str().unwrap_or("");
+            let config_str = task["config"].as_str().unwrap_or("{}");
+
+            let config: serde_json::Value = serde_json::from_str(config_str).unwrap_or(serde_json::json!({}));
+            let map_values = match config.get("map_values").and_then(|v| v.as_array()) {
+                Some(arr) => arr.clone(),
+                None => {
+                    warn!(ti_id = %ti_id, "mapped task missing map_values array in config");
+                    continue;
+                }
+            };
+
+            if map_values.is_empty() {
+                continue;
+            }
+
+            let fan_out_count = map_values.len().min(MAX_FAN_OUT);
+            if map_values.len() > MAX_FAN_OUT {
+                warn!(
+                    ti_id = %ti_id,
+                    requested = map_values.len(),
+                    max = MAX_FAN_OUT,
+                    "fan-out truncated to max limit"
+                );
+            }
+
+            let execution_date = chrono::Utc::now();
+
+            for (idx, _val) in map_values.iter().enumerate().take(fan_out_count) {
+                self.db.create_mapped_task_instance(
+                    ti_id,
+                    idx as i32,
+                    dag_id,
+                    task_id,
+                    run_id,
+                    execution_date,
+                ).await?;
+                total_created += 1;
+            }
+
+            // Mark parent task as mapped (skip it from direct execution)
+            self.db.update_task_state(ti_id, "Mapped").await?;
+
+            info!(
+                dag_id = %dag_id,
+                task_id = %task_id,
+                mapped_count = fan_out_count,
+                "dynamic_task_expansion_complete"
+            );
+        }
+
+        Ok(total_created)
     }
 }
 

@@ -499,6 +499,7 @@ pub struct FileWatchSensor {
     name: String,
     watch_paths: Vec<String>,
     last_check: Mutex<HashMap<String, std::time::SystemTime>>,
+    first_poll: Mutex<bool>,
 }
 
 impl FileWatchSensor {
@@ -507,6 +508,7 @@ impl FileWatchSensor {
             name: name.to_string(),
             watch_paths,
             last_check: Mutex::new(HashMap::new()),
+            first_poll: Mutex::new(true),
         }
     }
 }
@@ -517,13 +519,21 @@ impl EventSensor for FileWatchSensor {
     fn sensor_type(&self) -> &str { "file_watch" }
 
     async fn poll(&self) -> Result<Option<Event>> {
+        // BUG-064: On the first poll, only baseline file timestamps — don't report changes.
+        let mut is_first = self.first_poll.lock().await;
+        let first = *is_first;
+        if first {
+            *is_first = false;
+        }
+        drop(is_first);
+
         let mut last_check = self.last_check.lock().await;
         for path in &self.watch_paths {
             if let Ok(metadata) = tokio::fs::metadata(path).await {
                 if let Ok(modified) = metadata.modified() {
                     let is_new = last_check.get(path).map_or(true, |prev| modified > *prev);
                     last_check.insert(path.clone(), modified);
-                    if is_new {
+                    if is_new && !first {
                         return Ok(Some(Event::new(
                             EventType::FileChange,
                             &format!("file_watch/{}", self.name),
@@ -679,6 +689,7 @@ fn json_path_get<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 fn validate_webhook_signature(secret: &str, payload: &str, signature: &str) -> Result<()> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+    use subtle::ConstantTimeEq;
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .map_err(|_| anyhow!("Invalid HMAC key"))?;
@@ -687,7 +698,9 @@ fn validate_webhook_signature(secret: &str, payload: &str, signature: &str) -> R
 
     // Strip optional "sha256=" prefix
     let sig = signature.strip_prefix("sha256=").unwrap_or(signature);
-    if expected != sig {
+    // BUG-009: Use constant-time comparison to prevent timing attacks
+    let is_valid: bool = expected.as_bytes().ct_eq(sig.as_bytes()).into();
+    if !is_valid {
         return Err(anyhow!("Webhook signature mismatch"));
     }
     Ok(())
@@ -880,6 +893,12 @@ mod tests {
         let path = "/tmp/ryuo_event_test_file";
         tokio::fs::write(path, b"test").await.unwrap();
         let sensor = FileWatchSensor::new("test", vec![path.to_string()]);
+        // First poll is baseline only — should not report changes.
+        let event = sensor.poll().await.unwrap();
+        assert!(event.is_none(), "First poll should return None (baseline)");
+        // Simulate a modification and re-poll.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::fs::write(path, b"updated").await.unwrap();
         let event = sensor.poll().await.unwrap();
         assert!(event.is_some());
         assert_eq!(event.unwrap().event_type, EventType::FileChange);

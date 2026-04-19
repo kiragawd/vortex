@@ -213,12 +213,8 @@ impl ComplianceTracker {
 // ──────────────────────────── Secret Masking ──────────────────────────────────
 
 /// Mask sensitive values in log output and API responses.
-pub fn mask_secret(value: &str) -> String {
-    if value.len() <= 4 {
-        "****".to_string()
-    } else {
-        format!("{}****", &value[..2])
-    }
+pub fn mask_secret(_value: &str) -> String {
+    "****".to_string()
 }
 
 /// Scan a JSON value and mask any fields that look like secrets.
@@ -263,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_mask_secret_long() {
-        assert_eq!(mask_secret("super_secret_123"), "su****");
+        assert_eq!(mask_secret("super_secret_123"), "****");
     }
 
     #[test]
@@ -278,8 +274,8 @@ mod tests {
         });
         let masked = mask_sensitive_fields(&input);
         assert_eq!(masked["username"], "admin");
-        assert_eq!(masked["password"], "hu****");
-        assert_eq!(masked["nested"]["api_key"], "ab****");
+        assert_eq!(masked["password"], "****");
+        assert_eq!(masked["nested"]["api_key"], "****");
         assert_eq!(masked["nested"]["name"], "test");
     }
 }

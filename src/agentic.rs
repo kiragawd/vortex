@@ -113,7 +113,7 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
-pub async fn translate_python_to_rust_agentic<P: LlmProvider>(
+pub async fn translate_python_to_rust_agentic<P: LlmProvider + ?Sized>(
     provider: &P,
     python_fn: &str,
     max_retries: u32,

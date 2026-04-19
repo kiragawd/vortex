@@ -14,7 +14,7 @@
 ## Build from Source
 
 ```bash
-git clone https://github.com/kiragawd/ryuo.git
+git clone https://github.com/saiashwinvasireddy/ryuo.git
 cd ryuo
 
 # Required for Python 3.14+

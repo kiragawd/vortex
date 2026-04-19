@@ -341,6 +341,13 @@ fn validate_sensor_sql(query: &str) -> bool {
                 warn!("🗄️  SqlSensor: query rejected — UNION / INTERSECT / EXCEPT not allowed");
                 return false;
             }
+            // BUG-059: Defense-in-depth — also reject set operations in subqueries
+            // by scanning the SQL text representation for keywords.
+            let sql_upper = query.to_uppercase();
+            if sql_upper.contains(" UNION ") || sql_upper.contains(" INTERSECT ") || sql_upper.contains(" EXCEPT ") {
+                warn!("🗄️  SqlSensor: query rejected — set operations (UNION/INTERSECT/EXCEPT) detected in subquery");
+                return false;
+            }
             true
         }
         other => {

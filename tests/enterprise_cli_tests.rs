@@ -25,7 +25,7 @@ fn test_cli_help() {
 fn test_cli_version() {
     let output = ryuo_binary().arg("--version").output().expect("Failed to run ryuo --version");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.7.0"), "Should show version 0.7.0");
+    assert!(stdout.contains("0.8.0"), "Should show version 0.8.0");
 }
 
 #[test]

@@ -141,25 +141,6 @@ impl SwarmState {
         self.task_queue.read().await.len()
     }
 
-    /// BUG-M4 FIX: Use a semaphore to prevent overlapping health check cycles.
-    /// If a previous cycle is still running when the next tick fires, skip it.
-    pub async fn health_check_loop(self: Arc<Self>) {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-            match semaphore.clone().try_acquire_owned() {
-                Ok(permit) => {
-                    self.health_check_cycle().await;
-                    drop(permit);
-                }
-                Err(_) => {
-                    warn!("⚠️ Swarm: Health check cycle still running, skipping this tick");
-                }
-            }
-        }
-    }
-
     /// BUG-1 FIX: Single iteration of the health check, extracted so main.rs
     /// can call it in a loop that re-checks HA leadership between iterations.
     pub async fn health_check_cycle(&self) {

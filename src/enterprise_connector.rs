@@ -116,6 +116,9 @@ pub trait EnterpriseConnector: Send + Sync {
     async fn close(&self) -> Result<()>;
 }
 
+// NOTE (BUG-084): Uses std::sync::RwLock intentionally — all critical sections are
+// sub-microsecond (HashMap insert/lookup with no await), so blocking is acceptable
+// and avoids the overhead of tokio::sync::RwLock's async mutex.
 #[derive(Default)]
 pub struct ConnectorRegistry {
     inner: RwLock<HashMap<String, Arc<dyn EnterpriseConnector>>>,

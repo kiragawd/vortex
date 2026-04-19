@@ -140,6 +140,16 @@ impl Vault {
             })
             .collect()
     }
+
+    /// Create a Vault directly from raw key bytes without reading environment
+    /// variables. Used by secret rotation to avoid the unsound `std::env::set_var`
+    /// call in multi-threaded contexts (BUG-014).
+    pub fn from_key_bytes(key_bytes: &[u8]) -> Result<Self> {
+        let derived_key = derive_key_argon2id(key_bytes)?;
+        let key = Key::<Aes256Gcm>::from_slice(&derived_key);
+        let cipher = Aes256Gcm::new(key);
+        Ok(Self { cipher })
+    }
 }
 
 /// Derive a 32-byte AES-256 key from raw input material using Argon2id.

@@ -133,7 +133,10 @@ impl HttpLineageEmitter {
         Self {
             endpoint: endpoint.to_string(),
             api_key,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
@@ -152,7 +155,9 @@ impl LineageEmitter for HttpLineageEmitter {
         let resp = req.send().await.context("Failed to emit lineage event")?;
 
         if !resp.status().is_success() {
-            warn!("Lineage emission failed with status: {}", resp.status());
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Lineage emission failed with status {}: {}", status, body));
         } else {
             debug!("📊 Lineage event emitted: {} for {}", event.event_type, event.job.name);
         }

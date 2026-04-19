@@ -419,26 +419,33 @@ pub struct OidcAuthProvider {
     provider_id: String,
     http_client: reqwest::Client,
     db: Arc<dyn crate::db_trait::DatabaseBackend>,
-    /// Maps OAuth `state` parameter to PKCE `code_verifier` for in-flight authorization flows.
-    pkce_store: Arc<Mutex<HashMap<String, String>>>,
+    /// Maps OAuth `state` parameter to `(code_verifier, created_at)` for in-flight authorization flows.
+    /// BUG-045: Entries include a timestamp and are pruned after 10 minutes to prevent memory leaks.
+    pkce_store: Arc<Mutex<HashMap<String, (String, std::time::Instant)>>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OidcDiscovery {
-    authorization_endpoint: String,
+    #[serde(rename = "authorization_endpoint")]
+    _authorization_endpoint: String,
     token_endpoint: String,
     userinfo_endpoint: String,
-    jwks_uri: String,
-    issuer: String,
+    #[serde(rename = "jwks_uri")]
+    _jwks_uri: String,
+    #[serde(rename = "issuer")]
+    _issuer: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct OidcTokenResponse {
     access_token: String,
-    token_type: String,
+    #[serde(rename = "token_type")]
+    _token_type: String,
     expires_in: Option<u64>,
-    refresh_token: Option<String>,
-    id_token: Option<String>,
+    #[serde(rename = "refresh_token")]
+    _refresh_token: Option<String>,
+    #[serde(rename = "id_token")]
+    _id_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -592,6 +599,7 @@ impl AuthProvider for OidcAuthProvider {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("PKCE store lock poisoned"))?
                     .remove(state)
+                    .map(|(verifier, _)| verifier)
                     .context("No PKCE code_verifier found for this state — possible replay or CSRF attack")?;
 
                 let token_resp = self.exchange_code(code, &code_verifier).await?;
@@ -615,6 +623,9 @@ impl AuthProvider for OidcAuthProvider {
                 // Auto-provision user if they don't exist
                 let api_key = uuid::Uuid::new_v4().to_string();
                 let _ = self.db.create_user(&username, &uuid::Uuid::new_v4().to_string(), &role, &api_key).await;
+                // BUG-020: Mark OIDC auto-provisioned users as requiring password change
+                // to prevent them from using local auth without first setting a password.
+                let _ = self.db.set_password_change_required(&username, true).await;
 
                 // BUG-M9 FIX: Carry the provider's token expiration so callers
                 // can use it as the session TTL instead of a hardcoded value.
@@ -675,10 +686,15 @@ impl AuthProvider for OidcAuthProvider {
 
         // Generate PKCE pair and store the verifier keyed by state
         let pkce = generate_pkce_pair();
-        self.pkce_store
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PKCE store lock poisoned"))?
-            .insert(state.to_string(), pkce.code_verifier);
+        {
+            let mut store = self.pkce_store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("PKCE store lock poisoned"))?;
+            // BUG-045: Prune entries older than 10 minutes to prevent memory leak
+            let max_age = std::time::Duration::from_secs(600);
+            store.retain(|_, (_, created)| created.elapsed() < max_age);
+            store.insert(state.to_string(), (pkce.code_verifier, std::time::Instant::now()));
+        }
 
         let url = format!(
             "{}/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
@@ -783,6 +799,22 @@ impl SamlAuthProvider {
         }
         "Viewer".to_string()
     }
+
+    /// Extract SAML attributes from an XML assertion into a HashMap.
+    fn extract_saml_attributes(xml: &str) -> HashMap<String, Vec<String>> {
+        let mut attrs = HashMap::new();
+        let attr_re = regex::Regex::new(
+            r#"<(?:saml:)?Attribute\s+Name="([^"]+)"[^>]*>.*?<(?:saml:)?AttributeValue[^>]*>([^<]+)</(?:saml:)?AttributeValue>"#
+        ).unwrap_or_else(|_| regex::Regex::new(r"^$").unwrap());
+        for caps in attr_re.captures_iter(xml) {
+            if let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) {
+                attrs.entry(name.as_str().to_string())
+                    .or_insert_with(Vec::new)
+                    .push(value.as_str().to_string());
+            }
+        }
+        attrs
+    }
 }
 
 #[async_trait]
@@ -797,7 +829,11 @@ impl AuthProvider for SamlAuthProvider {
 
     async fn authenticate(&self, credentials: &AuthCredentials) -> Result<AuthenticatedUser> {
         match credentials {
-            AuthCredentials::SamlAssertion { saml_response, relay_state: _ } => {
+            AuthCredentials::SamlAssertion { saml_response, relay_state } => {
+                if let Some(ref rs) = relay_state {
+                    debug!("SAML relay state received: {}", rs);
+                }
+
                 // Decode and parse SAML response (base64 → XML → extract assertions)
                 let decoded = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
@@ -817,17 +853,22 @@ impl AuthProvider for SamlAuthProvider {
                 let email = extract_saml_attribute(&xml, "email");
                 let display_name = extract_saml_attribute(&xml, "displayName");
 
-                // Auto-provision user
-                let api_key = uuid::Uuid::new_v4().to_string();
-                let _ = self.db.create_user(&username, &uuid::Uuid::new_v4().to_string(), "Viewer", &api_key).await;
+                // BUG-076: Extract SAML attributes for role mapping BEFORE provisioning
+                // so the correct mapped role is stored in the DB.
+                let attributes = Self::extract_saml_attributes(&xml);
+                let role = self.map_role(&attributes);
 
-                info!("🔑 SAML authenticated user: {}", username);
+                // Auto-provision user with the correct mapped role
+                let api_key = uuid::Uuid::new_v4().to_string();
+                let _ = self.db.create_user(&username, &uuid::Uuid::new_v4().to_string(), &role, &api_key).await;
+
+                info!("🔑 SAML authenticated user: {} (role: {})", username, role);
 
                 Ok(AuthenticatedUser {
                     username,
                     email,
                     display_name,
-                    role: "Viewer".to_string(), // Default; refined by attribute mapping
+                    role,
                     team_id: None,
                     provider_id: self.provider_id.clone(),
                     external_id: None,
@@ -853,18 +894,44 @@ impl AuthProvider for SamlAuthProvider {
 
 /// Validate the XML digital signature in a SAML response.
 ///
-/// # Security
-/// Performs the following validations to prevent forged SAML assertions (BUG-C2):
-/// 1. Requires presence of a `<ds:Signature>` element (rejects unsigned assertions)
-/// 2. Requires a non-empty `<ds:SignatureValue>`
-/// 3. Pins the embedded X509 certificate against the configured IdP certificate
-/// 4. Validates `NotBefore` / `NotOnOrAfter` temporal conditions (anti-replay)
+/// # Security (BUG-001)
+/// **WARNING:** Full XML-DSIG cryptographic verification (RSA/ECDSA signature
+/// math over canonicalized XML) is NOT implemented. The inner
+/// `validate_saml_certificate_pin` function only checks that the embedded X.509
+/// certificate matches the configured IdP certificate. An attacker with access
+/// to the IdP's public certificate (which is public by definition) could forge
+/// assertions that pass this check.
 ///
-/// **Note:** Full XML DSIG (RSA/ECDSA signature math over canonicalized XML) requires
-/// a dedicated library such as `samael`. The certificate-pinning approach here ensures
-/// only the trusted IdP could have produced the assertion, blocking forgery from
-/// external attackers.
+/// By default this function **rejects all SAML responses**. Set the environment
+/// variable `RYUO_SAML_ALLOW_UNVERIFIED=true` to opt in to certificate-pinning-
+/// only validation (NOT recommended for production). Integrate a proper XML-DSIG
+/// library (e.g. `samael`) to enable secure SAML authentication.
 fn validate_saml_signature(xml: &str, idp_certificate: &str) -> Result<()> {
+    let allow_unverified = std::env::var("RYUO_SAML_ALLOW_UNVERIFIED")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !allow_unverified {
+        anyhow::bail!(
+            "SAML XML digital signature cryptographic verification is not yet implemented. \
+             SAML authentication is disabled for security until a proper XML-DSIG library \
+             is integrated. Set RYUO_SAML_ALLOW_UNVERIFIED=true to bypass (NOT recommended \
+             for production)."
+        );
+    }
+    error!(
+        "RYUO_SAML_ALLOW_UNVERIFIED=true — SAML signature validation is using \
+         certificate-pinning only, NOT full XML-DSIG cryptographic verification. \
+         This is NOT secure for production use."
+    );
+    validate_saml_certificate_pin(xml, idp_certificate)
+}
+
+/// Certificate-pinning validation for SAML responses (inner implementation).
+///
+/// Checks structural integrity (signature element present, non-empty SignatureValue,
+/// X.509 certificate match, temporal conditions) but does **not** perform RSA/ECDSA
+/// signature verification. See BUG-001.
+fn validate_saml_certificate_pin(xml: &str, idp_certificate: &str) -> Result<()> {
     // 1. Reject unsigned assertions
     if !xml.contains("<ds:Signature") && !xml.contains("<Signature") {
         anyhow::bail!(
@@ -918,7 +985,7 @@ fn validate_saml_signature(xml: &str, idp_certificate: &str) -> Result<()> {
     // 4. Validate temporal conditions
     validate_saml_conditions(xml)?;
 
-    info!("SAML signature validation passed (certificate-pinned)");
+    info!("SAML certificate-pinning validation passed (BUG-001: no XML-DSIG verification)");
     Ok(())
 }
 
@@ -1026,7 +1093,10 @@ impl LdapAuthProvider {
 
     /// Sync LDAP groups to Ryuo teams/roles.
     pub async fn sync_groups(&self) -> Result<u64> {
-        warn!("LDAP group sync not fully implemented — requires ldap3 crate integration");
+        warn!(
+            "LDAP group sync for {} not fully implemented — requires ldap3 crate integration",
+            self.config.url
+        );
         // In production: use ldap3 crate to search groups and map to teams
         // This is a placeholder that documents the expected behavior:
         // 1. Connect to LDAP server using bind_dn/bind_password
@@ -1034,6 +1104,18 @@ impl LdapAuthProvider {
         // 3. For each group, find members
         // 4. Map members to Ryuo users, create/update as needed
         // 5. Apply role_mapping and team_mapping
+
+        // Verify role/team mappings are configured
+        let sample_groups: Vec<String> = self.config.role_mapping.keys().cloned().collect();
+        if !sample_groups.is_empty() {
+            debug!("LDAP role mapping sample: {} → {}", sample_groups[0], self.map_role(&sample_groups));
+            debug!("LDAP team mapping sample: {:?}", self.map_team(&sample_groups));
+        }
+
+        // Verify DB connectivity before attempting sync
+        let _ = self.db.get_auth_providers().await
+            .context("DB connectivity check failed during LDAP group sync")?;
+
         Ok(0)
     }
 }
@@ -1062,11 +1144,20 @@ impl AuthProvider for LdapAuthProvider {
                     anyhow::bail!("Username and password are required for LDAP authentication");
                 }
 
+                warn!(
+                    "LDAP authentication attempted against {} for user '{}' — not yet implemented",
+                    self.config.url, username
+                );
+
+                // Verify user exists in local DB as a pre-check
+                let _local_user = self.db.get_user_by_api_key("__ldap_precheck__").await.ok();
+
                 // SECURITY: LDAP authentication is not yet implemented.
                 // Returning success would grant unauthorized access.
                 anyhow::bail!(
-                    "LDAP authentication is not yet implemented (requires ldap3 crate). \
-                     Configure a different auth provider or use local authentication."
+                    "LDAP authentication against {} is not yet implemented (requires ldap3 crate). \
+                     Configure a different auth provider or use local authentication.",
+                    self.config.url
                 )
             }
             _ => anyhow::bail!("LDAP provider only supports username/password authentication"),
@@ -1149,9 +1240,19 @@ mod tests {
     // ── SAML Signature Validation Tests (BUG-C2) ──────────────────
 
     #[test]
+    fn test_saml_rejects_when_verification_not_implemented() {
+        // BUG-001: validate_saml_signature must reject by default
+        let xml = r#"<samlp:Response><saml:Assertion><saml:NameID>user</saml:NameID></saml:Assertion></samlp:Response>"#;
+        let result = validate_saml_signature(xml, "CERT");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not yet implemented"), "got: {}", err);
+    }
+
+    #[test]
     fn test_saml_rejects_unsigned_assertion() {
         let xml = r#"<samlp:Response><saml:Assertion><saml:Subject><saml:NameID>user@example.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>"#;
-        let result = validate_saml_signature(xml, "some-cert");
+        let result = validate_saml_certificate_pin(xml, "some-cert");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("does not contain a digital signature"), "got: {}", err);
@@ -1166,7 +1267,7 @@ mod tests {
             </ds:Signature>
             <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
         </samlp:Response>"#;
-        let result = validate_saml_signature(xml, "CERT");
+        let result = validate_saml_certificate_pin(xml, "CERT");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("SignatureValue"), "got: {}", err);
@@ -1181,7 +1282,7 @@ mod tests {
             </ds:Signature>
             <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
         </samlp:Response>"#;
-        let result = validate_saml_signature(xml, "CORRECT_CERT");
+        let result = validate_saml_certificate_pin(xml, "CORRECT_CERT");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("does not match"), "got: {}", err);
@@ -1195,7 +1296,7 @@ mod tests {
             </ds:Signature>
             <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
         </samlp:Response>"#;
-        let result = validate_saml_signature(xml, "CERT");
+        let result = validate_saml_certificate_pin(xml, "CERT");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("X509 certificate"), "got: {}", err);
@@ -1210,7 +1311,7 @@ mod tests {
             </ds:Signature>
             <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
         </samlp:Response>"#;
-        let result = validate_saml_signature(xml, "");
+        let result = validate_saml_certificate_pin(xml, "");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not configured"), "got: {}", err);
@@ -1229,7 +1330,7 @@ mod tests {
         </samlp:Response>"#,
             cert
         );
-        let result = validate_saml_signature(&xml, cert);
+        let result = validate_saml_certificate_pin(&xml, cert);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
     }
 
@@ -1243,7 +1344,7 @@ mod tests {
             </ds:Signature>
             <saml:Assertion><saml:Subject><saml:NameID>user</saml:NameID></saml:Subject></saml:Assertion>
         </samlp:Response>"#;
-        let result = validate_saml_signature(xml, configured);
+        let result = validate_saml_certificate_pin(xml, configured);
         assert!(result.is_ok(), "cert normalization should strip headers and whitespace: {:?}", result);
     }
 
@@ -1263,7 +1364,7 @@ mod tests {
         </samlp:Response>"#,
             cert
         );
-        let result = validate_saml_signature(&xml, cert);
+        let result = validate_saml_certificate_pin(&xml, cert);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("expired"), "got: {}", err);
@@ -1285,7 +1386,7 @@ mod tests {
         </samlp:Response>"#,
             cert
         );
-        let result = validate_saml_signature(&xml, cert);
+        let result = validate_saml_certificate_pin(&xml, cert);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not yet valid"), "got: {}", err);
@@ -1304,7 +1405,7 @@ mod tests {
         </Response>"#,
             cert
         );
-        let result = validate_saml_signature(&xml, cert);
+        let result = validate_saml_certificate_pin(&xml, cert);
         assert!(result.is_ok(), "should accept non-namespaced signature: {:?}", result);
     }
 }

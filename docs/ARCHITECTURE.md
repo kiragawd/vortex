@@ -1,6 +1,6 @@
 # Architecture Overview — RYUO System Design
 
-Ryuo replaces Python's heavy, process-based, GIL-bound orchestration architecture with Rust's high-performance, async-first paradigm.
+Ryuo is a data-aware agentic orchestration engine built in Rust. It replaces Python's heavy, process-based, GIL-bound orchestration architecture with an async-first paradigm where both humans and AI agents can build, trigger, and evolve data pipelines in real time.
 
 ### Key Architectural Advantages
 

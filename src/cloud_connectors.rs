@@ -4,6 +4,7 @@
 // Adds cloud-native connectors: BigQuery, Redshift, Kafka, Delta Lake, S3, GCS
 // All implement the EnterpriseConnector trait from enterprise_connector.rs
 
+use crate::connectors::validate_connector_sql;
 use crate::enterprise_connector::{
     ConnectorCapability, ConnectorContext, ConnectorKind, EnterpriseConnector, HealthStatus,
     QueryRequest, QueryResult,
@@ -13,7 +14,16 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use sqlx::Column;
 use std::collections::{HashMap, HashSet};
-use tokio::net::TcpStream;
+
+// BUG-028 FIX: Redshift connection pool cache to avoid creating a new pool per query.
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex as AsyncMutex;
+use sqlx::PgPool;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+
+static REDSHIFT_POOL_CACHE: Lazy<AsyncMutex<LruCache<String, PgPool>>> =
+    Lazy::new(|| AsyncMutex::new(LruCache::new(NonZeroUsize::new(16).unwrap())));
 
 // ─── BigQuery Connector ──────────────────────────────────────
 
@@ -72,6 +82,9 @@ impl EnterpriseConnector for BigQueryConnector {
 
     async fn execute(&self, _ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
         let sql = req.sql.as_deref().ok_or_else(|| anyhow!("BigQuery: sql required"))?;
+
+        // BUG-066 FIX: Validate SQL before execution — only allow SELECT statements.
+        validate_connector_sql(sql).map_err(|e| anyhow!("BigQuery connector: {}", e))?;
 
         // BUG-M5 FIX: Prefer credentials_json when available, fall back to env var.
         let token = if let Some(ref creds_json) = self.credentials_json {
@@ -168,7 +181,8 @@ impl RedshiftConnector {
 
     /// SECURITY (BUG-M6): Build connection string in a local scope.
     /// Callers should clear the returned String after establishing the connection.
-    // TODO: Use `secrecy::SecretString` with zeroize for robust secret lifecycle management.
+    // TODO (BUG-082): Use `secrecy::SecretString` with zeroize for robust secret lifecycle management.
+    // `String::clear()` sets length to 0 but bytes remain in heap; SecretString guarantees zeroize-on-drop.
     fn connection_string(&self) -> String {
         format!(
             "postgres://{}:{}@{}:{}/{}",
@@ -218,16 +232,28 @@ impl EnterpriseConnector for RedshiftConnector {
 
     async fn execute(&self, _ctx: &ConnectorContext, req: QueryRequest) -> Result<QueryResult> {
         let sql = req.sql.as_deref().ok_or_else(|| anyhow!("Redshift: sql required"))?;
-        // SECURITY (BUG-M6): Password is dropped after connection establishment
-        let mut conn_str = self.connection_string();
-        let pool = sqlx::PgPool::connect(&conn_str)
-            .await.map_err(|e| anyhow!("Redshift connection error: {}", e))?;
-        conn_str.clear();
+
+        // BUG-006 FIX: Validate SQL before execution — only allow SELECT statements.
+        validate_connector_sql(sql).map_err(|e| anyhow!("Redshift connector: {}", e))?;
+
+        // BUG-028 FIX: Use cached connection pool instead of creating a new one per query.
+        let conn_str = self.connection_string();
+        let mut cache = REDSHIFT_POOL_CACHE.lock().await;
+        let pool = if let Some(p) = cache.get(&conn_str) {
+            p.clone()
+        } else {
+            let p = sqlx::PgPool::connect(&conn_str)
+                .await
+                .map_err(|e| anyhow!("Redshift connection error: {}", e))?;
+            cache.put(conn_str, p.clone());
+            p
+        };
+        drop(cache);
 
         let db_rows = sqlx::query(sql)
             .fetch_all(&pool).await
             .map_err(|e| anyhow!("Redshift query error: {}", e))?;
-        pool.close().await;
+        // BUG-028: Pool is cached — do not close it here.
 
         let schema: Vec<String> = if let Some(first) = db_rows.first() {
             use sqlx::Row;
